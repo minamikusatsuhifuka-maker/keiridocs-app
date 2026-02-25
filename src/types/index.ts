@@ -11,3 +11,6 @@ export type InputMethod = "camera" | "upload" | "email"
 
 /** メール承認ステータス */
 export type MailPendingStatus = "pending" | "approved" | "rejected"
+
+/** ユーザー権限 */
+export type UserRole = "admin" | "staff" | "viewer"

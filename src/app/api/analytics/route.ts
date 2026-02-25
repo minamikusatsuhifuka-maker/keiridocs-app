@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { getCurrentUserRole } from "@/lib/auth"
 import { subMonths, format } from "date-fns"
 
 /** 月次集計データ */
@@ -68,11 +69,19 @@ export async function GET(request: NextRequest) {
       dateFrom = format(subMonths(now, 12), "yyyy-MM-dd")
   }
 
+  // 権限取得（adminは全件、staff/viewerは自分の書類のみ）
+  const auth = await getCurrentUserRole()
+  const isAdminUser = auth?.role === "admin"
+
   // 期間フィルタ付きでdocumentsを取得
   let query = supabase
     .from("documents")
     .select("type, vendor_name, amount, issue_date, status, created_at")
-    .eq("user_id", user.id)
+
+  // admin以外は自分の書類のみ
+  if (!isAdminUser) {
+    query = query.eq("user_id", user.id)
+  }
 
   if (dateFrom) {
     query = query.gte("created_at", dateFrom)

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getDocumentPath, moveFile } from "@/lib/dropbox"
+import { getCurrentUserRole } from "@/lib/auth"
 import type { Database } from "@/types/database"
 
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"]
@@ -15,17 +16,26 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
   }
 
+  // 権限取得（adminは全件、staff/viewerは自分の書類のみ）
+  const auth = await getCurrentUserRole()
+  const isAdminUser = auth?.role === "admin"
+
   const { searchParams } = new URL(request.url)
 
   // 単一取得（id指定時）
   const id = searchParams.get("id")
   if (id) {
-    const { data, error } = await supabase
+    let singleQuery = supabase
       .from("documents")
       .select("*")
       .eq("id", id)
-      .eq("user_id", user.id)
-      .single()
+
+    // admin以外は自分の書類のみ
+    if (!isAdminUser) {
+      singleQuery = singleQuery.eq("user_id", user.id)
+    }
+
+    const { data, error } = await singleQuery.single()
 
     if (error) {
       console.error("書類取得エラー:", error)
@@ -53,9 +63,13 @@ export async function GET(request: NextRequest) {
   let query = supabase
     .from("documents")
     .select("*", { count: "exact" })
-    .eq("user_id", user.id)
     .order(safeSort, { ascending })
     .range(offset, offset + limit - 1)
+
+  // admin以外は自分の書類のみ
+  if (!isAdminUser) {
+    query = query.eq("user_id", user.id)
+  }
 
   if (status) {
     query = query.eq("status", status)
@@ -165,6 +179,12 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
   }
 
+  // 権限チェック: admin or staff のみ編集可
+  const auth = await getCurrentUserRole()
+  if (auth?.role !== "admin" && auth?.role !== "staff") {
+    return NextResponse.json({ error: "編集権限がありません" }, { status: 403 })
+  }
+
   const { searchParams } = new URL(request.url)
   const id = searchParams.get("id")
   if (!id) {
@@ -174,13 +194,17 @@ export async function PATCH(request: NextRequest) {
   try {
     const body = await request.json() as Record<string, unknown>
 
-    // 既存の書類を取得
-    const { data: existingData, error: fetchError } = await supabase
+    // 既存の書類を取得（adminは全件、staffは自分の書類のみ）
+    let fetchQuery = supabase
       .from("documents")
       .select("*")
       .eq("id", id)
-      .eq("user_id", user.id)
-      .single()
+
+    if (auth.role !== "admin") {
+      fetchQuery = fetchQuery.eq("user_id", user.id)
+    }
+
+    const { data: existingData, error: fetchError } = await fetchQuery.single()
 
     if (fetchError || !existingData) {
       return NextResponse.json({ error: "書類が見つかりません" }, { status: 404 })
@@ -223,13 +247,16 @@ export async function PATCH(request: NextRequest) {
       }
     }
 
-    const { data, error } = await supabase
+    let updateQuery = supabase
       .from("documents")
       .update(update)
       .eq("id", id)
-      .eq("user_id", user.id)
-      .select()
-      .single()
+
+    if (auth.role !== "admin") {
+      updateQuery = updateQuery.eq("user_id", user.id)
+    }
+
+    const { data, error } = await updateQuery.select().single()
 
     if (error) {
       console.error("書類更新エラー:", error)
@@ -243,13 +270,19 @@ export async function PATCH(request: NextRequest) {
   }
 }
 
-// 書類削除
+// 書類削除（admin のみ）
 export async function DELETE(request: NextRequest) {
   const supabase = await createClient()
   const { data: { user }, error: authError } = await supabase.auth.getUser()
 
   if (authError || !user) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
+  }
+
+  // 権限チェック: adminのみ削除可
+  const auth = await getCurrentUserRole()
+  if (auth?.role !== "admin") {
+    return NextResponse.json({ error: "削除権限がありません" }, { status: 403 })
   }
 
   const { searchParams } = new URL(request.url)
@@ -262,7 +295,6 @@ export async function DELETE(request: NextRequest) {
     .from("documents")
     .delete()
     .eq("id", id)
-    .eq("user_id", user.id)
 
   if (error) {
     console.error("書類削除エラー:", error)

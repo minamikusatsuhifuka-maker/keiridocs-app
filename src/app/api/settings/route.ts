@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { getCurrentUserRole } from "@/lib/auth"
 
 // 対象テーブル名の型
 type SettingsTable = "settings" | "allowed_senders" | "notify_recipients" | "custom_folders" | "document_types" | "auto_classify_rules"
@@ -71,13 +72,19 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({ data })
 }
 
-// 設定追加
+// 設定追加（admin のみ変更可）
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
   const { data: { user }, error: authError } = await supabase.auth.getUser()
 
   if (authError || !user) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
+  }
+
+  // 権限チェック: adminのみ設定変更可
+  const auth = await getCurrentUserRole()
+  if (auth?.role !== "admin") {
+    return NextResponse.json({ error: "管理者権限が必要です" }, { status: 403 })
   }
 
   const { searchParams } = new URL(request.url)
@@ -252,13 +259,19 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// 設定更新
+// 設定更新（admin のみ変更可）
 export async function PATCH(request: NextRequest) {
   const supabase = await createClient()
   const { data: { user }, error: authError } = await supabase.auth.getUser()
 
   if (authError || !user) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
+  }
+
+  // 権限チェック: adminのみ設定変更可
+  const auth = await getCurrentUserRole()
+  if (auth?.role !== "admin") {
+    return NextResponse.json({ error: "管理者権限が必要です" }, { status: 403 })
   }
 
   const { searchParams } = new URL(request.url)
@@ -408,13 +421,19 @@ export async function PATCH(request: NextRequest) {
   }
 }
 
-// 設定削除
+// 設定削除（admin のみ変更可）
 export async function DELETE(request: NextRequest) {
   const supabase = await createClient()
   const { data: { user }, error: authError } = await supabase.auth.getUser()
 
   if (authError || !user) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
+  }
+
+  // 権限チェック: adminのみ設定削除可
+  const auth = await getCurrentUserRole()
+  if (auth?.role !== "admin") {
+    return NextResponse.json({ error: "管理者権限が必要です" }, { status: 403 })
   }
 
   const { searchParams } = new URL(request.url)

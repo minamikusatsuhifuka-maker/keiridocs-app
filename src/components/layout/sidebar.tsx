@@ -10,19 +10,28 @@ import {
   Settings,
   LogOut,
   BarChart3,
+  Sparkles,
+  Users,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/hooks/use-auth"
+import { useRole } from "@/hooks/use-role"
 
 const navItems = [
   { href: "/", label: "ダッシュボード", icon: LayoutDashboard },
   { href: "/documents/new", label: "書類登録", icon: FilePlus },
   { href: "/documents", label: "書類一覧", icon: FileText },
   { href: "/analytics", label: "分析", icon: BarChart3 },
+  { href: "/analytics/ai-report", label: "AIレポート", icon: Sparkles },
   { href: "/mail", label: "メール確認", icon: Mail },
   { href: "/settings", label: "設定", icon: Settings },
+]
+
+// admin専用ナビ項目
+const adminNavItems = [
+  { href: "/settings/users", label: "ユーザー管理", icon: Users },
 ]
 
 // サイドバーナビリンク
@@ -61,6 +70,8 @@ function isActive(href: string, pathname: string) {
   if (href === "/") return pathname === "/"
   if (href === "/documents/new") return pathname === "/documents/new"
   if (href === "/documents") return pathname === "/documents" || (pathname.startsWith("/documents/") && pathname !== "/documents/new")
+  if (href === "/analytics/ai-report") return pathname === "/analytics/ai-report"
+  if (href === "/analytics") return pathname === "/analytics"
   return pathname.startsWith(href)
 }
 
@@ -68,6 +79,7 @@ function isActive(href: string, pathname: string) {
 export function Sidebar() {
   const pathname = usePathname()
   const { user, signOut } = useAuth()
+  const { isAdmin } = useRole()
 
   // ユーザー表示名（メールアドレスまたはメタデータから取得）
   const displayName =
@@ -85,6 +97,13 @@ export function Sidebar() {
       {/* ナビゲーション */}
       <nav className="flex flex-1 flex-col gap-1 p-4">
         {navItems.map((item) => (
+          <NavLink
+            key={item.href}
+            {...item}
+            active={isActive(item.href, pathname)}
+          />
+        ))}
+        {isAdmin && adminNavItems.map((item) => (
           <NavLink
             key={item.href}
             {...item}
@@ -116,6 +135,7 @@ export function Sidebar() {
 export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname()
   const { user, signOut } = useAuth()
+  const { isAdmin } = useRole()
 
   const displayName =
     user?.user_metadata?.full_name ??
@@ -129,6 +149,14 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       </div>
       <nav className="flex flex-1 flex-col gap-1 p-4">
         {navItems.map((item) => (
+          <NavLink
+            key={item.href}
+            {...item}
+            active={isActive(item.href, pathname)}
+            onClick={onNavigate}
+          />
+        ))}
+        {isAdmin && adminNavItems.map((item) => (
           <NavLink
             key={item.href}
             {...item}
