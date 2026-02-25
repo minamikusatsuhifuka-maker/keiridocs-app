@@ -9,6 +9,7 @@ import {
   Mail,
   Settings,
   LogOut,
+  BarChart3,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -19,6 +20,7 @@ const navItems = [
   { href: "/", label: "ダッシュボード", icon: LayoutDashboard },
   { href: "/documents/new", label: "書類登録", icon: FilePlus },
   { href: "/documents", label: "書類一覧", icon: FileText },
+  { href: "/analytics", label: "分析", icon: BarChart3 },
   { href: "/mail", label: "メール確認", icon: Mail },
   { href: "/settings", label: "設定", icon: Settings },
 ]

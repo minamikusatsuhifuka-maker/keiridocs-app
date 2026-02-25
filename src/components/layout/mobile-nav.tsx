@@ -8,6 +8,7 @@ import {
   FileText,
   Mail,
   Settings,
+  BarChart3,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -15,6 +16,7 @@ const navItems = [
   { href: "/", label: "ホーム", icon: LayoutDashboard },
   { href: "/documents/new", label: "登録", icon: FilePlus },
   { href: "/documents", label: "書類", icon: FileText },
+  { href: "/analytics", label: "分析", icon: BarChart3 },
   { href: "/mail", label: "メール", icon: Mail },
   { href: "/settings", label: "設定", icon: Settings },
 ]

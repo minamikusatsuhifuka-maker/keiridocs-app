@@ -137,6 +137,59 @@ export function applyAutoClassifyRules(
 }
 
 /**
+ * テキストデータからGemini AIで経理情報を抽出する（Word/Excel/CSV用）
+ * @param text 抽出済みのテキストデータ
+ * @param options モデルIDや書類種別リスト
+ * @returns 解析結果と使用モデル名
+ */
+export async function analyzeDocumentFromText(
+  text: string,
+  options?: AnalyzeOptions
+): Promise<OcrResult & { model_used: string }> {
+  const apiKey = process.env.GEMINI_API_KEY
+  if (!apiKey) {
+    console.error("GEMINI_API_KEY が設定されていません")
+    return { ...FALLBACK_RESULT, model_used: "" }
+  }
+
+  const modelId = options?.modelId || DEFAULT_GEMINI_MODEL
+
+  const genAI = new GoogleGenerativeAI(apiKey)
+  const model = genAI.getGenerativeModel({ model: modelId })
+
+  const typeList = options?.documentTypes?.length
+    ? options.documentTypes.join("/")
+    : "請求書/領収書/契約書"
+
+  const prompt = `以下は経理書類（${typeList}など）のテキストデータです。以下の情報をJSON形式で抽出してください。
+
+必ず以下のJSON形式のみで回答してください。余計なテキストは含めないでください。
+
+{
+  "vendor_name": "取引先名（会社名・店舗名）",
+  "amount": 金額（数値、税込。見つからない場合はnull）,
+  "issue_date": "発行日（YYYY-MM-DD形式。見つからない場合はnull）",
+  "due_date": "支払期日（YYYY-MM-DD形式。見つからない場合はnull）",
+  "description": "摘要・品目の要約",
+  "type": "書類種別（${typeList}のいずれか。判別できない場合はnull）",
+  "confidence": 解析の確信度（0.0〜1.0）
+}
+
+--- テキストデータ ---
+${text}`
+
+  try {
+    const result = await model.generateContent(prompt)
+    const responseText = result.response.text()
+    const parsed = parseOcrResponse(responseText)
+    return { ...parsed, model_used: modelId }
+  } catch (error) {
+    console.error("Gemini API エラー (テキスト解析):", error)
+    return { ...FALLBACK_RESULT, model_used: modelId }
+  }
+}
+
+/**
  * Geminiの応答テキストからJSONをパースする
  * 失敗時はフォールバック値を返す
  */

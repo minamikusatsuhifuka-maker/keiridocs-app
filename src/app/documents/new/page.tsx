@@ -118,10 +118,16 @@ export default function NewDocumentPage() {
         throw new Error("ファイルが選択されていません")
       }
 
+      // ファイル名を取得（Word/Excel/CSV判定用）
+      let fileName: string | undefined
+      if (activeTab === "upload" && uploadedFiles.length > 0) {
+        fileName = uploadedFiles[0].name
+      }
+
       const response = await fetch("/api/gemini", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ base64, mimeType }),
+        body: JSON.stringify({ base64, mimeType, fileName }),
       })
 
       if (!response.ok) {
@@ -226,8 +232,18 @@ export default function NewDocumentPage() {
 
         // 拡張子が無い場合はMIMEタイプから追加
         if (!fileName.includes(".")) {
-          const ext = fileMimeType === "application/pdf" ? ".pdf" : ".jpg"
-          fileName += ext
+          const extMap: Record<string, string> = {
+            "application/pdf": ".pdf",
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/heic": ".heic",
+            "image/webp": ".webp",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+            "application/vnd.ms-excel": ".xls",
+            "text/csv": ".csv",
+          }
+          fileName += extMap[fileMimeType] || ".jpg"
         }
 
         // 2. Dropboxにアップロード

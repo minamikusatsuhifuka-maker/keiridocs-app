@@ -2,7 +2,7 @@
 
 import { useRef, useState, useCallback } from "react"
 import { Button } from "@/components/ui/button"
-import { Upload, X, FileText, ImageIcon } from "lucide-react"
+import { Upload, X, FileText, ImageIcon, FileSpreadsheet, Table2 } from "lucide-react"
 
 interface UploadedFile {
   base64: string
@@ -21,16 +21,75 @@ const ACCEPTED_TYPES = [
   "image/jpeg",
   "image/jpg",
   "image/png",
+  "image/heic",
+  "image/webp",
   "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
+  "application/vnd.ms-excel", // .xls
+  "text/csv", // .csv
 ]
 
+// accept属性に指定する拡張子リスト
+const ACCEPT_EXTENSIONS = ".jpg,.jpeg,.png,.heic,.webp,.pdf,.docx,.xlsx,.xls,.csv"
+
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
+
+/** 拡張子からMIMEタイプを補正する（ブラウザがMIMEを正しく判定しない場合用） */
+function normalizeMimeType(file: File): string {
+  if (ACCEPTED_TYPES.includes(file.type)) return file.type
+  const ext = file.name.split(".").pop()?.toLowerCase()
+  switch (ext) {
+    case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    case "xls": return "application/vnd.ms-excel"
+    case "csv": return "text/csv"
+    case "heic": return "image/heic"
+    case "webp": return "image/webp"
+    default: return file.type
+  }
+}
 
 /** ファイルサイズを読みやすい形式に変換 */
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** MIMEタイプに応じたアイコンを返す */
+function FileIcon({ mimeType, name }: { mimeType: string; name: string }) {
+  const ext = name.split(".").pop()?.toLowerCase()
+
+  // Word
+  if (
+    mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    ext === "docx"
+  ) {
+    return <FileText className="size-6 text-blue-600" />
+  }
+
+  // Excel
+  if (
+    mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    mimeType === "application/vnd.ms-excel" ||
+    ext === "xlsx" || ext === "xls"
+  ) {
+    return <FileSpreadsheet className="size-6 text-green-600" />
+  }
+
+  // CSV
+  if (mimeType === "text/csv" || ext === "csv") {
+    return <Table2 className="size-6 text-orange-600" />
+  }
+
+  // PDF
+  if (mimeType === "application/pdf") {
+    return <FileText className="size-6 text-red-600" />
+  }
+
+  // その他（画像など）
+  return <ImageIcon className="size-6 text-muted-foreground" />
 }
 
 // ファイルドロップゾーン
@@ -43,7 +102,8 @@ export function FileDropzone({ onFilesChange, files }: FileDropzoneProps) {
   const processFile = useCallback(
     (file: File): Promise<UploadedFile> => {
       return new Promise((resolve, reject) => {
-        if (!ACCEPTED_TYPES.includes(file.type)) {
+        const mimeType = normalizeMimeType(file)
+        if (!ACCEPTED_TYPES.includes(mimeType)) {
           reject(new Error(`非対応の形式です: ${file.name}`))
           return
         }
@@ -62,7 +122,7 @@ export function FileDropzone({ onFilesChange, files }: FileDropzoneProps) {
 
           resolve({
             base64,
-            mimeType: file.type,
+            mimeType,
             name: file.name,
             size: file.size,
             preview,
@@ -153,7 +213,10 @@ export function FileDropzone({ onFilesChange, files }: FileDropzoneProps) {
             ファイルをドラッグ&ドロップ
           </p>
           <p className="text-xs text-muted-foreground">
-            または クリックして選択（JPG, PNG, PDF / 最大10MB）
+            または クリックして選択（最大10MB）
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            JPG, PNG, HEIC, WebP, PDF, Word, Excel, CSV
           </p>
         </div>
       </div>
@@ -161,7 +224,7 @@ export function FileDropzone({ onFilesChange, files }: FileDropzoneProps) {
       <input
         ref={inputRef}
         type="file"
-        accept=".jpg,.jpeg,.png,.pdf"
+        accept={ACCEPT_EXTENSIONS}
         multiple
         onChange={handleFileInput}
         className="hidden"
@@ -192,11 +255,7 @@ export function FileDropzone({ onFilesChange, files }: FileDropzoneProps) {
                   />
                 ) : (
                   <div className="flex size-12 items-center justify-center rounded bg-muted">
-                    {file.mimeType === "application/pdf" ? (
-                      <FileText className="size-6 text-muted-foreground" />
-                    ) : (
-                      <ImageIcon className="size-6 text-muted-foreground" />
-                    )}
+                    <FileIcon mimeType={file.mimeType} name={file.name} />
                   </div>
                 )}
                 {/* ファイル情報 */}
