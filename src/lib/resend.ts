@@ -1,7 +1,10 @@
 // メール送信（Resend）
 import { Resend } from "resend"
 
-const resend = new Resend(process.env.RESEND_API_KEY)
+// APIキーが未設定の場合はインスタンスを作成しない（ビルド時のエラー回避）
+const resend = process.env.RESEND_API_KEY
+  ? new Resend(process.env.RESEND_API_KEY)
+  : null
 
 // 送信元アドレス（Resendで認証済みのドメインを使用）
 const FROM_EMAIL = process.env.RESEND_FROM_EMAIL ?? "経理書類管理 <noreply@resend.dev>"
@@ -93,6 +96,7 @@ export async function sendDueDateAlert(
   items: DueDateAlertItem[]
 ): Promise<{ success: boolean; error?: string }> {
   if (items.length === 0) return { success: true }
+  if (!resend) return { success: false, error: "RESEND_API_KEY が設定されていません" }
 
   const html = wrapHtml(
     "支払期限アラート",
@@ -191,6 +195,8 @@ export async function sendMonthSummary(
   to: string[],
   data: MonthSummaryData
 ): Promise<{ success: boolean; error?: string }> {
+  if (!resend) return { success: false, error: "RESEND_API_KEY が設定されていません" }
+
   const html = wrapHtml(
     `${data.year}年${data.month}月 書類まとめ`,
     buildMonthSummaryHtml(data)
@@ -262,6 +268,7 @@ export async function sendUnapprovedMailNotify(
   items: UnapprovedMailItem[]
 ): Promise<{ success: boolean; error?: string }> {
   if (items.length === 0) return { success: true }
+  if (!resend) return { success: false, error: "RESEND_API_KEY が設定されていません" }
 
   const html = wrapHtml(
     "未承認メール通知",
