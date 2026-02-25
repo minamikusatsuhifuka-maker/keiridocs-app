@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -34,6 +34,10 @@ interface UploadedFile {
   preview: string | null
 }
 
+interface DocumentTypeRecord {
+  name: string
+}
+
 // 書類登録ページ
 export default function NewDocumentPage() {
   const router = useRouter()
@@ -47,9 +51,31 @@ export default function NewDocumentPage() {
 
   // AI解析結果
   const [ocrResult, setOcrResult] = useState<OcrResult | null>(null)
+  const [modelUsed, setModelUsed] = useState<string>("")
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showEditor, setShowEditor] = useState(false)
+
+  // 動的書類種別
+  const [documentTypes, setDocumentTypes] = useState<DocumentTypeRecord[]>([])
+
+  // 書類種別リストを取得
+  useEffect(() => {
+    async function fetchTypes() {
+      try {
+        const res = await fetch("/api/settings?table=document_types")
+        if (!res.ok) return
+        const json = await res.json() as { data: DocumentTypeRecord[] }
+        if (json.data && json.data.length > 0) {
+          setDocumentTypes(json.data)
+          setDocumentType(json.data[0].name)
+        }
+      } catch {
+        // フォールバック: デフォルト種別を使う
+      }
+    }
+    fetchTypes()
+  }, [])
 
   // ファイルデータがあるかどうか
   const hasFiles =
@@ -88,8 +114,9 @@ export default function NewDocumentPage() {
         throw new Error(errorData.error || "AI解析に失敗しました")
       }
 
-      const { data } = await response.json() as { data: OcrResult }
-      setOcrResult(data)
+      const json = await response.json() as { data: OcrResult; model_used?: string }
+      setOcrResult(json.data)
+      if (json.model_used) setModelUsed(json.model_used)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "AI解析に失敗しました")
       // エラー時もフォームを表示（手動入力可能）
@@ -246,9 +273,17 @@ export default function NewDocumentPage() {
                 <SelectValue placeholder="種別を選択" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="請求書">請求書</SelectItem>
-                <SelectItem value="領収書">領収書</SelectItem>
-                <SelectItem value="契約書">契約書</SelectItem>
+                {documentTypes.length > 0 ? (
+                  documentTypes.map((dt) => (
+                    <SelectItem key={dt.name} value={dt.name}>{dt.name}</SelectItem>
+                  ))
+                ) : (
+                  <>
+                    <SelectItem value="請求書">請求書</SelectItem>
+                    <SelectItem value="領収書">領収書</SelectItem>
+                    <SelectItem value="契約書">契約書</SelectItem>
+                  </>
+                )}
               </SelectContent>
             </Select>
           </div>
@@ -315,6 +350,8 @@ export default function NewDocumentPage() {
           isAnalyzing={isAnalyzing}
           isSubmitting={isSubmitting}
           onSubmit={handleSubmit}
+          modelUsed={modelUsed}
+          documentTypes={documentTypes.length > 0 ? documentTypes : undefined}
         />
       )}
     </div>

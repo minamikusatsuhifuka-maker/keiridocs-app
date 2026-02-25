@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -23,7 +23,7 @@ type SortDirection = "asc" | "desc"
 
 const PAGE_SIZE = 20
 
-const typeOptions: { value: string; label: string }[] = [
+const DEFAULT_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "all", label: "すべての種別" },
   { value: "請求書", label: "請求書" },
   { value: "領収書", label: "領収書" },
@@ -41,6 +41,35 @@ export default function DocumentsPage() {
   const [documents, setDocuments] = useState<Document[]>([])
   const [totalCount, setTotalCount] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
+
+  // 動的書類種別
+  const [dynamicTypes, setDynamicTypes] = useState<{ name: string }[]>([])
+
+  // 動的種別をフィルタオプションに変換
+  const typeOptions = useMemo(() => {
+    if (dynamicTypes.length === 0) return DEFAULT_TYPE_OPTIONS
+    return [
+      { value: "all", label: "すべての種別" },
+      ...dynamicTypes.map((t) => ({ value: t.name, label: t.name })),
+    ]
+  }, [dynamicTypes])
+
+  // 書類種別リストを取得
+  useEffect(() => {
+    async function fetchTypes() {
+      try {
+        const res = await fetch("/api/settings?table=document_types")
+        if (!res.ok) return
+        const json = await res.json() as { data: { name: string }[] }
+        if (json.data && json.data.length > 0) {
+          setDynamicTypes(json.data)
+        }
+      } catch {
+        // フォールバック: デフォルトを使う
+      }
+    }
+    fetchTypes()
+  }, [])
 
   // フィルタ
   const [search, setSearch] = useState("")

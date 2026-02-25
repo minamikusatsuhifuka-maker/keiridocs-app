@@ -171,6 +171,39 @@ export interface Database {
         }
         Relationships: []
       }
+      document_types: {
+        Row: {
+          id: string
+          name: string
+          dropbox_folder: string | null
+          icon: string | null
+          sort_order: number
+          is_default: boolean
+          user_id: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          name: string
+          dropbox_folder?: string | null
+          icon?: string | null
+          sort_order?: number
+          is_default?: boolean
+          user_id: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          name?: string
+          dropbox_folder?: string | null
+          icon?: string | null
+          sort_order?: number
+          is_default?: boolean
+          user_id?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
       custom_folders: {
         Row: {
           id: string

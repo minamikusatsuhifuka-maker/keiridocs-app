@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { analyzeDocument } from "@/lib/gemini"
+import { analyzeDocument, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
 
 // Gemini AI解析 API
 export async function POST(request: NextRequest) {
@@ -48,9 +48,31 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const result = await analyzeDocument(base64, mimeType)
+    // settingsからGeminiモデル設定を取得
+    const { data: modelSetting } = await supabase
+      .from("settings")
+      .select("value")
+      .eq("user_id", user.id)
+      .eq("key", "gemini_model")
+      .maybeSingle()
 
-    return NextResponse.json({ data: result })
+    const modelId = (typeof modelSetting?.value === "string" ? modelSetting.value : null) || DEFAULT_GEMINI_MODEL
+
+    // settingsからdocument_typesを取得（種別判定に使う）
+    const { data: docTypes } = await supabase
+      .from("document_types")
+      .select("name")
+      .eq("user_id", user.id)
+      .order("sort_order", { ascending: true })
+
+    const documentTypes = docTypes?.map((t) => t.name)
+
+    const result = await analyzeDocument(base64, mimeType, { modelId, documentTypes })
+
+    return NextResponse.json({
+      data: result,
+      model_used: result.model_used,
+    })
   } catch (error) {
     console.error("Gemini API エラー:", error)
     return NextResponse.json(

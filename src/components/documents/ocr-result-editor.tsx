@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
 import { Loader2, Save, Sparkles } from "lucide-react"
 import type { OcrResult } from "@/lib/gemini"
 
@@ -31,6 +32,10 @@ interface OcrResultEditorProps {
   isAnalyzing: boolean
   isSubmitting: boolean
   onSubmit: (data: DocumentFormData) => void
+  /** 使用されたGeminiモデル名 */
+  modelUsed?: string
+  /** 動的な書類種別リスト */
+  documentTypes?: { name: string }[]
 }
 
 // OCR結果編集コンポーネント
@@ -40,6 +45,8 @@ export function OcrResultEditor({
   isAnalyzing,
   isSubmitting,
   onSubmit,
+  modelUsed,
+  documentTypes,
 }: OcrResultEditorProps) {
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm<DocumentFormData>({
     defaultValues: {
@@ -71,11 +78,18 @@ export function OcrResultEditor({
           <Sparkles className="size-4" />
           {isAnalyzing ? "AI解析中..." : "解析結果を確認"}
         </CardTitle>
-        {ocrResult && ocrResult.confidence > 0 && (
-          <p className="text-xs text-muted-foreground">
-            AI確信度: {Math.round(ocrResult.confidence * 100)}%
-          </p>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {modelUsed && (
+            <Badge variant="secondary" className="text-xs font-normal">
+              使用モデル: {modelUsed}
+            </Badge>
+          )}
+          {ocrResult && ocrResult.confidence > 0 && (
+            <p className="text-xs text-muted-foreground">
+              AI確信度: {Math.round(ocrResult.confidence * 100)}%
+            </p>
+          )}
+        </div>
       </CardHeader>
       <CardContent>
         {isAnalyzing ? (
@@ -98,9 +112,17 @@ export function OcrResultEditor({
                   <SelectValue placeholder="種別を選択" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="請求書">請求書</SelectItem>
-                  <SelectItem value="領収書">領収書</SelectItem>
-                  <SelectItem value="契約書">契約書</SelectItem>
+                  {documentTypes && documentTypes.length > 0 ? (
+                    documentTypes.map((dt) => (
+                      <SelectItem key={dt.name} value={dt.name}>{dt.name}</SelectItem>
+                    ))
+                  ) : (
+                    <>
+                      <SelectItem value="請求書">請求書</SelectItem>
+                      <SelectItem value="領収書">領収書</SelectItem>
+                      <SelectItem value="契約書">契約書</SelectItem>
+                    </>
+                  )}
                 </SelectContent>
               </Select>
             </div>
