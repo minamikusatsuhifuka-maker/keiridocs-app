@@ -3,9 +3,9 @@ import { createClient } from "@/lib/supabase/server"
 import { getCurrentUserRole } from "@/lib/auth"
 
 // 対象テーブル名の型
-type SettingsTable = "settings" | "allowed_senders" | "notify_recipients" | "custom_folders" | "document_types" | "auto_classify_rules"
+type SettingsTable = "settings" | "allowed_senders" | "notify_recipients" | "custom_folders" | "document_types" | "auto_classify_rules" | "download_sources"
 
-const ALLOWED_TABLES: SettingsTable[] = ["settings", "allowed_senders", "notify_recipients", "custom_folders", "document_types", "auto_classify_rules"]
+const ALLOWED_TABLES: SettingsTable[] = ["settings", "allowed_senders", "notify_recipients", "custom_folders", "document_types", "auto_classify_rules", "download_sources"]
 
 // テーブル名のバリデーション
 function validateTable(table: string | null): table is SettingsTable {
@@ -60,6 +60,10 @@ export async function GET(request: NextRequest) {
 
   if (table === "auto_classify_rules") {
     query.order("priority", { ascending: false })
+  }
+
+  if (table === "download_sources") {
+    query.order("created_at", { ascending: true })
   }
 
   const { data, error } = await query
@@ -230,6 +234,32 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ data }, { status: 201 })
     }
 
+    if (table === "download_sources") {
+      const name = body.name
+      if (typeof name !== "string" || name.trim() === "") {
+        return NextResponse.json({ error: "ソース名は必須です" }, { status: 400 })
+      }
+
+      const { data, error } = await supabase
+        .from("download_sources")
+        .insert({
+          name: name.trim(),
+          url: typeof body.url === "string" ? body.url : null,
+          description: typeof body.description === "string" ? body.description : null,
+          schedule: typeof body.schedule === "string" ? body.schedule : "manual",
+          is_active: typeof body.is_active === "boolean" ? body.is_active : true,
+          user_id: user.id,
+        })
+        .select()
+        .single()
+
+      if (error) {
+        console.error("DLソース追加エラー:", error)
+        return NextResponse.json({ error: "DLソースの追加に失敗しました" }, { status: 500 })
+      }
+      return NextResponse.json({ data }, { status: 201 })
+    }
+
     // custom_folders
     const name = body.name
     if (typeof name !== "string" || name.trim() === "") {
@@ -391,6 +421,33 @@ export async function PATCH(request: NextRequest) {
       if (error) {
         console.error("自動仕分けルール更新エラー:", error)
         return NextResponse.json({ error: "自動仕分けルールの更新に失敗しました" }, { status: 500 })
+      }
+      return NextResponse.json({ data })
+    }
+
+    if (table === "download_sources") {
+      const update: Record<string, unknown> = {}
+      if (typeof body.name === "string") update.name = body.name.trim()
+      if (typeof body.url === "string") update.url = body.url
+      if (body.url === null) update.url = null
+      if (typeof body.description === "string") update.description = body.description
+      if (body.description === null) update.description = null
+      if (typeof body.schedule === "string") update.schedule = body.schedule
+      if (typeof body.is_active === "boolean") update.is_active = body.is_active
+      if (typeof body.last_downloaded_at === "string") update.last_downloaded_at = body.last_downloaded_at
+      if (body.last_downloaded_at === null) update.last_downloaded_at = null
+
+      const { data, error } = await supabase
+        .from("download_sources")
+        .update(update)
+        .eq("id", id)
+        .eq("user_id", user.id)
+        .select()
+        .single()
+
+      if (error) {
+        console.error("DLソース更新エラー:", error)
+        return NextResponse.json({ error: "DLソースの更新に失敗しました" }, { status: 500 })
       }
       return NextResponse.json({ data })
     }

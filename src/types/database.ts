@@ -234,6 +234,45 @@ export interface Database {
         }
         Relationships: []
       }
+      download_sources: {
+        Row: {
+          id: string
+          name: string
+          url: string | null
+          description: string | null
+          schedule: string
+          last_downloaded_at: string | null
+          is_active: boolean
+          login_info_encrypted: string | null
+          user_id: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          name: string
+          url?: string | null
+          description?: string | null
+          schedule?: string
+          last_downloaded_at?: string | null
+          is_active?: boolean
+          login_info_encrypted?: string | null
+          user_id: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          name?: string
+          url?: string | null
+          description?: string | null
+          schedule?: string
+          last_downloaded_at?: string | null
+          is_active?: boolean
+          login_info_encrypted?: string | null
+          user_id?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
       custom_folders: {
         Row: {
           id: string
