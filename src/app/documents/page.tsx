@@ -12,7 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { DocumentTable } from "@/components/documents/document-table"
-import { Loader2, Plus, Search, X } from "lucide-react"
+import { Download, Loader2, Plus, Search, X } from "lucide-react"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
@@ -156,6 +156,86 @@ export default function DocumentsPage() {
     setPage(0)
   }
 
+  // CSVエクスポート
+  const [isExporting, setIsExporting] = useState(false)
+
+  async function handleExportCsv() {
+    setIsExporting(true)
+    try {
+      // 現在のフィルタ条件で全件取得（ページネーションなし）
+      const params = new URLSearchParams()
+      params.set("limit", "10000")
+      params.set("offset", "0")
+      params.set("sort", sortField)
+      params.set("direction", sortDirection)
+
+      if (search) params.set("search", search)
+      if (typeFilter !== "all") params.set("type", typeFilter)
+      if (statusFilter !== "all") params.set("status", statusFilter)
+      if (dateFrom) params.set("date_from", dateFrom)
+      if (dateTo) params.set("date_to", dateTo)
+
+      const res = await fetch(`/api/documents?${params.toString()}`)
+      if (!res.ok) throw new Error("データの取得に失敗しました")
+      const json = await res.json() as { data: Document[] }
+      const allDocs = json.data ?? []
+
+      // CSVヘッダー
+      const headers = ["種別", "取引先名", "金額", "発行日", "支払期日", "ステータス", "摘要", "入力経路", "登録日時"]
+
+      // CSV行を生成
+      const rows = allDocs.map((doc) => [
+        doc.type,
+        doc.vendor_name,
+        doc.amount != null ? String(doc.amount) : "",
+        doc.issue_date ?? "",
+        doc.due_date ?? "",
+        doc.status,
+        doc.description ?? "",
+        doc.input_method,
+        doc.created_at ? new Date(doc.created_at).toLocaleString("ja-JP") : "",
+      ])
+
+      // CSVセルをエスケープ（ダブルクォートやカンマを含む場合）
+      function escapeCsvCell(value: string): string {
+        if (value.includes(",") || value.includes('"') || value.includes("\n")) {
+          return `"${value.replace(/"/g, '""')}"`
+        }
+        return value
+      }
+
+      const csvContent = [
+        headers.map(escapeCsvCell).join(","),
+        ...rows.map((row) => row.map(escapeCsvCell).join(",")),
+      ].join("\n")
+
+      // UTF-8 BOM付きでBlobを生成（Excel文字化け対策）
+      const bom = new Uint8Array([0xEF, 0xBB, 0xBF])
+      const blob = new Blob([bom, csvContent], { type: "text/csv;charset=utf-8" })
+
+      // ファイル名: 経理書類_YYYY-MM-DD.csv
+      const today = new Date()
+      const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`
+      const fileName = `経理書類_${dateStr}.csv`
+
+      // ダウンロード
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = fileName
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+
+      toast.success(`${allDocs.length}件のデータをエクスポートしました`)
+    } catch {
+      toast.error("CSVエクスポートに失敗しました")
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
   const hasFilters = search || typeFilter !== "all" || statusFilter !== "all" || dateFrom || dateTo
 
   return (
@@ -236,6 +316,11 @@ export default function DocumentsPage() {
               リセット
             </Button>
           )}
+
+          <Button variant="outline" size="sm" onClick={handleExportCsv} disabled={isExporting}>
+            {isExporting ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+            CSVエクスポート
+          </Button>
         </div>
       </div>
 

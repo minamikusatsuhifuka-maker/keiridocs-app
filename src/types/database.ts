@@ -204,6 +204,36 @@ export interface Database {
         }
         Relationships: []
       }
+      auto_classify_rules: {
+        Row: {
+          id: string
+          keyword: string
+          document_type: string
+          priority: number
+          is_active: boolean
+          user_id: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          keyword: string
+          document_type: string
+          priority?: number
+          is_active?: boolean
+          user_id: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          keyword?: string
+          document_type?: string
+          priority?: number
+          is_active?: boolean
+          user_id?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
       custom_folders: {
         Row: {
           id: string

@@ -59,22 +59,37 @@ export default function NewDocumentPage() {
   // 動的書類種別
   const [documentTypes, setDocumentTypes] = useState<DocumentTypeRecord[]>([])
 
-  // 書類種別リストを取得
+  // 自動解析モード
+  const [autoAnalyzeMode, setAutoAnalyzeMode] = useState(false)
+
+  // 書類種別リスト・自動解析モード設定を取得
   useEffect(() => {
-    async function fetchTypes() {
+    async function fetchSettings() {
       try {
-        const res = await fetch("/api/settings?table=document_types")
-        if (!res.ok) return
-        const json = await res.json() as { data: DocumentTypeRecord[] }
-        if (json.data && json.data.length > 0) {
-          setDocumentTypes(json.data)
-          setDocumentType(json.data[0].name)
+        const [typesRes, modeRes] = await Promise.all([
+          fetch("/api/settings?table=document_types"),
+          fetch("/api/settings?table=settings&key=auto_analyze_mode"),
+        ])
+
+        if (typesRes.ok) {
+          const json = await typesRes.json() as { data: DocumentTypeRecord[] }
+          if (json.data && json.data.length > 0) {
+            setDocumentTypes(json.data)
+            setDocumentType(json.data[0].name)
+          }
+        }
+
+        if (modeRes.ok) {
+          const json = await modeRes.json() as { data: { value: unknown } | null }
+          if (json.data && json.data.value === "auto") {
+            setAutoAnalyzeMode(true)
+          }
         }
       } catch {
-        // フォールバック: デフォルト種別を使う
+        // フォールバック: デフォルト値を使う
       }
     }
-    fetchTypes()
+    fetchSettings()
   }, [])
 
   // ファイルデータがあるかどうか
@@ -125,6 +140,20 @@ export default function NewDocumentPage() {
       setIsAnalyzing(false)
     }
   }, [activeTab, capturedImages, uploadedFiles])
+
+  // 自動解析モード: ファイルが追加されたら自動でAI解析を実行
+  useEffect(() => {
+    if (!autoAnalyzeMode) return
+    if (isAnalyzing || showEditor) return
+
+    const hasData =
+      (activeTab === "camera" && capturedImages.length > 0) ||
+      (activeTab === "upload" && uploadedFiles.length > 0)
+
+    if (hasData) {
+      runAnalysis()
+    }
+  }, [autoAnalyzeMode, capturedImages, uploadedFiles, activeTab, isAnalyzing, showEditor, runAnalysis])
 
   // 書類を登録する
   const handleSubmit = useCallback(

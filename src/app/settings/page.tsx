@@ -8,7 +8,8 @@ import { NotificationSettings } from "@/components/settings/notification-setting
 import { AccountSettings } from "@/components/settings/account-settings"
 import { AiSettings } from "@/components/settings/ai-settings"
 import { DocumentTypeSettings } from "@/components/settings/document-type-settings"
-import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType } from "lucide-react"
+import { AutoClassifySettings } from "@/components/settings/auto-classify-settings"
+import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal } from "lucide-react"
 
 // 設定画面（5タブ構成）
 export default function SettingsPage() {
@@ -29,6 +30,10 @@ export default function SettingsPage() {
           <TabsTrigger value="doc-types" className="flex items-center gap-1.5">
             <FileType className="size-4" />
             書類種別
+          </TabsTrigger>
+          <TabsTrigger value="auto-classify" className="flex items-center gap-1.5">
+            <SlidersHorizontal className="size-4" />
+            自動仕分け
           </TabsTrigger>
           <TabsTrigger value="folders" className="flex items-center gap-1.5">
             <FolderOpen className="size-4" />
@@ -58,6 +63,10 @@ export default function SettingsPage() {
 
         <TabsContent value="doc-types">
           <DocumentTypeSettings />
+        </TabsContent>
+
+        <TabsContent value="auto-classify">
+          <AutoClassifySettings />
         </TabsContent>
 
         <TabsContent value="folders">

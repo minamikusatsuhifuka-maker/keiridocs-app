@@ -16,20 +16,36 @@ import { Loader2, Save } from "lucide-react"
 import { toast } from "sonner"
 import { GEMINI_MODELS, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
 
+/** 自動解析モードの選択肢 */
+type AnalyzeMode = "manual" | "auto"
+
 // AI設定コンポーネント
 export function AiSettings() {
   const [currentModel, setCurrentModel] = useState(DEFAULT_GEMINI_MODEL)
+  const [analyzeMode, setAnalyzeMode] = useState<AnalyzeMode>("manual")
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
 
   // 現在の設定を取得
   const fetchSetting = useCallback(async () => {
     try {
-      const res = await fetch("/api/settings?table=settings&key=gemini_model")
-      if (!res.ok) throw new Error()
-      const json = await res.json() as { data: { value: unknown } | null }
-      if (json.data && typeof json.data.value === "string") {
-        setCurrentModel(json.data.value)
+      const [modelRes, modeRes] = await Promise.all([
+        fetch("/api/settings?table=settings&key=gemini_model"),
+        fetch("/api/settings?table=settings&key=auto_analyze_mode"),
+      ])
+
+      if (modelRes.ok) {
+        const json = await modelRes.json() as { data: { value: unknown } | null }
+        if (json.data && typeof json.data.value === "string") {
+          setCurrentModel(json.data.value)
+        }
+      }
+
+      if (modeRes.ok) {
+        const json = await modeRes.json() as { data: { value: unknown } | null }
+        if (json.data && (json.data.value === "auto" || json.data.value === "manual")) {
+          setAnalyzeMode(json.data.value as AnalyzeMode)
+        }
       }
     } catch {
       // 未設定の場合はデフォルトのまま
@@ -46,13 +62,20 @@ export function AiSettings() {
   const handleSave = async () => {
     setIsSaving(true)
     try {
-      const res = await fetch("/api/settings?table=settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: "gemini_model", value: currentModel }),
-      })
-      if (!res.ok) throw new Error()
-      toast.success("AIモデル設定を保存しました")
+      const [modelRes, modeRes] = await Promise.all([
+        fetch("/api/settings?table=settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: "gemini_model", value: currentModel }),
+        }),
+        fetch("/api/settings?table=settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: "auto_analyze_mode", value: analyzeMode }),
+        }),
+      ])
+      if (!modelRes.ok || !modeRes.ok) throw new Error()
+      toast.success("AI設定を保存しました")
     } catch {
       toast.error("設定の保存に失敗しました")
     } finally {
@@ -105,6 +128,30 @@ export function AiSettings() {
                   </div>
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {/* アップロード時の動作 */}
+        <div className="space-y-2">
+          <Label htmlFor="analyze-mode">アップロード時の動作</Label>
+          <Select value={analyzeMode} onValueChange={(v) => setAnalyzeMode(v as AnalyzeMode)}>
+            <SelectTrigger id="analyze-mode" className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="manual">
+                <div className="flex flex-col">
+                  <span>手動解析</span>
+                  <span className="text-xs text-muted-foreground">「AI解析して次へ」ボタンで解析開始</span>
+                </div>
+              </SelectItem>
+              <SelectItem value="auto">
+                <div className="flex flex-col">
+                  <span>自動解析</span>
+                  <span className="text-xs text-muted-foreground">ファイルアップロード後に自動でAI解析を開始</span>
+                </div>
+              </SelectItem>
             </SelectContent>
           </Select>
         </div>

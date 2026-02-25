@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { analyzeDocument, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
+import { analyzeDocument, applyAutoClassifyRules, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
+import type { AutoClassifyRule } from "@/lib/gemini"
 
 // Gemini AI解析 API
 export async function POST(request: NextRequest) {
@@ -69,9 +70,21 @@ export async function POST(request: NextRequest) {
 
     const result = await analyzeDocument(base64, mimeType, { modelId, documentTypes })
 
+    // 自動仕分けルールを取得して適用（AIの判定より優先）
+    const { data: classifyRules } = await supabase
+      .from("auto_classify_rules")
+      .select("keyword, document_type, priority, is_active")
+      .eq("user_id", user.id)
+
+    let finalResult = result
+    if (classifyRules && classifyRules.length > 0) {
+      const applied = applyAutoClassifyRules(result, classifyRules as AutoClassifyRule[])
+      finalResult = { ...applied, model_used: result.model_used }
+    }
+
     return NextResponse.json({
-      data: result,
-      model_used: result.model_used,
+      data: finalResult,
+      model_used: finalResult.model_used,
     })
   } catch (error) {
     console.error("Gemini API エラー:", error)

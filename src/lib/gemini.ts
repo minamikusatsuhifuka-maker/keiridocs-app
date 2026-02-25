@@ -103,6 +103,39 @@ export async function analyzeDocument(
   }
 }
 
+/** 自動仕分けルールの型 */
+export interface AutoClassifyRule {
+  keyword: string
+  document_type: string
+  priority: number
+  is_active: boolean
+}
+
+/**
+ * AI解析結果に自動仕分けルールを適用する
+ * 取引先名や摘要にキーワードが含まれていたら、そのルールの種別を自動設定する
+ * AIの判定より自動仕分けルールを優先
+ */
+export function applyAutoClassifyRules(
+  result: OcrResult,
+  rules: AutoClassifyRule[]
+): OcrResult {
+  // 有効なルールのみ、優先度の高い順に適用
+  const activeRules = rules
+    .filter((r) => r.is_active)
+    .sort((a, b) => b.priority - a.priority)
+
+  const searchText = `${result.vendor_name} ${result.description ?? ""}`.toLowerCase()
+
+  for (const rule of activeRules) {
+    if (searchText.includes(rule.keyword.toLowerCase())) {
+      return { ...result, type: rule.document_type }
+    }
+  }
+
+  return result
+}
+
 /**
  * Geminiの応答テキストからJSONをパースする
  * 失敗時はフォールバック値を返す

@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 
 // 対象テーブル名の型
-type SettingsTable = "settings" | "allowed_senders" | "notify_recipients" | "custom_folders" | "document_types"
+type SettingsTable = "settings" | "allowed_senders" | "notify_recipients" | "custom_folders" | "document_types" | "auto_classify_rules"
 
-const ALLOWED_TABLES: SettingsTable[] = ["settings", "allowed_senders", "notify_recipients", "custom_folders", "document_types"]
+const ALLOWED_TABLES: SettingsTable[] = ["settings", "allowed_senders", "notify_recipients", "custom_folders", "document_types", "auto_classify_rules"]
 
 // テーブル名のバリデーション
 function validateTable(table: string | null): table is SettingsTable {
@@ -55,6 +55,10 @@ export async function GET(request: NextRequest) {
 
   if (table === "document_types") {
     query.order("sort_order", { ascending: true })
+  }
+
+  if (table === "auto_classify_rules") {
+    query.order("priority", { ascending: false })
   }
 
   const { data, error } = await query
@@ -183,6 +187,38 @@ export async function POST(request: NextRequest) {
       if (error) {
         console.error("書類種別追加エラー:", error)
         return NextResponse.json({ error: "書類種別の追加に失敗しました" }, { status: 500 })
+      }
+      return NextResponse.json({ data }, { status: 201 })
+    }
+
+    if (table === "auto_classify_rules") {
+      const keyword = body.keyword
+      const document_type = body.document_type
+      if (typeof keyword !== "string" || keyword.trim() === "") {
+        return NextResponse.json({ error: "キーワードは必須です" }, { status: 400 })
+      }
+      if (typeof document_type !== "string" || document_type.trim() === "") {
+        return NextResponse.json({ error: "書類種別は必須です" }, { status: 400 })
+      }
+
+      const { data, error } = await supabase
+        .from("auto_classify_rules")
+        .insert({
+          keyword: keyword.trim(),
+          document_type: document_type.trim(),
+          priority: typeof body.priority === "number" ? body.priority : 0,
+          is_active: typeof body.is_active === "boolean" ? body.is_active : true,
+          user_id: user.id,
+        })
+        .select()
+        .single()
+
+      if (error) {
+        console.error("自動仕分けルール追加エラー:", error)
+        if (error.code === "23505") {
+          return NextResponse.json({ error: "同じキーワードのルールが既に存在します" }, { status: 409 })
+        }
+        return NextResponse.json({ error: "自動仕分けルールの追加に失敗しました" }, { status: 500 })
       }
       return NextResponse.json({ data }, { status: 201 })
     }
@@ -320,6 +356,28 @@ export async function PATCH(request: NextRequest) {
       if (error) {
         console.error("書類種別更新エラー:", error)
         return NextResponse.json({ error: "書類種別の更新に失敗しました" }, { status: 500 })
+      }
+      return NextResponse.json({ data })
+    }
+
+    if (table === "auto_classify_rules") {
+      const update: Record<string, unknown> = {}
+      if (typeof body.keyword === "string") update.keyword = body.keyword.trim()
+      if (typeof body.document_type === "string") update.document_type = body.document_type.trim()
+      if (typeof body.priority === "number") update.priority = body.priority
+      if (typeof body.is_active === "boolean") update.is_active = body.is_active
+
+      const { data, error } = await supabase
+        .from("auto_classify_rules")
+        .update(update)
+        .eq("id", id)
+        .eq("user_id", user.id)
+        .select()
+        .single()
+
+      if (error) {
+        console.error("自動仕分けルール更新エラー:", error)
+        return NextResponse.json({ error: "自動仕分けルールの更新に失敗しました" }, { status: 500 })
       }
       return NextResponse.json({ data })
     }
