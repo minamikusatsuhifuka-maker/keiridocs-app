@@ -1,0 +1,22 @@
+{
+  "allowedTools": [
+    "Edit",
+    "Write",
+    "MultiEdit",
+    "Bash(npm run *)",
+    "Bash(npx *)",
+    "Bash(node *)",
+    "Bash(git add *)",
+    "Bash(git commit *)",
+    "Bash(git status)",
+    "Bash(git diff *)",
+    "Bash(git log *)",
+    "Bash(ls *)",
+    "Bash(cat *)",
+    "Bash(mkdir *)",
+    "Bash(cd *)",
+    "Bash(pwd)",
+    "Bash(echo *)",
+    "Bash(rm *)"
+  ]
+}
