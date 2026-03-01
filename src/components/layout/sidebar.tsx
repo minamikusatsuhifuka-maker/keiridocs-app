@@ -13,6 +13,7 @@ import {
   Sparkles,
   Users,
   Download,
+  Briefcase,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -27,6 +28,7 @@ const navItems = [
   { href: "/analytics", label: "分析", icon: BarChart3 },
   { href: "/analytics/ai-report", label: "AIレポート", icon: Sparkles },
   { href: "/downloads", label: "自動取得", icon: Download },
+  { href: "/accountant", label: "税理士提出", icon: Briefcase },
   { href: "/mail", label: "メール確認", icon: Mail },
   { href: "/settings", label: "設定", icon: Settings },
 ]

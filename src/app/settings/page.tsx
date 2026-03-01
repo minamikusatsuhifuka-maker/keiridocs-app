@@ -10,7 +10,8 @@ import { AiSettings } from "@/components/settings/ai-settings"
 import { DocumentTypeSettings } from "@/components/settings/document-type-settings"
 import { AutoClassifySettings } from "@/components/settings/auto-classify-settings"
 import { DownloadSourceSettings } from "@/components/settings/download-source-settings"
-import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download } from "lucide-react"
+import { AccountantSettings } from "@/components/settings/accountant-settings"
+import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase } from "lucide-react"
 
 // 設定画面（5タブ構成）
 export default function SettingsPage() {
@@ -48,6 +49,10 @@ export default function SettingsPage() {
             <Download className="size-4" />
             自動取得
           </TabsTrigger>
+          <TabsTrigger value="accountant" className="flex items-center gap-1.5">
+            <Briefcase className="size-4" />
+            税理士提出
+          </TabsTrigger>
           <TabsTrigger value="ai" className="flex items-center gap-1.5">
             <Sparkles className="size-4" />
             AI設定
@@ -84,6 +89,10 @@ export default function SettingsPage() {
 
         <TabsContent value="download-sources">
           <DownloadSourceSettings />
+        </TabsContent>
+
+        <TabsContent value="accountant">
+          <AccountantSettings />
         </TabsContent>
 
         <TabsContent value="ai">

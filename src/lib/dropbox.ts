@@ -90,6 +90,56 @@ export async function uploadFile(
 }
 
 /**
+ * ファイルをコピーする（copy_v2 API使用、元ファイルは残す）
+ * @param fromPath コピー元パス
+ * @param toPath コピー先パス
+ * @returns コピー先のファイルパス
+ */
+export async function copyFile(
+  fromPath: string,
+  toPath: string
+): Promise<string> {
+  const dbx = getClient()
+
+  // コピー先フォルダを作成
+  const folderPath = toPath.substring(0, toPath.lastIndexOf("/"))
+  if (folderPath) {
+    await ensureDropboxFolderExists(folderPath)
+  }
+
+  // Rate Limit対策: 50ms待機
+  await new Promise((resolve) => setTimeout(resolve, 50))
+
+  const result = await dbx.filesCopyV2({
+    from_path: fromPath,
+    to_path: toPath,
+    autorename: true,
+  })
+
+  const metadata = result.result.metadata
+  if ("path_display" in metadata) {
+    return metadata.path_display ?? toPath
+  }
+  return toPath
+}
+
+/**
+ * CSVファイルをDropboxに直接作成する（upload API使用）
+ * @param path Dropbox上のファイルパス
+ * @param content CSV文字列
+ * @returns アップロードされたファイルのパス
+ */
+export async function createCsvInDropbox(
+  path: string,
+  content: string
+): Promise<string> {
+  // BOM付きUTF-8でExcelでの文字化けを防ぐ
+  const bom = "\uFEFF"
+  const buffer = Buffer.from(bom + content, "utf-8")
+  return uploadFile(path, buffer)
+}
+
+/**
  * ファイルを別のパスに移動する
  */
 export async function moveFile(
