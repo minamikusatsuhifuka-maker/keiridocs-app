@@ -87,7 +87,9 @@ export async function POST(request: NextRequest) {
 
   // 権限チェック: adminのみ設定変更可
   const auth = await getCurrentUserRole()
+  console.log("POST 権限チェック:", JSON.stringify(auth))
   if (auth?.role !== "admin") {
+    console.error("権限不足: role =", auth?.role, "userId =", auth?.userId)
     return NextResponse.json({ error: "管理者権限が必要です" }, { status: 403 })
   }
 
@@ -159,18 +161,23 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: "有効なメールアドレスを入力してください" }, { status: 400 })
       }
 
+      const insertData = {
+        email,
+        display_name: typeof display_name === "string" ? display_name : null,
+        user_id: user.id,
+      }
+      console.log("通知先INSERT データ:", JSON.stringify(insertData))
+      console.log("認証ユーザーID:", user.id)
+
       const { data, error } = await supabase
         .from("notify_recipients")
-        .insert({
-          email,
-          display_name: typeof display_name === "string" ? display_name : null,
-          user_id: user.id,
-        })
+        .insert(insertData)
         .select()
         .single()
 
       if (error) {
-        console.error("通知先追加エラー:", error)
+        console.error("通知先追加エラー:", JSON.stringify(error, null, 2))
+        console.error("エラーコード:", error.code, "詳細:", error.details, "ヒント:", error.hint)
         return NextResponse.json({ error: "通知先の追加に失敗しました" }, { status: 500 })
       }
       return NextResponse.json({ data }, { status: 201 })
