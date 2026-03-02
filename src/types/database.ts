@@ -26,6 +26,8 @@ export interface Database {
           dropbox_path: string | null
           thumbnail_url: string | null
           ocr_raw: Json | null
+          tax_category: string | null
+          account_title: string | null
           user_id: string
           created_at: string
           updated_at: string
@@ -43,6 +45,8 @@ export interface Database {
           dropbox_path?: string | null
           thumbnail_url?: string | null
           ocr_raw?: Json | null
+          tax_category?: string | null
+          account_title?: string | null
           user_id: string
           created_at?: string
           updated_at?: string
@@ -60,6 +64,8 @@ export interface Database {
           dropbox_path?: string | null
           thumbnail_url?: string | null
           ocr_raw?: Json | null
+          tax_category?: string | null
+          account_title?: string | null
           user_id?: string
           created_at?: string
           updated_at?: string

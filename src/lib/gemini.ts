@@ -10,6 +10,32 @@ export const GEMINI_MODELS = [
   { id: "gemini-2.5-pro-preview-05-06", label: "Gemini 2.5 Pro", description: "高精度・複雑書類向け" },
 ] as const
 
+/** 税区分の選択肢 */
+export const TAX_CATEGORIES = [
+  "課税10%",
+  "課税8%（軽減）",
+  "非課税",
+  "免税",
+  "不課税",
+  "未判定",
+] as const
+
+/** 勘定科目の選択肢（医療クリニック向け） */
+export const ACCOUNT_TITLES = [
+  "仕入高",
+  "消耗品費",
+  "通信費",
+  "水道光熱費",
+  "地代家賃",
+  "リース料",
+  "支払手数料",
+  "広告宣伝費",
+  "修繕費",
+  "保険料",
+  "福利厚生費",
+  "雑費",
+] as const
+
 /** AI解析結果の型 */
 export interface OcrResult {
   vendor_name: string
@@ -19,6 +45,8 @@ export interface OcrResult {
   description: string | null
   type: string | null
   confidence: number
+  tax_category: string | null
+  account_title: string | null
 }
 
 /** フォールバック値 */
@@ -30,6 +58,8 @@ const FALLBACK_RESULT: OcrResult = {
   description: null,
   type: null,
   confidence: 0,
+  tax_category: null,
+  account_title: null,
 }
 
 /** analyzeDocument のオプション */
@@ -79,8 +109,30 @@ export async function analyzeDocument(
   "due_date": "支払期日（YYYY-MM-DD形式。見つからない場合はnull）",
   "description": "摘要・品目の要約",
   "type": "書類種別（${typeList}のいずれか。判別できない場合はnull）",
-  "confidence": 解析の確信度（0.0〜1.0）
-}`
+  "confidence": 解析の確信度（0.0〜1.0）,
+  "tax_category": "税区分（課税10%/課税8%（軽減）/非課税/免税/不課税/未判定のいずれか）",
+  "account_title": "勘定科目（下記参照）"
+}
+
+【税区分の判定基準】
+- 食品・飲料 → 課税8%（軽減）
+- 医薬品 → 非課税の場合が多い（医薬品仕入は課税10%）
+- 一般的な事務用品・サービス → 課税10%
+- 判定できない場合 → 未判定
+
+【勘定科目の判定基準（医療クリニック・皮膚科向け）】
+- 医薬品・医療材料 → 仕入高
+- 事務用品・日用品 → 消耗品費
+- 電話・インターネット → 通信費
+- 電気・ガス・水道 → 水道光熱費
+- テナント賃料 → 地代家賃
+- 医療機器リース → リース料
+- 振込手数料・代行手数料 → 支払手数料
+- 広告・ホームページ → 広告宣伝費
+- 設備修理 → 修繕費
+- 社会保険・損害保険 → 保険料
+- スタッフ関連（食事補助等） → 福利厚生費
+- その他 → 雑費`
 
   try {
     const result = await model.generateContent([
@@ -171,8 +223,30 @@ export async function analyzeDocumentFromText(
   "due_date": "支払期日（YYYY-MM-DD形式。見つからない場合はnull）",
   "description": "摘要・品目の要約",
   "type": "書類種別（${typeList}のいずれか。判別できない場合はnull）",
-  "confidence": 解析の確信度（0.0〜1.0）
+  "confidence": 解析の確信度（0.0〜1.0）,
+  "tax_category": "税区分（課税10%/課税8%（軽減）/非課税/免税/不課税/未判定のいずれか）",
+  "account_title": "勘定科目（下記参照）"
 }
+
+【税区分の判定基準】
+- 食品・飲料 → 課税8%（軽減）
+- 医薬品 → 非課税の場合が多い（医薬品仕入は課税10%）
+- 一般的な事務用品・サービス → 課税10%
+- 判定できない場合 → 未判定
+
+【勘定科目の判定基準（医療クリニック・皮膚科向け）】
+- 医薬品・医療材料 → 仕入高
+- 事務用品・日用品 → 消耗品費
+- 電話・インターネット → 通信費
+- 電気・ガス・水道 → 水道光熱費
+- テナント賃料 → 地代家賃
+- 医療機器リース → リース料
+- 振込手数料・代行手数料 → 支払手数料
+- 広告・ホームページ → 広告宣伝費
+- 設備修理 → 修繕費
+- 社会保険・損害保険 → 保険料
+- スタッフ関連（食事補助等） → 福利厚生費
+- その他 → 雑費
 
 --- テキストデータ ---
 ${text}`
@@ -210,6 +284,8 @@ function parseOcrResponse(responseText: string): OcrResult {
       description: typeof parsed.description === "string" ? parsed.description : null,
       type: typeof parsed.type === "string" ? parsed.type : null,
       confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0,
+      tax_category: typeof parsed.tax_category === "string" ? parsed.tax_category : null,
+      account_title: typeof parsed.account_title === "string" ? parsed.account_title : null,
     }
   } catch {
     console.error("Gemini応答のJSONパースに失敗:", responseText)

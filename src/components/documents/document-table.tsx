@@ -128,6 +128,8 @@ export function DocumentTable({
           <SortableHead field="amount">金額</SortableHead>
           <SortableHead field="issue_date">発行日</SortableHead>
           <SortableHead field="due_date">支払期日</SortableHead>
+          <TableHead className="hidden lg:table-cell">税区分</TableHead>
+          <TableHead className="hidden lg:table-cell">勘定科目</TableHead>
           <SortableHead field="status">ステータス</SortableHead>
           <TableHead>操作</TableHead>
         </TableRow>
@@ -140,6 +142,8 @@ export function DocumentTable({
             <TableCell className="text-right">{formatAmount(doc.amount)}</TableCell>
             <TableCell>{formatDate(doc.issue_date)}</TableCell>
             <TableCell>{formatDate(doc.due_date)}</TableCell>
+            <TableCell className="hidden lg:table-cell text-xs">{doc.tax_category || "-"}</TableCell>
+            <TableCell className="hidden lg:table-cell text-xs">{doc.account_title || "-"}</TableCell>
             <TableCell>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>

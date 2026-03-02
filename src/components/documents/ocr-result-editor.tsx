@@ -15,7 +15,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Save, Sparkles } from "lucide-react"
-import type { OcrResult } from "@/lib/gemini"
+import { type OcrResult, TAX_CATEGORIES, ACCOUNT_TITLES } from "@/lib/gemini"
 
 export interface DocumentFormData {
   type: string
@@ -24,6 +24,8 @@ export interface DocumentFormData {
   issue_date: string
   due_date: string
   description: string
+  tax_category: string
+  account_title: string
 }
 
 interface OcrResultEditorProps {
@@ -56,6 +58,8 @@ export function OcrResultEditor({
       issue_date: ocrResult?.issue_date ?? "",
       due_date: ocrResult?.due_date ?? "",
       description: ocrResult?.description ?? "",
+      tax_category: ocrResult?.tax_category ?? "未判定",
+      account_title: ocrResult?.account_title ?? "",
     },
     values: ocrResult
       ? {
@@ -65,11 +69,15 @@ export function OcrResultEditor({
           issue_date: ocrResult.issue_date ?? "",
           due_date: ocrResult.due_date ?? "",
           description: ocrResult.description ?? "",
+          tax_category: ocrResult.tax_category ?? "未判定",
+          account_title: ocrResult.account_title ?? "",
         }
       : undefined,
   })
 
   const currentType = watch("type")
+  const currentTaxCategory = watch("tax_category")
+  const currentAccountTitle = watch("account_title")
 
   return (
     <Card>
@@ -179,6 +187,42 @@ export function OcrResultEditor({
                 placeholder="摘要を入力"
                 {...register("description")}
               />
+            </div>
+
+            {/* 税区分・勘定科目（横並び） */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="tax_category">税区分</Label>
+                <Select
+                  value={currentTaxCategory}
+                  onValueChange={(value) => setValue("tax_category", value)}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="税区分を選択" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TAX_CATEGORIES.map((cat) => (
+                      <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="account_title">勘定科目</Label>
+                <Select
+                  value={currentAccountTitle}
+                  onValueChange={(value) => setValue("account_title", value)}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="勘定科目を選択" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ACCOUNT_TITLES.map((title) => (
+                      <SelectItem key={title} value={title}>{title}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
 
             {/* 登録ボタン */}

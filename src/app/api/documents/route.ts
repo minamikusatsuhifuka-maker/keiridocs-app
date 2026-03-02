@@ -121,9 +121,11 @@ export async function POST(request: NextRequest) {
       input_method: unknown
       dropbox_path: unknown
       ocr_raw: unknown
+      tax_category: unknown
+      account_title: unknown
     }
 
-    const { type, vendor_name, amount, issue_date, due_date, description, input_method, dropbox_path, ocr_raw } = body
+    const { type, vendor_name, amount, issue_date, due_date, description, input_method, dropbox_path, ocr_raw, tax_category, account_title } = body
 
     // 必須フィールドのバリデーション
     if (typeof type !== "string" || typeof vendor_name !== "string") {
@@ -153,6 +155,8 @@ export async function POST(request: NextRequest) {
         status: "未処理",
         dropbox_path: typeof dropbox_path === "string" ? dropbox_path : null,
         ocr_raw: (ocr_raw ?? null) as import("@/types/database").Json | null,
+        tax_category: typeof tax_category === "string" ? tax_category : "未判定",
+        account_title: typeof account_title === "string" ? account_title : "",
         user_id: user.id,
       })
       .select()
@@ -221,6 +225,8 @@ export async function PATCH(request: NextRequest) {
     if ("due_date" in body) update.due_date = typeof body.due_date === "string" ? body.due_date : null
     if ("description" in body) update.description = typeof body.description === "string" ? body.description : null
     if (typeof body.status === "string") update.status = body.status
+    if (typeof body.tax_category === "string") update.tax_category = body.tax_category
+    if (typeof body.account_title === "string") update.account_title = body.account_title
 
     const hasUpdates = Object.keys(update).length > 0
     if (!hasUpdates) {

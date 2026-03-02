@@ -282,6 +282,8 @@ export default function NewDocumentPage() {
             input_method: activeTab === "camera" ? "camera" : "upload",
             dropbox_path: uploadData.path,
             ocr_raw: ocrResult,
+            tax_category: formData.tax_category || "未判定",
+            account_title: formData.account_title || "",
           }),
         })
 

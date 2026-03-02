@@ -162,7 +162,10 @@ export async function POST(request: NextRequest) {
                 escapeCsvField(doc.type),
                 escapeCsvField(doc.vendor_name),
                 doc.amount?.toString() ?? "",
+                escapeCsvField(doc.tax_category ?? "未判定"),
+                escapeCsvField(doc.account_title ?? ""),
                 doc.issue_date ?? "",
+                doc.due_date ?? "",
                 escapeCsvField(fileName),
               ].join(",")
             )
@@ -184,8 +187,14 @@ export async function POST(request: NextRequest) {
 
     // CSVサマリーを生成してDropboxに保存
     if (csvRows.length > 0) {
-      const csvHeader = "種別,取引先,金額,発行日,ファイル名"
-      const csvContent = [csvHeader, ...csvRows].join("\n")
+      const csvHeader = "種別,取引先,金額,税区分,勘定科目,発行日,支払期日,ファイル名"
+      const csvLines = [csvHeader, ...csvRows]
+
+      // 月次サマリーセクションを追加
+      const summaryLines = buildMonthlySummary(documents)
+      csvLines.push("", ...summaryLines)
+
+      const csvContent = csvLines.join("\n")
       const csvPath = `${basePath}/提出書類一覧_${monthStr}月.csv`
 
       try {
@@ -214,6 +223,53 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     )
   }
+}
+
+/** 月次サマリーを生成する */
+function buildMonthlySummary(documents: DocumentRow[]): string[] {
+  const lines: string[] = []
+  lines.push("【月次サマリー】")
+
+  // 合計金額
+  const totalAmount = documents.reduce((sum, d) => sum + (d.amount ?? 0), 0)
+  lines.push(`合計金額,${totalAmount}`)
+  lines.push("")
+
+  // 税区分別の小計
+  lines.push("【税区分別小計】")
+  const taxMap = new Map<string, number>()
+  for (const doc of documents) {
+    const cat = doc.tax_category ?? "未判定"
+    taxMap.set(cat, (taxMap.get(cat) ?? 0) + (doc.amount ?? 0))
+  }
+  for (const [cat, amount] of taxMap) {
+    lines.push(`${cat},${amount}`)
+  }
+  lines.push("")
+
+  // 種別別の小計
+  lines.push("【種別別小計】")
+  const typeMap = new Map<string, number>()
+  for (const doc of documents) {
+    typeMap.set(doc.type, (typeMap.get(doc.type) ?? 0) + (doc.amount ?? 0))
+  }
+  for (const [type, amount] of typeMap) {
+    lines.push(`${type},${amount}`)
+  }
+  lines.push("")
+
+  // 勘定科目別の小計
+  lines.push("【勘定科目別小計】")
+  const accountMap = new Map<string, number>()
+  for (const doc of documents) {
+    const title = doc.account_title || "未分類"
+    accountMap.set(title, (accountMap.get(title) ?? 0) + (doc.amount ?? 0))
+  }
+  for (const [title, amount] of accountMap) {
+    lines.push(`${title},${amount}`)
+  }
+
+  return lines
 }
 
 /** CSVフィールドをエスケープする */
