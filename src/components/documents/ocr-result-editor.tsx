@@ -194,13 +194,17 @@ export function OcrResultEditor({
               <div className="space-y-2">
                 <Label htmlFor="tax_category">税区分</Label>
                 <Select
-                  value={currentTaxCategory}
+                  value={currentTaxCategory || undefined}
                   onValueChange={(value) => setValue("tax_category", value)}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue placeholder="税区分を選択" />
                   </SelectTrigger>
                   <SelectContent>
+                    {/* AI解析結果が選択肢にない場合も表示する */}
+                    {currentTaxCategory && !TAX_CATEGORIES.includes(currentTaxCategory as typeof TAX_CATEGORIES[number]) && (
+                      <SelectItem value={currentTaxCategory}>{currentTaxCategory}（AI判定）</SelectItem>
+                    )}
                     {TAX_CATEGORIES.map((cat) => (
                       <SelectItem key={cat} value={cat}>{cat}</SelectItem>
                     ))}
@@ -210,13 +214,17 @@ export function OcrResultEditor({
               <div className="space-y-2">
                 <Label htmlFor="account_title">勘定科目</Label>
                 <Select
-                  value={currentAccountTitle}
+                  value={currentAccountTitle || undefined}
                   onValueChange={(value) => setValue("account_title", value)}
                 >
                   <SelectTrigger className="w-full">
                     <SelectValue placeholder="勘定科目を選択" />
                   </SelectTrigger>
                   <SelectContent>
+                    {/* AI解析結果が選択肢にない場合も表示する */}
+                    {currentAccountTitle && !ACCOUNT_TITLES.includes(currentAccountTitle as typeof ACCOUNT_TITLES[number]) && (
+                      <SelectItem value={currentAccountTitle}>{currentAccountTitle}（AI判定）</SelectItem>
+                    )}
                     {ACCOUNT_TITLES.map((title) => (
                       <SelectItem key={title} value={title}>{title}</SelectItem>
                     ))}
