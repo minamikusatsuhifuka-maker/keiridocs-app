@@ -50,6 +50,24 @@ async function getValidAccessToken(): Promise<string> {
   return cachedAccessToken!
 }
 
+/* ---------- 非ASCIIエスケープ ---------- */
+
+/**
+ * Dropbox-API-Arg ヘッダー用に非ASCII文字をUnicodeエスケープする
+ * （ヘッダーはASCIIのみ対応のため、日本語パスはエスケープが必要）
+ */
+function escapeNonAscii(str: string): string {
+  return str.replace(/[^\x20-\x7E]/g, (char) => {
+    const code = char.charCodeAt(0)
+    if (code > 0xFFFF) {
+      const hi = Math.floor((code - 0x10000) / 0x400) + 0xD800
+      const lo = (code - 0x10000) % 0x400 + 0xDC00
+      return "\\u" + hi.toString(16).padStart(4, "0") + "\\u" + lo.toString(16).padStart(4, "0")
+    }
+    return "\\u" + code.toString(16).padStart(4, "0")
+  })
+}
+
 /* ---------- 共通ヘルパー ---------- */
 
 async function dbxPost(endpoint: string, body: Record<string, unknown>) {
@@ -137,11 +155,11 @@ export async function uploadFile(
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
-      "Dropbox-API-Arg": JSON.stringify({
+      "Dropbox-API-Arg": escapeNonAscii(JSON.stringify({
         path,
         mode: "overwrite",
         autorename: false,
-      }),
+      })),
       "Content-Type": "application/octet-stream",
     },
     body: new Uint8Array(contents),
@@ -167,7 +185,7 @@ export async function downloadFile(path: string): Promise<{ buffer: Buffer; mime
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
-      "Dropbox-API-Arg": JSON.stringify({ path }),
+      "Dropbox-API-Arg": escapeNonAscii(JSON.stringify({ path })),
     },
   })
 
