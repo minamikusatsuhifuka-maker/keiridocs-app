@@ -2,13 +2,12 @@
 import { GoogleGenerativeAI } from "@google/generative-ai"
 
 /** デフォルトのGeminiモデル */
-export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-preview-05-20"
+export const DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
 
 /** 選択可能なGeminiモデル一覧 */
 export const GEMINI_MODELS = [
-  { id: "gemini-2.5-flash-preview-05-20", label: "Gemini 2.5 Flash", description: "高速・低コスト・日常OCR向け" },
+  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash", description: "高速・低コスト・日常OCR向け（デフォルト）" },
   { id: "gemini-2.5-pro-preview-05-06", label: "Gemini 2.5 Pro", description: "高精度・複雑書類向け" },
-  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash", description: "安定版・高速" },
 ] as const
 
 /** AI解析結果の型 */
