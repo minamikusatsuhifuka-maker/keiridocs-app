@@ -17,7 +17,6 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
-    "dropbox": "^10.34.0",
     "googleapis": "^171.4.0",
     "lucide-react": "^0.575.0",
     "mammoth": "^1.11.0",
