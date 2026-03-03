@@ -136,6 +136,8 @@ export default function NewDocumentPage() {
       }
 
       const json = await response.json() as { data: OcrResult; model_used?: string }
+      console.log("Gemini response:", json)
+      console.log("tax_category:", json.data?.tax_category, "account_title:", json.data?.account_title)
       setOcrResult(json.data)
       if (json.model_used) setModelUsed(json.model_used)
     } catch (error) {
