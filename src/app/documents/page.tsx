@@ -52,9 +52,9 @@ interface DuplicateGroup {
 
 /** 重複レベルに応じたスタイル */
 const LEVEL_STYLES: Record<string, { border: string; badge: string; badgeText: string; label: string }> = {
-  exact: { border: "border-red-300 dark:border-red-800", badge: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200", badgeText: "完全重複", label: "同一ファイルです" },
-  likely: { border: "border-amber-300 dark:border-amber-800", badge: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200", badgeText: "重複の可能性", label: "取引先・金額・日付が一致" },
-  similar: { border: "border-gray-300 dark:border-gray-700", badge: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300", badgeText: "類似書類", label: "取引先・金額が一致（参考情報）" },
+  exact: { border: "border-l-4 border-red-500 bg-red-50 dark:bg-red-950", badge: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200", badgeText: "完全重複", label: "同一ファイルです" },
+  likely: { border: "border-l-4 border-orange-500 bg-orange-50 dark:bg-orange-950", badge: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200", badgeText: "重複の可能性", label: "取引先・金額・日付が一致" },
+  similar: { border: "border-l-4 border-gray-400 bg-gray-50 dark:bg-gray-900", badge: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300", badgeText: "類似書類", label: "取引先・金額が一致（参考情報）" },
 }
 
 const PAGE_SIZE = 20
@@ -543,7 +543,7 @@ export default function DocumentsPage() {
             {duplicateGroups.map((group, gi) => {
               const style = LEVEL_STYLES[group.level] ?? LEVEL_STYLES.similar
               return (
-                <div key={`${group.level}-${gi}`} className={`rounded-lg border p-4 ${style.border}`}>
+                <div key={`${group.level}-${gi}`} className={`rounded-md p-4 ${style.border}`}>
                   <div className="mb-2 flex items-center gap-2 flex-wrap">
                     <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${style.badge}`}>
                       {style.badgeText}

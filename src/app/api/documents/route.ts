@@ -337,7 +337,7 @@ export async function PATCH(request: NextRequest) {
   }
 }
 
-// 書類削除（admin のみ）
+// 書類削除（admin は全件、staff は自分の書類のみ）
 export async function DELETE(request: NextRequest) {
   const supabase = await createClient()
   const { data: { user }, error: authError } = await supabase.auth.getUser()
@@ -346,9 +346,9 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
   }
 
-  // 権限チェック: adminのみ削除可
+  // 権限チェック: admin or staff のみ削除可
   const auth = await getCurrentUserRole()
-  if (auth?.role !== "admin") {
+  if (auth?.role !== "admin" && auth?.role !== "staff") {
     return NextResponse.json({ error: "削除権限がありません" }, { status: 403 })
   }
 
@@ -358,28 +358,51 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "IDが必要です" }, { status: 400 })
   }
 
+  console.log("DELETE受信:", id, "ユーザー:", user.id, "ロール:", auth.role)
+
   // 削除前にDropboxパスを取得
-  const { data: docData } = await supabase
+  let fetchQuery = supabase
     .from("documents")
-    .select("dropbox_path")
+    .select("dropbox_path, user_id")
     .eq("id", id)
-    .single()
 
-  console.log("削除対象:", id, "Dropboxパス:", docData?.dropbox_path)
+  // staffは自分の書類のみ
+  if (auth.role !== "admin") {
+    fetchQuery = fetchQuery.eq("user_id", user.id)
+  }
 
-  const { error } = await supabase
+  const { data: docData, error: fetchError } = await fetchQuery.single()
+
+  if (fetchError || !docData) {
+    console.error("削除対象の書類が見つかりません:", id, fetchError?.message)
+    return NextResponse.json({ error: "書類が見つかりません" }, { status: 404 })
+  }
+
+  console.log("削除対象:", id, "Dropboxパス:", docData.dropbox_path)
+
+  // DB削除（adminはRLSポリシーで全件、staffは自分のみ）
+  let deleteQuery = supabase
     .from("documents")
     .delete()
     .eq("id", id)
+
+  if (auth.role !== "admin") {
+    deleteQuery = deleteQuery.eq("user_id", user.id)
+  }
+
+  const { error } = await deleteQuery
 
   if (error) {
     console.error("書類削除エラー:", error)
     return NextResponse.json({ error: "書類の削除に失敗しました" }, { status: 500 })
   }
 
+  console.log("DB削除完了:", id)
+
   // Dropboxファイルも削除（失敗してもDB削除は成功扱い）
-  if (docData?.dropbox_path) {
+  if (docData.dropbox_path) {
     try {
+      console.log("Dropbox削除:", docData.dropbox_path)
       await deleteFile(docData.dropbox_path)
       console.log("Dropbox削除成功:", docData.dropbox_path)
     } catch (dropboxError) {
