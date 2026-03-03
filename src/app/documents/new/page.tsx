@@ -2,7 +2,6 @@
 
 import { useState, useCallback, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Select,
   SelectContent,
@@ -65,7 +64,7 @@ interface DocumentTypeRecord {
 export default function NewDocumentPage() {
   const router = useRouter()
   const [documentType, setDocumentType] = useState("請求書")
-  const [activeTab, setActiveTab] = useState("camera")
+  const [activeTab, setActiveTab] = useState("upload")
 
   // カメラ撮影の画像
   const [capturedImages, setCapturedImages] = useState<CapturedImage[]>([])
@@ -442,30 +441,37 @@ export default function NewDocumentPage() {
             <CardTitle className="text-base">書類を取り込む</CardTitle>
           </CardHeader>
           <CardContent>
-            <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList className="w-full">
-                <TabsTrigger value="camera" className="flex-1">
-                  <Camera className="mr-2 size-4" />
-                  カメラ撮影
-                </TabsTrigger>
-                <TabsTrigger value="upload" className="flex-1">
-                  <Upload className="mr-2 size-4" />
-                  ファイル選択
-                </TabsTrigger>
-              </TabsList>
-              <TabsContent value="camera" className="mt-4">
-                <CameraCapture
-                  images={capturedImages}
-                  onCapture={setCapturedImages}
-                />
-              </TabsContent>
-              <TabsContent value="upload" className="mt-4">
+            {activeTab === "upload" ? (
+              <>
                 <FileDropzone
                   files={uploadedFiles}
                   onFilesChange={setUploadedFiles}
                 />
-              </TabsContent>
-            </Tabs>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("camera")}
+                  className="mt-3 flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Camera className="size-3.5" />
+                  カメラで撮影する場合はこちら
+                </button>
+              </>
+            ) : (
+              <>
+                <CameraCapture
+                  images={capturedImages}
+                  onCapture={setCapturedImages}
+                />
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("upload")}
+                  className="mt-3 flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Upload className="size-3.5" />
+                  ファイル選択に戻る
+                </button>
+              </>
+            )}
 
             {/* AI解析ボタン */}
             {hasFiles && !showEditor && (
