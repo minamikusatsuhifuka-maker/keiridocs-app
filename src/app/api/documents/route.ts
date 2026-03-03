@@ -123,9 +123,10 @@ export async function POST(request: NextRequest) {
       ocr_raw: unknown
       tax_category: unknown
       account_title: unknown
+      file_hash: unknown
     }
 
-    const { type, vendor_name, amount, issue_date, due_date, description, input_method, dropbox_path, ocr_raw, tax_category, account_title } = body
+    const { type, vendor_name, amount, issue_date, due_date, description, input_method, dropbox_path, ocr_raw, tax_category, account_title, file_hash } = body
 
     // 必須フィールドのバリデーション
     if (typeof type !== "string" || typeof vendor_name !== "string") {
@@ -144,10 +145,30 @@ export async function POST(request: NextRequest) {
 
     // 重複チェック（skip_duplicate_check が true なら省略）
     const skipDuplicateCheck = (body as Record<string, unknown>).skip_duplicate_check === true
+    const fileHashStr = typeof file_hash === "string" ? file_hash : ""
     if (!skipDuplicateCheck) {
+      // ファイルハッシュによる完全一致チェック
+      if (fileHashStr) {
+        const { data: hashDups } = await supabase
+          .from("documents")
+          .select("id, vendor_name, amount, type, issue_date, due_date, file_hash, created_at")
+          .eq("user_id", user.id)
+          .eq("file_hash", fileHashStr)
+
+        if (hashDups && hashDups.length > 0) {
+          return NextResponse.json({
+            data: null,
+            duplicates: hashDups,
+            duplicate_level: "exact",
+            warning: "同じファイルが既に登録されています",
+          }, { status: 200 })
+        }
+      }
+
+      // メタデータによる重複チェック
       let dupQuery = supabase
         .from("documents")
-        .select("id, vendor_name, amount, type, issue_date, due_date, created_at")
+        .select("id, vendor_name, amount, type, issue_date, due_date, file_hash, created_at")
         .eq("user_id", user.id)
         .eq("vendor_name", vendor_name)
         .eq("type", type)
@@ -173,7 +194,8 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({
             data: null,
             duplicates,
-            warning: "この書類は既に登録されている可能性があります",
+            duplicate_level: "likely",
+            warning: "似た書類が既に登録されています",
           }, { status: 200 })
         }
       }
@@ -194,6 +216,7 @@ export async function POST(request: NextRequest) {
         ocr_raw: (ocr_raw ?? null) as import("@/types/database").Json | null,
         tax_category: typeof tax_category === "string" ? tax_category : "未判定",
         account_title: typeof account_title === "string" ? account_title : "",
+        file_hash: fileHashStr || "",
         user_id: user.id,
       })
       .select()

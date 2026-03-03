@@ -36,8 +36,12 @@ interface DuplicateCandidate {
   type: string
   issue_date: string | null
   due_date: string | null
+  file_hash: string | null
   created_at: string
 }
+
+/** 重複レベル */
+type DuplicateLevel = "exact" | "likely" | null
 
 interface CapturedImage {
   base64: string
@@ -80,8 +84,11 @@ export default function NewDocumentPage() {
 
   // 重複チェック
   const [duplicates, setDuplicates] = useState<DuplicateCandidate[]>([])
+  const [duplicateLevel, setDuplicateLevel] = useState<DuplicateLevel>(null)
   const [showDuplicateDialog, setShowDuplicateDialog] = useState(false)
   const [pendingFormData, setPendingFormData] = useState<DocumentFormData | null>(null)
+  const [pendingDropboxPath, setPendingDropboxPath] = useState<string | null>(null)
+  const [pendingFileHash, setPendingFileHash] = useState<string | null>(null)
 
   // 動的書類種別
   const [documentTypes, setDocumentTypes] = useState<DocumentTypeRecord[]>([])
@@ -275,26 +282,38 @@ export default function NewDocumentPage() {
           fileName += extMap[fileMimeType] || ".jpg"
         }
 
-        // 2. Dropboxにアップロード
-        const uploadResponse = await fetch("/api/dropbox/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            base64: fileBase64,
-            fileName,
-            type: formData.type,
-            date: formData.issue_date || null,
-            status: "未処理",
-          }),
-        })
+        // 2. Dropboxにアップロード（重複ダイアログからの再送信時はスキップ）
+        let dropboxPath: string
+        let fileHash: string
 
-        if (!uploadResponse.ok) {
-          const errorData = await uploadResponse.json() as { error: string }
-          throw new Error(errorData.error || "Dropboxへのアップロードに失敗しました")
-        }
+        if (pendingDropboxPath && formData === pendingFormData) {
+          // 前回アップロード済みのパスとハッシュを再利用
+          dropboxPath = pendingDropboxPath
+          fileHash = pendingFileHash || ""
+        } else {
+          const uploadResponse = await fetch("/api/dropbox/upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              base64: fileBase64,
+              fileName,
+              type: formData.type,
+              date: formData.issue_date || null,
+              status: "未処理",
+              vendorName: formData.vendor_name,
+            }),
+          })
 
-        const { data: uploadData } = await uploadResponse.json() as {
-          data: { path: string }
+          if (!uploadResponse.ok) {
+            const errorData = await uploadResponse.json() as { error: string }
+            throw new Error(errorData.error || "Dropboxへのアップロードに失敗しました")
+          }
+
+          const { data: uploadData } = await uploadResponse.json() as {
+            data: { path: string; file_hash: string }
+          }
+          dropboxPath = uploadData.path
+          fileHash = uploadData.file_hash
         }
 
         // 3. DB に書類レコードを保存（重複チェック付き）
@@ -310,10 +329,11 @@ export default function NewDocumentPage() {
             due_date: formData.due_date || null,
             description: formData.description || null,
             input_method: activeTab === "camera" ? "camera" : "upload",
-            dropbox_path: uploadData.path,
+            dropbox_path: dropboxPath,
             ocr_raw: ocrResult,
             tax_category: formData.tax_category || "未判定",
             account_title: formData.account_title || "",
+            file_hash: fileHash,
             skip_duplicate_check: skipDuplicate,
           }),
         })
@@ -326,13 +346,17 @@ export default function NewDocumentPage() {
         const docResult = await docResponse.json() as {
           data: unknown
           duplicates?: DuplicateCandidate[]
+          duplicate_level?: DuplicateLevel
           warning?: string
         }
 
         // 重複候補がある場合はダイアログを表示
         if (docResult.duplicates && docResult.duplicates.length > 0) {
           setDuplicates(docResult.duplicates)
+          setDuplicateLevel(docResult.duplicate_level || null)
           setPendingFormData(formData)
+          setPendingDropboxPath(dropboxPath)
+          setPendingFileHash(fileHash)
           setShowDuplicateDialog(true)
           return // 登録はまだ行わない
         }
@@ -371,10 +395,11 @@ export default function NewDocumentPage() {
   // 重複を無視して強制登録する
   const handleForceSubmit = useCallback(async () => {
     if (!pendingFormData) return
+    console.log("強制登録開始", { pendingFormData, pendingDropboxPath, pendingFileHash })
     setShowDuplicateDialog(false)
-    // pendingFormData をそのまま渡すと skipDuplicate = true になる
+    // pendingFormData をそのまま渡すと skipDuplicate = true になる（Dropboxアップロードもスキップ）
     await handleSubmit(pendingFormData)
-  }, [pendingFormData, handleSubmit])
+  }, [pendingFormData, pendingDropboxPath, pendingFileHash, handleSubmit])
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -512,19 +537,29 @@ export default function NewDocumentPage() {
       <Dialog open={showDuplicateDialog} onOpenChange={setShowDuplicateDialog}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-amber-600">
+            <DialogTitle className={`flex items-center gap-2 ${
+              duplicateLevel === "exact" ? "text-red-600" : "text-amber-600"
+            }`}>
               <AlertTriangle className="size-5" />
-              重複の可能性があります
+              {duplicateLevel === "exact"
+                ? "同じファイルが既に登録されています"
+                : "似た書類が既に登録されています"}
             </DialogTitle>
             <DialogDescription>
-              この書類は既に登録されている可能性があります。以下の書類が見つかりました。
+              {duplicateLevel === "exact"
+                ? "ファイルハッシュが一致する書類が見つかりました。同一ファイルの可能性が高いです。"
+                : "取引先・金額・日付が一致する書類が見つかりました。"}
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-60 space-y-2 overflow-y-auto">
             {duplicates.map((dup) => (
               <div
                 key={dup.id}
-                className="rounded-md border p-3 text-sm"
+                className={`rounded-md border p-3 text-sm ${
+                  duplicateLevel === "exact"
+                    ? "border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30"
+                    : "border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30"
+                }`}
               >
                 <div className="font-medium">{dup.vendor_name}</div>
                 <div className="mt-1 text-muted-foreground">
@@ -535,6 +570,11 @@ export default function NewDocumentPage() {
                 <div className="mt-0.5 text-xs text-muted-foreground">
                   登録日時: {new Date(dup.created_at).toLocaleString("ja-JP")}
                 </div>
+                {duplicateLevel === "exact" && (
+                  <div className="mt-1 text-xs font-semibold text-red-600 dark:text-red-400">
+                    同一ファイルです
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -544,7 +584,10 @@ export default function NewDocumentPage() {
               onClick={() => {
                 setShowDuplicateDialog(false)
                 setPendingFormData(null)
+                setPendingDropboxPath(null)
+                setPendingFileHash(null)
                 setDuplicates([])
+                setDuplicateLevel(null)
               }}
             >
               キャンセル

@@ -157,8 +157,8 @@ export async function uploadFile(
       Authorization: `Bearer ${token}`,
       "Dropbox-API-Arg": escapeNonAscii(JSON.stringify({
         path,
-        mode: "overwrite",
-        autorename: false,
+        mode: "add",
+        autorename: true,
       })),
       "Content-Type": "application/octet-stream",
     },

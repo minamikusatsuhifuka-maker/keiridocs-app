@@ -28,6 +28,7 @@ export interface Database {
           ocr_raw: Json | null
           tax_category: string | null
           account_title: string | null
+          file_hash: string | null
           user_id: string
           created_at: string
           updated_at: string
@@ -47,6 +48,7 @@ export interface Database {
           ocr_raw?: Json | null
           tax_category?: string | null
           account_title?: string | null
+          file_hash?: string | null
           user_id: string
           created_at?: string
           updated_at?: string
@@ -66,6 +68,7 @@ export interface Database {
           ocr_raw?: Json | null
           tax_category?: string | null
           account_title?: string | null
+          file_hash?: string | null
           user_id?: string
           created_at?: string
           updated_at?: string

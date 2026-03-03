@@ -30,9 +30,10 @@ type Document = Database["public"]["Tables"]["documents"]["Row"]
 type SortField = "type" | "vendor_name" | "amount" | "issue_date" | "due_date" | "status" | "created_at"
 type SortDirection = "asc" | "desc"
 
-/** 重複グループ */
+/** 重複グループ（3段階対応） */
 interface DuplicateGroup {
-  key: string
+  level: "exact" | "likely" | "similar"
+  match_reason: string
   vendor_name: string
   amount: number | null
   type: string
@@ -44,8 +45,16 @@ interface DuplicateGroup {
     issue_date: string | null
     due_date: string | null
     dropbox_path: string | null
+    file_hash: string | null
     created_at: string
   }[]
+}
+
+/** 重複レベルに応じたスタイル */
+const LEVEL_STYLES: Record<string, { border: string; badge: string; badgeText: string; label: string }> = {
+  exact: { border: "border-red-300 dark:border-red-800", badge: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200", badgeText: "完全重複", label: "同一ファイルです" },
+  likely: { border: "border-amber-300 dark:border-amber-800", badge: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200", badgeText: "重複の可能性", label: "取引先・金額・日付が一致" },
+  similar: { border: "border-gray-300 dark:border-gray-700", badge: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300", badgeText: "類似書類", label: "取引先・金額が一致（参考情報）" },
 }
 
 const PAGE_SIZE = 20
@@ -199,15 +208,16 @@ export default function DocumentsPage() {
     setIsDuplicateChecking(true)
     try {
       const res = await fetch("/api/documents/duplicates")
+      const json = await res.json() as { data?: DuplicateGroup[]; error?: string }
+
       if (!res.ok) {
-        const json = await res.json() as { error?: string }
         throw new Error(json.error || "重複チェックに失敗しました")
       }
-      const json = await res.json() as { data: DuplicateGroup[] }
+
       const groups = json.data ?? []
 
       if (groups.length === 0) {
-        toast.success("重複候補は見つかりませんでした")
+        toast.success("重複書類はありませんでした")
         return
       }
 
@@ -219,6 +229,22 @@ export default function DocumentsPage() {
     } finally {
       setIsDuplicateChecking(false)
     }
+  }
+
+  // 完全一致グループで「新しい方を残す」（古い方を自動選択）
+  function selectOlderForDeletion(group: DuplicateGroup) {
+    // created_at でソートし、最新の1件以外を選択
+    const sorted = [...group.documents].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    )
+    setSelectedForDeletion((prev) => {
+      const next = new Set(prev)
+      // 最新（sorted[0]）以外を選択
+      for (let i = 1; i < sorted.length; i++) {
+        next.add(sorted[i].id)
+      }
+      return next
+    })
   }
 
   // 削除チェックボックスの切り替え
@@ -500,49 +526,73 @@ export default function DocumentsPage() {
               重複候補 ({duplicateGroups.length}グループ)
             </DialogTitle>
             <DialogDescription>
-              同じ取引先・金額・種別の書類がグループ化されています。削除する書類にチェックを入れてください。
+              重複レベルごとに色分けされています。削除する書類にチェックを入れてください。
             </DialogDescription>
           </DialogHeader>
           <div className="flex-1 overflow-y-auto space-y-4 pr-1">
-            {duplicateGroups.map((group) => (
-              <div key={group.key} className="rounded-lg border p-4">
-                <div className="mb-2 font-medium">
-                  {group.vendor_name} ・ {group.type}
-                  {group.amount != null && ` ・ ¥${group.amount.toLocaleString()}`}
-                  <span className="ml-2 text-sm text-muted-foreground">
-                    ({group.documents.length}件)
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  {group.documents.map((doc) => (
-                    <label
-                      key={doc.id}
-                      className="flex items-start gap-3 rounded-md border p-3 hover:bg-muted/50 cursor-pointer"
+            {duplicateGroups.map((group, gi) => {
+              const style = LEVEL_STYLES[group.level] ?? LEVEL_STYLES.similar
+              return (
+                <div key={`${group.level}-${gi}`} className={`rounded-lg border p-4 ${style.border}`}>
+                  <div className="mb-2 flex items-center gap-2 flex-wrap">
+                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${style.badge}`}>
+                      {style.badgeText}
+                    </span>
+                    <span className="font-medium">
+                      {group.vendor_name} ・ {group.type}
+                      {group.amount != null && ` ・ ¥${group.amount.toLocaleString()}`}
+                    </span>
+                    <span className="text-sm text-muted-foreground">
+                      ({group.documents.length}件)
+                    </span>
+                  </div>
+                  <div className="mb-2 text-xs text-muted-foreground">
+                    {group.match_reason}
+                  </div>
+                  {/* 完全一致グループには「新しい方を残す」ボタン */}
+                  {group.level === "exact" && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mb-2"
+                      onClick={() => selectOlderForDeletion(group)}
                     >
-                      <Checkbox
-                        checked={selectedForDeletion.has(doc.id)}
-                        onCheckedChange={() => toggleDeletionSelection(doc.id)}
-                        className="mt-0.5"
-                      />
-                      <div className="flex-1 text-sm">
-                        <div>
-                          {doc.issue_date && <span>発行日: {doc.issue_date}</span>}
-                          {doc.due_date && <span className="ml-3">支払期日: {doc.due_date}</span>}
-                        </div>
-                        {doc.dropbox_path && (
-                          <div className="mt-0.5 text-xs text-muted-foreground truncate">
-                            {doc.dropbox_path}
+                      新しい方を残す（古い方を自動選択）
+                    </Button>
+                  )}
+                  <div className="space-y-2">
+                    {group.documents.map((doc) => (
+                      <label
+                        key={doc.id}
+                        className={`flex items-start gap-3 rounded-md border p-3 hover:bg-muted/50 cursor-pointer ${
+                          selectedForDeletion.has(doc.id) ? "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800" : ""
+                        }`}
+                      >
+                        <Checkbox
+                          checked={selectedForDeletion.has(doc.id)}
+                          onCheckedChange={() => toggleDeletionSelection(doc.id)}
+                          className="mt-0.5"
+                        />
+                        <div className="flex-1 text-sm">
+                          <div>
+                            {doc.issue_date && <span>発行日: {doc.issue_date}</span>}
+                            {doc.due_date && <span className="ml-3">支払期日: {doc.due_date}</span>}
                           </div>
-                        )}
-                        <div className="mt-0.5 text-xs text-muted-foreground">
-                          登録日時: {new Date(doc.created_at).toLocaleString("ja-JP")}
+                          {doc.dropbox_path && (
+                            <div className="mt-0.5 text-xs text-muted-foreground truncate">
+                              {doc.dropbox_path}
+                            </div>
+                          )}
+                          <div className="mt-0.5 text-xs text-muted-foreground">
+                            登録日時: {new Date(doc.created_at).toLocaleString("ja-JP")}
+                          </div>
                         </div>
-                      </div>
-                    </label>
-                  ))}
+                      </label>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
           <DialogFooter className="gap-2 sm:gap-0">
             <Button variant="outline" onClick={() => setShowDuplicateModal(false)}>
