@@ -150,6 +150,14 @@ export async function uploadFile(
     await ensureDropboxFolderExists(folderPath)
   }
 
+  // Bufferを確実にコピーする（Node.js Bufferのプール共有対策）
+  const body = Buffer.from(contents)
+  console.log("Dropboxアップロード データサイズ:", body.length, "bytes パス:", path)
+
+  if (body.length === 0) {
+    throw new Error("Dropbox upload error: ファイルデータが空です (0 bytes)")
+  }
+
   const token = await getValidAccessToken()
   const res = await fetch(`${DROPBOX_CONTENT}/files/upload`, {
     method: "POST",
@@ -162,7 +170,7 @@ export async function uploadFile(
       })),
       "Content-Type": "application/octet-stream",
     },
-    body: new Uint8Array(contents),
+    body,
   })
 
   if (!res.ok) {
@@ -171,6 +179,7 @@ export async function uploadFile(
   }
 
   const data = await res.json()
+  console.log("Dropboxアップロード成功:", data.path_display, "サイズ:", data.size, "bytes")
   return data.path_display ?? path
 }
 
@@ -254,15 +263,33 @@ export async function moveFile(
  * @param path 削除するファイルのパス
  */
 export async function deleteFile(path: string): Promise<void> {
-  try {
-    await dbxPost("/files/delete_v2", { path })
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error)
-    // ファイルが既に存在しない場合は無視
-    if (msg.includes("path_lookup/not_found")) return
-    console.error("Dropbox ファイル削除エラー:", msg)
-    throw error
+  // パスの先頭に / が必要
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`
+  console.log("Dropbox削除リクエスト パス:", normalizedPath)
+
+  const token = await getValidAccessToken()
+  const res = await fetch(`${DROPBOX_API}/files/delete_v2`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ path: normalizedPath }),
+  })
+
+  const responseBody = await res.text()
+  console.log("Dropbox削除レスポンス:", res.status, responseBody)
+
+  if (!res.ok) {
+    // ファイルが既に存在しない場合はログを出して正常終了
+    if (responseBody.includes("path_lookup/not_found")) {
+      console.warn("Dropbox削除: ファイルが見つかりません（既に削除済み）:", normalizedPath)
+      return
+    }
+    throw new Error(`Dropbox delete error: ${res.status} ${responseBody}`)
   }
+
+  console.log("Dropbox削除成功:", normalizedPath)
 }
 
 /* ---------- CSV作成 ---------- */

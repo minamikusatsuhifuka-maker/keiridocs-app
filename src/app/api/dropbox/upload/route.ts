@@ -80,8 +80,23 @@ export async function POST(request: NextRequest) {
     // Dropboxパスを生成
     const dropboxPath = getDocumentPath(type, uniqueFileName, dateObj, statusStr)
 
-    // Base64をBufferに変換
-    const fileBuffer = Buffer.from(base64, "base64")
+    // Base64をBufferに変換（data URLプレフィックスがあれば除去）
+    let base64Data = base64
+    const commaIndex = base64Data.indexOf(",")
+    if (commaIndex >= 0 && commaIndex < 100) {
+      // "data:image/jpeg;base64,XXXX" 形式のプレフィックスを除去
+      base64Data = base64Data.substring(commaIndex + 1)
+    }
+
+    const fileBuffer = Buffer.from(base64Data, "base64")
+    console.log("base64データ長:", base64Data.length, "Buffer長:", fileBuffer.length, "bytes")
+
+    if (fileBuffer.length === 0) {
+      return NextResponse.json(
+        { error: "ファイルデータが空です" },
+        { status: 400 }
+      )
+    }
 
     // SHA-256ハッシュを計算
     const fileHash = createHash("sha256").update(fileBuffer).digest("hex")
