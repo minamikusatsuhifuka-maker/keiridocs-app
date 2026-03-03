@@ -337,6 +337,7 @@ export default function NewDocumentPage() {
           account_title: formData.account_title || "",
           file_hash: fileHash,
           skip_duplicate_check: isForceSubmit,
+          items: ocrResult?.items ?? [],
         }
         console.log("送信データ:", JSON.stringify(requestBody))
 

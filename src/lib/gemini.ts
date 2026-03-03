@@ -36,6 +36,16 @@ export const ACCOUNT_TITLES = [
   "雑費",
 ] as const
 
+/** 明細行の型 */
+export interface OcrItem {
+  item_name: string
+  quantity: number
+  unit_price: number
+  amount: number
+  category: string
+  tax_rate: string
+}
+
 /** AI解析結果の型 */
 export interface OcrResult {
   vendor_name: string
@@ -47,6 +57,7 @@ export interface OcrResult {
   confidence: number
   tax_category: string | null
   account_title: string | null
+  items: OcrItem[]
 }
 
 /** フォールバック値 */
@@ -60,6 +71,7 @@ const FALLBACK_RESULT: OcrResult = {
   confidence: 0,
   tax_category: null,
   account_title: null,
+  items: [],
 }
 
 /** analyzeDocument のオプション */
@@ -111,8 +123,24 @@ export async function analyzeDocument(
   "type": "書類種別（${typeList}のいずれか。判別できない場合はnull）",
   "confidence": 解析の確信度（0.0〜1.0）,
   "tax_category": "税区分（課税10%/課税8%（軽減）/非課税/免税/不課税/未判定のいずれか）",
-  "account_title": "勘定科目（下記参照）"
+  "account_title": "勘定科目（下記参照）",
+  "items": [
+    {
+      "item_name": "品目名",
+      "quantity": 数量（数値）,
+      "unit_price": 単価（数値）,
+      "amount": 金額（数値）,
+      "category": "カテゴリ（商品代/手数料/輸送費/関税/消費税/値引き/その他）",
+      "tax_rate": "税区分（課税10%/課税8%（軽減）/非課税/未判定）"
+    }
+  ]
 }
+
+【items（明細行）の抽出ルール】
+- 書類に明細行がある場合、各行を個別に抽出する
+- 明細がない書類（領収書など）は、書類全体を1行として items に含める
+- 送料・手数料・代引手数料なども個別の行として抽出する
+- カテゴリの分類: 商品代, 手数料, 輸送費, 関税, 消費税, 値引き, その他
 
 【税区分の判定基準】
 - 食品・飲料 → 課税8%（軽減）
@@ -225,8 +253,24 @@ export async function analyzeDocumentFromText(
   "type": "書類種別（${typeList}のいずれか。判別できない場合はnull）",
   "confidence": 解析の確信度（0.0〜1.0）,
   "tax_category": "税区分（課税10%/課税8%（軽減）/非課税/免税/不課税/未判定のいずれか）",
-  "account_title": "勘定科目（下記参照）"
+  "account_title": "勘定科目（下記参照）",
+  "items": [
+    {
+      "item_name": "品目名",
+      "quantity": 数量（数値）,
+      "unit_price": 単価（数値）,
+      "amount": 金額（数値）,
+      "category": "カテゴリ（商品代/手数料/輸送費/関税/消費税/値引き/その他）",
+      "tax_rate": "税区分（課税10%/課税8%（軽減）/非課税/未判定）"
+    }
+  ]
 }
+
+【items（明細行）の抽出ルール】
+- 書類に明細行がある場合、各行を個別に抽出する
+- 明細がない書類（領収書など）は、書類全体を1行として items に含める
+- 送料・手数料・代引手数料なども個別の行として抽出する
+- カテゴリの分類: 商品代, 手数料, 輸送費, 関税, 消費税, 値引き, その他
 
 【税区分の判定基準】
 - 食品・飲料 → 課税8%（軽減）
@@ -276,6 +320,24 @@ function parseOcrResponse(responseText: string): OcrResult {
 
     const parsed = JSON.parse(cleaned) as Record<string, unknown>
 
+    // 明細行をパース
+    const items: OcrItem[] = []
+    if (Array.isArray(parsed.items)) {
+      for (const item of parsed.items) {
+        if (item && typeof item === "object") {
+          const i = item as Record<string, unknown>
+          items.push({
+            item_name: typeof i.item_name === "string" ? i.item_name : "",
+            quantity: typeof i.quantity === "number" ? i.quantity : 1,
+            unit_price: typeof i.unit_price === "number" ? i.unit_price : 0,
+            amount: typeof i.amount === "number" ? i.amount : 0,
+            category: typeof i.category === "string" ? i.category : "その他",
+            tax_rate: typeof i.tax_rate === "string" ? i.tax_rate : "未判定",
+          })
+        }
+      }
+    }
+
     return {
       vendor_name: typeof parsed.vendor_name === "string" ? parsed.vendor_name : "",
       amount: typeof parsed.amount === "number" ? parsed.amount : null,
@@ -286,6 +348,7 @@ function parseOcrResponse(responseText: string): OcrResult {
       confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0,
       tax_category: typeof parsed.tax_category === "string" ? parsed.tax_category : null,
       account_title: typeof parsed.account_title === "string" ? parsed.account_title : null,
+      items,
     }
   } catch {
     console.error("Gemini応答のJSONパースに失敗:", responseText)

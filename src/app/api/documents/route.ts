@@ -124,9 +124,10 @@ export async function POST(request: NextRequest) {
       tax_category: unknown
       account_title: unknown
       file_hash: unknown
+      items: unknown
     }
 
-    const { type, vendor_name, amount, issue_date, due_date, description, input_method, dropbox_path, ocr_raw, tax_category, account_title, file_hash } = body
+    const { type, vendor_name, amount, issue_date, due_date, description, input_method, dropbox_path, ocr_raw, tax_category, account_title, file_hash, items } = body
 
     // 必須フィールドのバリデーション
     if (typeof type !== "string" || typeof vendor_name !== "string") {
@@ -226,6 +227,35 @@ export async function POST(request: NextRequest) {
     if (error) {
       console.error("書類登録エラー:", error)
       return NextResponse.json({ error: "書類の登録に失敗しました" }, { status: 500 })
+    }
+
+    // 明細行をdocument_itemsに保存
+    const docId = (data as DocumentRow | null)?.id
+    if (Array.isArray(items) && items.length > 0 && docId) {
+      const itemRows = items
+        .filter((item): item is Record<string, unknown> => item != null && typeof item === "object")
+        .map((item) => ({
+          document_id: docId,
+          user_id: user.id,
+          item_name: typeof item.item_name === "string" ? item.item_name : "",
+          quantity: typeof item.quantity === "number" ? item.quantity : 1,
+          unit_price: typeof item.unit_price === "number" ? item.unit_price : 0,
+          amount: typeof item.amount === "number" ? item.amount : 0,
+          category: typeof item.category === "string" ? item.category : "",
+          tax_rate: typeof item.tax_rate === "string" ? item.tax_rate : "",
+          notes: typeof item.notes === "string" ? item.notes : "",
+        }))
+
+      if (itemRows.length > 0) {
+        const { error: itemError } = await supabase
+          .from("document_items")
+          .insert(itemRows)
+
+        if (itemError) {
+          console.error("明細行保存エラー:", itemError)
+          // 書類自体は登録済みなのでエラーは無視して続行
+        }
+      }
     }
 
     return NextResponse.json({ data }, { status: 201 })

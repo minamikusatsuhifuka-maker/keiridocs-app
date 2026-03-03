@@ -309,6 +309,48 @@ export interface Database {
         }
         Relationships: []
       }
+      document_items: {
+        Row: {
+          id: string
+          document_id: string
+          user_id: string
+          item_name: string
+          quantity: number | null
+          unit_price: number | null
+          amount: number
+          category: string
+          tax_rate: string
+          notes: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          document_id: string
+          user_id: string
+          item_name?: string
+          quantity?: number | null
+          unit_price?: number | null
+          amount?: number
+          category?: string
+          tax_rate?: string
+          notes?: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          document_id?: string
+          user_id?: string
+          item_name?: string
+          quantity?: number | null
+          unit_price?: number | null
+          amount?: number
+          category?: string
+          tax_rate?: string
+          notes?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           id: string
