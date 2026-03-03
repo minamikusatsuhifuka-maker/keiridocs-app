@@ -17,7 +17,7 @@ import { CameraCapture } from "@/components/documents/camera-capture"
 import { FileDropzone } from "@/components/documents/file-dropzone"
 import { OcrResultEditor, type DocumentFormData } from "@/components/documents/ocr-result-editor"
 import type { OcrResult } from "@/lib/gemini"
-import { Camera, Upload, ArrowRight, Loader2 } from "lucide-react"
+import { Camera, Upload, ArrowRight, Loader2, CheckCircle2, ListIcon, Plus } from "lucide-react"
 import { toast } from "sonner"
 
 interface CapturedImage {
@@ -55,6 +55,9 @@ export default function NewDocumentPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showEditor, setShowEditor] = useState(false)
+
+  // 登録成功状態
+  const [isRegistered, setIsRegistered] = useState(false)
 
   // 動的書類種別
   const [documentTypes, setDocumentTypes] = useState<DocumentTypeRecord[]>([])
@@ -295,7 +298,7 @@ export default function NewDocumentPage() {
         }
 
         toast.success("書類を登録しました")
-        router.push("/documents")
+        setIsRegistered(true)
       } catch (error) {
         toast.error(
           error instanceof Error ? error.message : "登録に失敗しました"
@@ -307,92 +310,145 @@ export default function NewDocumentPage() {
     [activeTab, capturedImages, uploadedFiles, ocrResult, router]
   )
 
+  // フォーム全体をリセットして次の書類を登録可能にする
+  const resetForNextDocument = useCallback(() => {
+    setCapturedImages([])
+    setUploadedFiles([])
+    setOcrResult(null)
+    setModelUsed("")
+    setIsAnalyzing(false)
+    setIsSubmitting(false)
+    setShowEditor(false)
+    setIsRegistered(false)
+    // 書類種別はデフォルトに戻す
+    if (documentTypes.length > 0) {
+      setDocumentType(documentTypes[0].name)
+    } else {
+      setDocumentType("請求書")
+    }
+  }, [documentTypes])
+
   return (
     <div className="mx-auto max-w-2xl space-y-6">
-      {/* 種別選択 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">書類種別</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-2">
-            <Label htmlFor="doc-type">種別を選択</Label>
-            <Select value={documentType} onValueChange={setDocumentType}>
-              <SelectTrigger id="doc-type" className="w-full">
-                <SelectValue placeholder="種別を選択" />
-              </SelectTrigger>
-              <SelectContent>
-                {documentTypes.length > 0 ? (
-                  documentTypes.map((dt) => (
-                    <SelectItem key={dt.name} value={dt.name}>{dt.name}</SelectItem>
-                  ))
-                ) : (
-                  <>
-                    <SelectItem value="請求書">請求書</SelectItem>
-                    <SelectItem value="領収書">領収書</SelectItem>
-                    <SelectItem value="契約書">契約書</SelectItem>
-                  </>
-                )}
-              </SelectContent>
-            </Select>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* ファイル選択（タブ切替） */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">書類を取り込む</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="w-full">
-              <TabsTrigger value="camera" className="flex-1">
-                <Camera className="mr-2 size-4" />
-                カメラ撮影
-              </TabsTrigger>
-              <TabsTrigger value="upload" className="flex-1">
-                <Upload className="mr-2 size-4" />
-                ファイル選択
-              </TabsTrigger>
-            </TabsList>
-            <TabsContent value="camera" className="mt-4">
-              <CameraCapture
-                images={capturedImages}
-                onCapture={setCapturedImages}
-              />
-            </TabsContent>
-            <TabsContent value="upload" className="mt-4">
-              <FileDropzone
-                files={uploadedFiles}
-                onFilesChange={setUploadedFiles}
-              />
-            </TabsContent>
-          </Tabs>
-
-          {/* AI解析ボタン */}
-          {hasFiles && !showEditor && (
-            <div className="mt-4">
-              <Button onClick={runAnalysis} className="w-full" disabled={isAnalyzing}>
-                {isAnalyzing ? (
-                  <>
-                    <Loader2 className="mr-2 size-4 animate-spin" />
-                    解析中...
-                  </>
-                ) : (
-                  <>
-                    <ArrowRight className="mr-2 size-4" />
-                    AI解析して次へ
-                  </>
-                )}
-              </Button>
+      {/* 種別選択（登録成功後は非表示） */}
+      {!isRegistered && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">書類種別</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              <Label htmlFor="doc-type">種別を選択</Label>
+              <Select value={documentType} onValueChange={setDocumentType}>
+                <SelectTrigger id="doc-type" className="w-full">
+                  <SelectValue placeholder="種別を選択" />
+                </SelectTrigger>
+                <SelectContent>
+                  {documentTypes.length > 0 ? (
+                    documentTypes.map((dt) => (
+                      <SelectItem key={dt.name} value={dt.name}>{dt.name}</SelectItem>
+                    ))
+                  ) : (
+                    <>
+                      <SelectItem value="請求書">請求書</SelectItem>
+                      <SelectItem value="領収書">領収書</SelectItem>
+                      <SelectItem value="契約書">契約書</SelectItem>
+                    </>
+                  )}
+                </SelectContent>
+              </Select>
             </div>
-          )}
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ファイル選択（登録成功後は非表示） */}
+      {!isRegistered && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">書類を取り込む</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Tabs value={activeTab} onValueChange={setActiveTab}>
+              <TabsList className="w-full">
+                <TabsTrigger value="camera" className="flex-1">
+                  <Camera className="mr-2 size-4" />
+                  カメラ撮影
+                </TabsTrigger>
+                <TabsTrigger value="upload" className="flex-1">
+                  <Upload className="mr-2 size-4" />
+                  ファイル選択
+                </TabsTrigger>
+              </TabsList>
+              <TabsContent value="camera" className="mt-4">
+                <CameraCapture
+                  images={capturedImages}
+                  onCapture={setCapturedImages}
+                />
+              </TabsContent>
+              <TabsContent value="upload" className="mt-4">
+                <FileDropzone
+                  files={uploadedFiles}
+                  onFilesChange={setUploadedFiles}
+                />
+              </TabsContent>
+            </Tabs>
+
+            {/* AI解析ボタン */}
+            {hasFiles && !showEditor && (
+              <div className="mt-4">
+                <Button onClick={runAnalysis} className="w-full" disabled={isAnalyzing}>
+                  {isAnalyzing ? (
+                    <>
+                      <Loader2 className="mr-2 size-4 animate-spin" />
+                      解析中...
+                    </>
+                  ) : (
+                    <>
+                      <ArrowRight className="mr-2 size-4" />
+                      AI解析して次へ
+                    </>
+                  )}
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 登録成功画面 */}
+      {isRegistered && (
+        <Card className="border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950">
+          <CardContent className="pt-6">
+            <div className="flex flex-col items-center gap-4 py-4">
+              <CheckCircle2 className="size-12 text-green-600 dark:text-green-400" />
+              <p className="text-lg font-semibold text-green-700 dark:text-green-300">
+                書類を登録しました
+              </p>
+              <div className="flex w-full flex-col gap-3 sm:flex-row">
+                <Button
+                  onClick={resetForNextDocument}
+                  className="flex-1"
+                >
+                  <Plus className="mr-2 size-4" />
+                  次の書類を登録
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => router.push("/documents")}
+                  className="flex-1"
+                >
+                  <ListIcon className="mr-2 size-4" />
+                  書類一覧へ
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* OCR結果編集フォーム */}
-      {showEditor && (
+      {showEditor && !isRegistered && (
         <OcrResultEditor
           ocrResult={ocrResult}
           defaultType={documentType}
