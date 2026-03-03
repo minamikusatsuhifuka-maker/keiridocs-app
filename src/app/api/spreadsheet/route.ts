@@ -59,12 +59,21 @@ export async function GET(request: NextRequest) {
       docQuery = docQuery.eq("user_id", user.id)
     }
 
-    if (startDate) {
-      docQuery = docQuery.gte("issue_date", startDate)
+    // 期間フィルター（issue_dateがnullの場合はcreated_atで判定）
+    if (startDate && endDate) {
+      docQuery = docQuery.or(
+        `and(issue_date.gte.${startDate},issue_date.lte.${endDate}),and(issue_date.is.null,created_at.gte.${startDate}T00:00:00,created_at.lte.${endDate}T23:59:59)`
+      )
+    } else if (startDate) {
+      docQuery = docQuery.or(
+        `issue_date.gte.${startDate},and(issue_date.is.null,created_at.gte.${startDate}T00:00:00)`
+      )
+    } else if (endDate) {
+      docQuery = docQuery.or(
+        `issue_date.lte.${endDate},and(issue_date.is.null,created_at.lte.${endDate}T23:59:59)`
+      )
     }
-    if (endDate) {
-      docQuery = docQuery.lte("issue_date", endDate)
-    }
+
     if (type) {
       docQuery = docQuery.eq("type", type)
     }
@@ -73,6 +82,7 @@ export async function GET(request: NextRequest) {
     }
 
     const { data: documents, error: docError } = await docQuery
+    console.log("スプレッドシート: 書類取得", documents?.length ?? 0, "件", "期間:", startDate, "〜", endDate)
 
     if (docError) {
       console.error("書類取得エラー:", docError)
@@ -126,6 +136,7 @@ export async function GET(request: NextRequest) {
         })
       }
     }
+    console.log("スプレッドシート: document_items件数:", items.length)
 
     // 3. 書類と明細を結合
     const itemsByDocId = new Map<string, typeof items>()
@@ -140,13 +151,15 @@ export async function GET(request: NextRequest) {
 
     for (const doc of documents) {
       const docItems = itemsByDocId.get(doc.id)
+      // issue_dateがnullの場合はcreated_atから日付部分を取得
+      const displayDate = doc.issue_date || (doc.created_at ? doc.created_at.substring(0, 10) : null)
 
       if (docItems && docItems.length > 0) {
         // 明細がある場合は各行を出力
         for (const item of docItems) {
           rows.push({
             document_id: doc.id,
-            date: doc.issue_date,
+            date: displayDate,
             type: doc.type,
             vendor: doc.vendor_name,
             item_name: item.item_name,
@@ -162,7 +175,7 @@ export async function GET(request: NextRequest) {
         // 明細がない場合は書類自体を1行として出力
         rows.push({
           document_id: doc.id,
-          date: doc.issue_date,
+          date: displayDate,
           type: doc.type,
           vendor: doc.vendor_name,
           item_name: doc.description || "(明細なし)",
@@ -175,6 +188,9 @@ export async function GET(request: NextRequest) {
         })
       }
     }
+
+    const docsWithItems = new Set(items.map((i) => i.document_id)).size
+    console.log("スプレッドシート: 明細あり書類:", docsWithItems, "件, 明細なし書類:", documents.length - docsWithItems, "件, 合計行数:", rows.length)
 
     // カテゴリフィルター適用
     const filteredRows = category

@@ -231,6 +231,7 @@ export async function POST(request: NextRequest) {
 
     // 明細行をdocument_itemsに保存
     const docId = (data as DocumentRow | null)?.id
+    console.log("受信items:", Array.isArray(items) ? items.length + "件" : "なし", "docId:", docId)
     if (Array.isArray(items) && items.length > 0 && docId) {
       const itemRows = items
         .filter((item): item is Record<string, unknown> => item != null && typeof item === "object")
@@ -246,6 +247,7 @@ export async function POST(request: NextRequest) {
           notes: typeof item.notes === "string" ? item.notes : "",
         }))
 
+      console.log("INSERT対象:", itemRows.length, "件")
       if (itemRows.length > 0) {
         const { error: itemError } = await supabase
           .from("document_items")
@@ -254,6 +256,8 @@ export async function POST(request: NextRequest) {
         if (itemError) {
           console.error("明細行保存エラー:", itemError)
           // 書類自体は登録済みなのでエラーは無視して続行
+        } else {
+          console.log("明細行保存成功:", itemRows.length, "件")
         }
       }
     }
