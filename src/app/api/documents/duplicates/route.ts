@@ -50,6 +50,7 @@ export async function GET() {
 
   try {
     // 全書類を取得（adminは全件、staffは自分のみ）
+    // file_hashカラムがない場合にもフォールバック
     let query = supabase
       .from("documents")
       .select("id, vendor_name, amount, type, issue_date, due_date, dropbox_path, file_hash, created_at")
@@ -59,7 +60,29 @@ export async function GET() {
       query = query.eq("user_id", user.id)
     }
 
-    const { data: documents, error } = await query
+    let { data: documents, error } = await query
+
+    // file_hash カラムが存在しない場合はfile_hashなしで再取得
+    if (error) {
+      console.warn("file_hashカラムでエラー、file_hashなしで再取得:", error.message)
+      let fallbackQuery = supabase
+        .from("documents")
+        .select("id, vendor_name, amount, type, issue_date, due_date, dropbox_path, created_at")
+        .order("created_at", { ascending: false })
+
+      if (auth.role !== "admin") {
+        fallbackQuery = fallbackQuery.eq("user_id", user.id)
+      }
+
+      const fallbackResult = await fallbackQuery
+      if (fallbackResult.error) {
+        console.error("重複チェック用書類取得エラー:", fallbackResult.error)
+        return NextResponse.json({ error: "書類の取得に失敗しました" }, { status: 500 })
+      }
+      // file_hash を null として扱う
+      documents = (fallbackResult.data ?? []).map((d) => ({ ...d, file_hash: null }))
+      error = null
+    }
 
     if (error) {
       console.error("重複チェック用書類取得エラー:", error)

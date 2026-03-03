@@ -266,18 +266,28 @@ export default function DocumentsPage() {
     setIsDeleting(true)
     try {
       const ids = Array.from(selectedForDeletion)
+      console.log("削除リクエスト:", ids)
       let successCount = 0
+      const errors: string[] = []
 
       for (const id of ids) {
         const res = await fetch(`/api/documents?id=${id}`, { method: "DELETE" })
         if (res.ok) {
           successCount++
         } else {
-          console.error(`書類 ${id} の削除に失敗`)
+          const json = await res.json().catch(() => ({ error: "不明なエラー" })) as { error?: string }
+          const errMsg = `書類 ${id}: ${json.error || res.statusText}`
+          console.error("削除失敗:", errMsg)
+          errors.push(errMsg)
         }
       }
 
-      toast.success(`${successCount}件の書類を削除しました`)
+      if (successCount > 0) {
+        toast.success(`${successCount}件の書類を削除しました（Dropboxからも削除済み）`)
+      }
+      if (errors.length > 0) {
+        toast.error(`${errors.length}件の削除に失敗: ${errors[0]}`)
+      }
       setShowDeleteConfirm(false)
       setShowDuplicateModal(false)
       setSelectedForDeletion(new Set())

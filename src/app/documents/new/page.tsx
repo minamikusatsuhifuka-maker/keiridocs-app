@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import {
   Select,
@@ -88,6 +88,11 @@ export default function NewDocumentPage() {
   const [pendingFormData, setPendingFormData] = useState<DocumentFormData | null>(null)
   const [pendingDropboxPath, setPendingDropboxPath] = useState<string | null>(null)
   const [pendingFileHash, setPendingFileHash] = useState<string | null>(null)
+
+  // useRefで重複スキップフラグを管理（stale closure問題を回避）
+  const skipDuplicateRef = useRef(false)
+  const pendingDropboxPathRef = useRef<string | null>(null)
+  const pendingFileHashRef = useRef<string | null>(null)
 
   // 動的書類種別
   const [documentTypes, setDocumentTypes] = useState<DocumentTypeRecord[]>([])
@@ -282,13 +287,15 @@ export default function NewDocumentPage() {
         }
 
         // 2. Dropboxにアップロード（重複ダイアログからの再送信時はスキップ）
+        const isForceSubmit = skipDuplicateRef.current
         let dropboxPath: string
         let fileHash: string
 
-        if (pendingDropboxPath && formData === pendingFormData) {
+        if (isForceSubmit && pendingDropboxPathRef.current) {
           // 前回アップロード済みのパスとハッシュを再利用
-          dropboxPath = pendingDropboxPath
-          fileHash = pendingFileHash || ""
+          dropboxPath = pendingDropboxPathRef.current
+          fileHash = pendingFileHashRef.current || ""
+          console.log("強制登録: Dropboxアップロードをスキップ", { dropboxPath, fileHash })
         } else {
           const uploadResponse = await fetch("/api/dropbox/upload", {
             method: "POST",
@@ -316,25 +323,30 @@ export default function NewDocumentPage() {
         }
 
         // 3. DB に書類レコードを保存（重複チェック付き）
-        const skipDuplicate = formData === pendingFormData
+        const requestBody = {
+          type: formData.type,
+          vendor_name: formData.vendor_name,
+          amount: formData.amount ? Number(formData.amount) : null,
+          issue_date: formData.issue_date || null,
+          due_date: formData.due_date || null,
+          description: formData.description || null,
+          input_method: activeTab === "camera" ? "camera" : "upload",
+          dropbox_path: dropboxPath,
+          ocr_raw: ocrResult,
+          tax_category: formData.tax_category || "未判定",
+          account_title: formData.account_title || "",
+          file_hash: fileHash,
+          skip_duplicate_check: isForceSubmit,
+        }
+        console.log("送信データ:", JSON.stringify(requestBody))
+
+        // refをリセット
+        skipDuplicateRef.current = false
+
         const docResponse = await fetch("/api/documents", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            type: formData.type,
-            vendor_name: formData.vendor_name,
-            amount: formData.amount ? Number(formData.amount) : null,
-            issue_date: formData.issue_date || null,
-            due_date: formData.due_date || null,
-            description: formData.description || null,
-            input_method: activeTab === "camera" ? "camera" : "upload",
-            dropbox_path: dropboxPath,
-            ocr_raw: ocrResult,
-            tax_category: formData.tax_category || "未判定",
-            account_title: formData.account_title || "",
-            file_hash: fileHash,
-            skip_duplicate_check: skipDuplicate,
-          }),
+          body: JSON.stringify(requestBody),
         })
 
         if (!docResponse.ok) {
@@ -356,10 +368,16 @@ export default function NewDocumentPage() {
           setPendingFormData(formData)
           setPendingDropboxPath(dropboxPath)
           setPendingFileHash(fileHash)
+          // refにも保存（stale closure対策）
+          pendingDropboxPathRef.current = dropboxPath
+          pendingFileHashRef.current = fileHash
           setShowDuplicateDialog(true)
           return // 登録はまだ行わない
         }
 
+        // 成功後にrefをクリア
+        pendingDropboxPathRef.current = null
+        pendingFileHashRef.current = null
         toast.success("書類を登録しました")
         setIsRegistered(true)
       } catch (error) {
@@ -394,11 +412,12 @@ export default function NewDocumentPage() {
   // 重複を無視して強制登録する
   const handleForceSubmit = useCallback(async () => {
     if (!pendingFormData) return
-    console.log("強制登録開始", { pendingFormData, pendingDropboxPath, pendingFileHash })
+    console.log("強制登録開始", { pendingFormData, pendingDropboxPath: pendingDropboxPathRef.current, pendingFileHash: pendingFileHashRef.current })
+    // refにフラグをセット（stale closure でも正しく読める）
+    skipDuplicateRef.current = true
     setShowDuplicateDialog(false)
-    // pendingFormData をそのまま渡すと skipDuplicate = true になる（Dropboxアップロードもスキップ）
     await handleSubmit(pendingFormData)
-  }, [pendingFormData, pendingDropboxPath, pendingFileHash, handleSubmit])
+  }, [pendingFormData, handleSubmit])
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">

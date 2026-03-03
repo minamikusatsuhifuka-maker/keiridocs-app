@@ -146,6 +146,7 @@ export async function POST(request: NextRequest) {
     // 重複チェック（skip_duplicate_check が true なら省略）
     const skipDuplicateCheck = (body as Record<string, unknown>).skip_duplicate_check === true
     const fileHashStr = typeof file_hash === "string" ? file_hash : ""
+    console.log("skip_duplicate_check:", skipDuplicateCheck, "file_hash:", fileHashStr)
     if (!skipDuplicateCheck) {
       // ファイルハッシュによる完全一致チェック
       if (fileHashStr) {
@@ -364,6 +365,8 @@ export async function DELETE(request: NextRequest) {
     .eq("id", id)
     .single()
 
+  console.log("削除対象:", id, "Dropboxパス:", docData?.dropbox_path)
+
   const { error } = await supabase
     .from("documents")
     .delete()
@@ -378,9 +381,12 @@ export async function DELETE(request: NextRequest) {
   if (docData?.dropbox_path) {
     try {
       await deleteFile(docData.dropbox_path)
+      console.log("Dropbox削除成功:", docData.dropbox_path)
     } catch (dropboxError) {
       console.error("Dropboxファイル削除エラー（書類ID: " + id + "）:", dropboxError)
     }
+  } else {
+    console.log("Dropboxパスなし、ファイル削除スキップ")
   }
 
   return NextResponse.json({ success: true })
