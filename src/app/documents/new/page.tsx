@@ -17,8 +17,27 @@ import { CameraCapture } from "@/components/documents/camera-capture"
 import { FileDropzone } from "@/components/documents/file-dropzone"
 import { OcrResultEditor, type DocumentFormData } from "@/components/documents/ocr-result-editor"
 import type { OcrResult } from "@/lib/gemini"
-import { Camera, Upload, ArrowRight, Loader2, CheckCircle2, ListIcon, Plus } from "lucide-react"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Camera, Upload, ArrowRight, Loader2, CheckCircle2, ListIcon, Plus, AlertTriangle } from "lucide-react"
 import { toast } from "sonner"
+
+/** 重複候補の型 */
+interface DuplicateCandidate {
+  id: string
+  vendor_name: string
+  amount: number | null
+  type: string
+  issue_date: string | null
+  due_date: string | null
+  created_at: string
+}
 
 interface CapturedImage {
   base64: string
@@ -58,6 +77,11 @@ export default function NewDocumentPage() {
 
   // 登録成功状態
   const [isRegistered, setIsRegistered] = useState(false)
+
+  // 重複チェック
+  const [duplicates, setDuplicates] = useState<DuplicateCandidate[]>([])
+  const [showDuplicateDialog, setShowDuplicateDialog] = useState(false)
+  const [pendingFormData, setPendingFormData] = useState<DocumentFormData | null>(null)
 
   // 動的書類種別
   const [documentTypes, setDocumentTypes] = useState<DocumentTypeRecord[]>([])
@@ -273,7 +297,8 @@ export default function NewDocumentPage() {
           data: { path: string }
         }
 
-        // 3. DB に書類レコードを保存
+        // 3. DB に書類レコードを保存（重複チェック付き）
+        const skipDuplicate = formData === pendingFormData
         const docResponse = await fetch("/api/documents", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -289,12 +314,27 @@ export default function NewDocumentPage() {
             ocr_raw: ocrResult,
             tax_category: formData.tax_category || "未判定",
             account_title: formData.account_title || "",
+            skip_duplicate_check: skipDuplicate,
           }),
         })
 
         if (!docResponse.ok) {
           const errorData = await docResponse.json() as { error: string }
           throw new Error(errorData.error || "書類の登録に失敗しました")
+        }
+
+        const docResult = await docResponse.json() as {
+          data: unknown
+          duplicates?: DuplicateCandidate[]
+          warning?: string
+        }
+
+        // 重複候補がある場合はダイアログを表示
+        if (docResult.duplicates && docResult.duplicates.length > 0) {
+          setDuplicates(docResult.duplicates)
+          setPendingFormData(formData)
+          setShowDuplicateDialog(true)
+          return // 登録はまだ行わない
         }
 
         toast.success("書類を登録しました")
@@ -327,6 +367,14 @@ export default function NewDocumentPage() {
       setDocumentType("請求書")
     }
   }, [documentTypes])
+
+  // 重複を無視して強制登録する
+  const handleForceSubmit = useCallback(async () => {
+    if (!pendingFormData) return
+    setShowDuplicateDialog(false)
+    // pendingFormData をそのまま渡すと skipDuplicate = true になる
+    await handleSubmit(pendingFormData)
+  }, [pendingFormData, handleSubmit])
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -459,6 +507,61 @@ export default function NewDocumentPage() {
           documentTypes={documentTypes.length > 0 ? documentTypes : undefined}
         />
       )}
+
+      {/* 重複警告ダイアログ */}
+      <Dialog open={showDuplicateDialog} onOpenChange={setShowDuplicateDialog}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-amber-600">
+              <AlertTriangle className="size-5" />
+              重複の可能性があります
+            </DialogTitle>
+            <DialogDescription>
+              この書類は既に登録されている可能性があります。以下の書類が見つかりました。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-60 space-y-2 overflow-y-auto">
+            {duplicates.map((dup) => (
+              <div
+                key={dup.id}
+                className="rounded-md border p-3 text-sm"
+              >
+                <div className="font-medium">{dup.vendor_name}</div>
+                <div className="mt-1 text-muted-foreground">
+                  {dup.type}
+                  {dup.amount != null && ` ・ ¥${dup.amount.toLocaleString()}`}
+                  {dup.issue_date && ` ・ ${dup.issue_date}`}
+                </div>
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  登録日時: {new Date(dup.created_at).toLocaleString("ja-JP")}
+                </div>
+              </div>
+            ))}
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowDuplicateDialog(false)
+                setPendingFormData(null)
+                setDuplicates([])
+              }}
+            >
+              キャンセル
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleForceSubmit}
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? (
+                <Loader2 className="mr-2 size-4 animate-spin" />
+              ) : null}
+              それでも登録する
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

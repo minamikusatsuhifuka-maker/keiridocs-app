@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { getDocumentPath, moveFile } from "@/lib/dropbox"
+import { getDocumentPath, moveFile, deleteFile } from "@/lib/dropbox"
 import { getCurrentUserRole } from "@/lib/auth"
 import type { Database } from "@/types/database"
 
@@ -140,6 +140,43 @@ export async function POST(request: NextRequest) {
         { error: "入力経路は必須です" },
         { status: 400 }
       )
+    }
+
+    // 重複チェック（skip_duplicate_check が true なら省略）
+    const skipDuplicateCheck = (body as Record<string, unknown>).skip_duplicate_check === true
+    if (!skipDuplicateCheck) {
+      let dupQuery = supabase
+        .from("documents")
+        .select("id, vendor_name, amount, type, issue_date, due_date, created_at")
+        .eq("user_id", user.id)
+        .eq("vendor_name", vendor_name)
+        .eq("type", type)
+
+      if (typeof amount === "number") {
+        dupQuery = dupQuery.eq("amount", amount)
+      }
+
+      const { data: dupCandidates } = await dupQuery
+
+      if (dupCandidates && dupCandidates.length > 0) {
+        // 日付の一致もチェック（issue_date または due_date が一致）
+        const issueStr = typeof issue_date === "string" ? issue_date : null
+        const dueStr = typeof due_date === "string" ? due_date : null
+
+        const duplicates = dupCandidates.filter((d) => {
+          if (issueStr && d.issue_date === issueStr) return true
+          if (dueStr && d.due_date === dueStr) return true
+          return false
+        })
+
+        if (duplicates.length > 0) {
+          return NextResponse.json({
+            data: null,
+            duplicates,
+            warning: "この書類は既に登録されている可能性があります",
+          }, { status: 200 })
+        }
+      }
     }
 
     const { data, error } = await supabase
@@ -297,6 +334,13 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "IDが必要です" }, { status: 400 })
   }
 
+  // 削除前にDropboxパスを取得
+  const { data: docData } = await supabase
+    .from("documents")
+    .select("dropbox_path")
+    .eq("id", id)
+    .single()
+
   const { error } = await supabase
     .from("documents")
     .delete()
@@ -305,6 +349,15 @@ export async function DELETE(request: NextRequest) {
   if (error) {
     console.error("書類削除エラー:", error)
     return NextResponse.json({ error: "書類の削除に失敗しました" }, { status: 500 })
+  }
+
+  // Dropboxファイルも削除（失敗してもDB削除は成功扱い）
+  if (docData?.dropbox_path) {
+    try {
+      await deleteFile(docData.dropbox_path)
+    } catch (dropboxError) {
+      console.error("Dropboxファイル削除エラー（書類ID: " + id + "）:", dropboxError)
+    }
   }
 
   return NextResponse.json({ success: true })

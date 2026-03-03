@@ -11,8 +11,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Checkbox } from "@/components/ui/checkbox"
 import { DocumentTable } from "@/components/documents/document-table"
-import { Download, Loader2, Plus, Search, X } from "lucide-react"
+import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle } from "lucide-react"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
@@ -20,6 +29,24 @@ import type { DocumentStatus } from "@/types"
 type Document = Database["public"]["Tables"]["documents"]["Row"]
 type SortField = "type" | "vendor_name" | "amount" | "issue_date" | "due_date" | "status" | "created_at"
 type SortDirection = "asc" | "desc"
+
+/** 重複グループ */
+interface DuplicateGroup {
+  key: string
+  vendor_name: string
+  amount: number | null
+  type: string
+  documents: {
+    id: string
+    vendor_name: string
+    amount: number | null
+    type: string
+    issue_date: string | null
+    due_date: string | null
+    dropbox_path: string | null
+    created_at: string
+  }[]
+}
 
 const PAGE_SIZE = 20
 
@@ -156,8 +183,87 @@ export default function DocumentsPage() {
     setPage(0)
   }
 
+  // 重複チェック
+  const [isDuplicateChecking, setIsDuplicateChecking] = useState(false)
+  const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([])
+  const [showDuplicateModal, setShowDuplicateModal] = useState(false)
+  const [selectedForDeletion, setSelectedForDeletion] = useState<Set<string>>(new Set())
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+
   // CSVエクスポート
   const [isExporting, setIsExporting] = useState(false)
+
+  // 重複チェック実行
+  async function handleDuplicateCheck() {
+    setIsDuplicateChecking(true)
+    try {
+      const res = await fetch("/api/documents/duplicates")
+      if (!res.ok) {
+        const json = await res.json() as { error?: string }
+        throw new Error(json.error || "重複チェックに失敗しました")
+      }
+      const json = await res.json() as { data: DuplicateGroup[] }
+      const groups = json.data ?? []
+
+      if (groups.length === 0) {
+        toast.success("重複候補は見つかりませんでした")
+        return
+      }
+
+      setDuplicateGroups(groups)
+      setSelectedForDeletion(new Set())
+      setShowDuplicateModal(true)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "重複チェックに失敗しました")
+    } finally {
+      setIsDuplicateChecking(false)
+    }
+  }
+
+  // 削除チェックボックスの切り替え
+  function toggleDeletionSelection(docId: string) {
+    setSelectedForDeletion((prev) => {
+      const next = new Set(prev)
+      if (next.has(docId)) {
+        next.delete(docId)
+      } else {
+        next.add(docId)
+      }
+      return next
+    })
+  }
+
+  // 選択した書類を一括削除
+  async function handleBulkDelete() {
+    if (selectedForDeletion.size === 0) return
+    setIsDeleting(true)
+    try {
+      const ids = Array.from(selectedForDeletion)
+      let successCount = 0
+
+      for (const id of ids) {
+        const res = await fetch(`/api/documents?id=${id}`, { method: "DELETE" })
+        if (res.ok) {
+          successCount++
+        } else {
+          console.error(`書類 ${id} の削除に失敗`)
+        }
+      }
+
+      toast.success(`${successCount}件の書類を削除しました`)
+      setShowDeleteConfirm(false)
+      setShowDuplicateModal(false)
+      setSelectedForDeletion(new Set())
+      setDuplicateGroups([])
+      // 一覧を再取得
+      fetchDocuments()
+    } catch {
+      toast.error("削除処理に失敗しました")
+    } finally {
+      setIsDeleting(false)
+    }
+  }
 
   async function handleExportCsv() {
     setIsExporting(true)
@@ -317,6 +423,11 @@ export default function DocumentsPage() {
             </Button>
           )}
 
+          <Button variant="outline" size="sm" onClick={handleDuplicateCheck} disabled={isDuplicateChecking}>
+            {isDuplicateChecking ? <Loader2 className="size-3.5 animate-spin" /> : <Copy className="size-3.5" />}
+            重複チェック
+          </Button>
+
           <Button variant="outline" size="sm" onClick={handleExportCsv} disabled={isExporting}>
             {isExporting ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
             CSVエクスポート
@@ -379,6 +490,105 @@ export default function DocumentsPage() {
           </div>
         </div>
       )}
+
+      {/* 重複チェック結果モーダル */}
+      <Dialog open={showDuplicateModal} onOpenChange={setShowDuplicateModal}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="size-5 text-amber-600" />
+              重複候補 ({duplicateGroups.length}グループ)
+            </DialogTitle>
+            <DialogDescription>
+              同じ取引先・金額・種別の書類がグループ化されています。削除する書類にチェックを入れてください。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+            {duplicateGroups.map((group) => (
+              <div key={group.key} className="rounded-lg border p-4">
+                <div className="mb-2 font-medium">
+                  {group.vendor_name} ・ {group.type}
+                  {group.amount != null && ` ・ ¥${group.amount.toLocaleString()}`}
+                  <span className="ml-2 text-sm text-muted-foreground">
+                    ({group.documents.length}件)
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {group.documents.map((doc) => (
+                    <label
+                      key={doc.id}
+                      className="flex items-start gap-3 rounded-md border p-3 hover:bg-muted/50 cursor-pointer"
+                    >
+                      <Checkbox
+                        checked={selectedForDeletion.has(doc.id)}
+                        onCheckedChange={() => toggleDeletionSelection(doc.id)}
+                        className="mt-0.5"
+                      />
+                      <div className="flex-1 text-sm">
+                        <div>
+                          {doc.issue_date && <span>発行日: {doc.issue_date}</span>}
+                          {doc.due_date && <span className="ml-3">支払期日: {doc.due_date}</span>}
+                        </div>
+                        {doc.dropbox_path && (
+                          <div className="mt-0.5 text-xs text-muted-foreground truncate">
+                            {doc.dropbox_path}
+                          </div>
+                        )}
+                        <div className="mt-0.5 text-xs text-muted-foreground">
+                          登録日時: {new Date(doc.created_at).toLocaleString("ja-JP")}
+                        </div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setShowDuplicateModal(false)}>
+              閉じる
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={selectedForDeletion.size === 0}
+              onClick={() => setShowDeleteConfirm(true)}
+            >
+              <Trash2 className="mr-2 size-4" />
+              選択した書類を削除 ({selectedForDeletion.size}件)
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 削除確認ダイアログ */}
+      <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <Trash2 className="size-5" />
+              削除の確認
+            </DialogTitle>
+            <DialogDescription>
+              {selectedForDeletion.size}件の書類を削除します。Dropboxからもファイルが削除されます。この操作は取り消せません。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setShowDeleteConfirm(false)} disabled={isDeleting}>
+              キャンセル
+            </Button>
+            <Button variant="destructive" onClick={handleBulkDelete} disabled={isDeleting}>
+              {isDeleting ? (
+                <>
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                  削除中...
+                </>
+              ) : (
+                "本当に削除する"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

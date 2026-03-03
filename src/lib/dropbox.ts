@@ -247,6 +247,24 @@ export async function moveFile(
   return data.metadata?.path_display ?? toPath
 }
 
+/* ---------- 削除 ---------- */
+
+/**
+ * Dropbox上のファイルを削除する
+ * @param path 削除するファイルのパス
+ */
+export async function deleteFile(path: string): Promise<void> {
+  try {
+    await dbxPost("/files/delete_v2", { path })
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error)
+    // ファイルが既に存在しない場合は無視
+    if (msg.includes("path_lookup/not_found")) return
+    console.error("Dropbox ファイル削除エラー:", msg)
+    throw error
+  }
+}
+
 /* ---------- CSV作成 ---------- */
 
 /**
