@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
+import { createClient } from "@/lib/supabase/server"
 import { createHash } from "crypto"
 import { listFiles, downloadFile, moveFile, getDocumentPath } from "@/lib/dropbox"
 import { analyzeDocument, analyzeDocumentFromText, applyAutoClassifyRules, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
@@ -10,6 +11,17 @@ import * as XLSX from "xlsx"
 import Papa from "papaparse"
 
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"]
+
+/** 1ファイルの処理結果（手動スキャン用） */
+interface ScanDetail {
+  filename: string
+  status: "registered" | "needs_review" | "error"
+  vendor?: string
+  type?: string
+  amount?: number | null
+  reasons?: string[]
+  error?: string
+}
 
 /** 画像/PDFのMIMEタイプ */
 const IMAGE_PDF_TYPES = [
@@ -86,11 +98,130 @@ function createServiceClient() {
   return createSupabaseClient<Database>(url, serviceKey)
 }
 
-// Dropboxスキャン監視 — Vercel Cron Jobs用
-// スキャンフォルダ内の新しいファイルを検知してAI解析・自動登録する
+/**
+ * スキャン処理の共通ロジック
+ * GET（cron）とPOST（手動）の両方から呼ばれる
+ */
+async function runScan(
+  supabase: ReturnType<typeof createServiceClient>,
+  userId: string
+): Promise<{
+  scanned: number
+  registered: number
+  needs_review: number
+  errors: number
+  details: ScanDetail[]
+}> {
+  const scanPaths = ["/経理書類", "/経理書類/スキャン"]
+  const details: ScanDetail[] = []
+  let totalRegistered = 0
+  let totalNeedsReview = 0
+  let totalErrors = 0
+
+  for (const scanPath of scanPaths) {
+    let files: Awaited<ReturnType<typeof listFiles>>
+    try {
+      files = await listFiles(scanPath)
+    } catch {
+      console.log(`スキャン: フォルダなし: ${scanPath}`)
+      continue
+    }
+
+    for (const file of files) {
+      const mimeType = guessMimeType(file.name)
+      if (!mimeType || !ALL_SUPPORTED_TYPES.includes(mimeType)) {
+        continue
+      }
+
+      // 既に処理済みか確認
+      const { data: existing } = await supabase
+        .from("scan_items")
+        .select("id, status")
+        .eq("dropbox_path", file.path_display)
+        .eq("user_id", userId)
+        .limit(1)
+
+      if (existing && existing.length > 0) continue
+
+      console.log("スキャン: 新ファイル検知:", file.name)
+
+      // scan_itemsに記録
+      const { data: scanItem, error: insertError } = await supabase
+        .from("scan_items")
+        .insert({
+          dropbox_path: file.path_display,
+          file_name: file.name,
+          status: "processing",
+          user_id: userId,
+        })
+        .select("id")
+        .single()
+
+      const scanItemId = (scanItem as { id: string } | null)?.id
+      if (insertError || !scanItemId) {
+        console.error("スキャン: scan_items挿入エラー:", insertError)
+        details.push({ filename: file.name, status: "error", error: "内部エラー" })
+        totalErrors++
+        continue
+      }
+
+      try {
+        const result = await processFile(supabase, scanItemId, file.path_display, file.name, mimeType, userId)
+
+        if (result.needsReview) {
+          details.push({
+            filename: file.name,
+            status: "needs_review",
+            reasons: result.reasons,
+            vendor: result.vendor,
+            type: result.docType,
+            amount: result.amount,
+          })
+          totalNeedsReview++
+        } else {
+          details.push({
+            filename: file.name,
+            status: "registered",
+            vendor: result.vendor,
+            type: result.docType,
+            amount: result.amount,
+          })
+          totalRegistered++
+        }
+      } catch (error) {
+        console.error("スキャン: 処理エラー:", file.name, error)
+
+        await supabase
+          .from("scan_items")
+          .update({
+            status: "error",
+            error_message: error instanceof Error ? error.message : "処理に失敗しました",
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", scanItemId)
+
+        details.push({
+          filename: file.name,
+          status: "error",
+          error: error instanceof Error ? error.message : "処理に失敗しました",
+        })
+        totalErrors++
+      }
+    }
+  }
+
+  return {
+    scanned: details.length,
+    registered: totalRegistered,
+    needs_review: totalNeedsReview,
+    errors: totalErrors,
+    details,
+  }
+}
+
+// GET: Vercel Cron Jobs用（CRON_SECRET認証）
 // vercel.json crons: path="/api/cron/scan-dropbox" schedule="every 15 minutes"
 export async function GET(request: NextRequest) {
-  // Vercel Cron認証チェック
   const authHeader = request.headers.get("authorization")
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
@@ -99,7 +230,6 @@ export async function GET(request: NextRequest) {
   const supabase = createServiceClient()
 
   try {
-    // adminユーザーを取得（cronはセッションがないのでadminのIDを使う）
     const { data: adminRole } = await supabase
       .from("user_roles")
       .select("user_id")
@@ -111,117 +241,44 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "adminユーザーが見つかりません" }, { status: 500 })
     }
 
-    const userId = adminRole.user_id
-
-    // スキャン対象フォルダ（デフォルト: /経理書類 と /経理書類/スキャン）
-    const scanPaths = ["/経理書類", "/経理書類/スキャン"]
-
-    let totalProcessed = 0
-    let totalRegistered = 0
-    let totalNeedsReview = 0
-    let totalErrors = 0
-
-    for (const scanPath of scanPaths) {
-      let files: Awaited<ReturnType<typeof listFiles>>
-      try {
-        files = await listFiles(scanPath)
-      } catch {
-        // フォルダが存在しない場合はスキップ
-        console.log(`スキャン: フォルダなし: ${scanPath}`)
-        continue
-      }
-
-      for (const file of files) {
-        // サポート対象の拡張子かチェック
-        const mimeType = guessMimeType(file.name)
-        if (!mimeType || !ALL_SUPPORTED_TYPES.includes(mimeType)) {
-          continue
-        }
-
-        // 既に処理済みか確認（dropbox_pathで重複回避）
-        const { data: existing } = await supabase
-          .from("scan_items")
-          .select("id, status")
-          .eq("dropbox_path", file.path_display)
-          .eq("user_id", userId)
-          .limit(1)
-
-        if (existing && existing.length > 0) {
-          // 既にscan_itemsに記録済み（processed / needs_review / error）
-          continue
-        }
-
-        console.log("スキャン: 新ファイル検知:", file.name)
-        totalProcessed++
-
-        // scan_itemsに記録（processing）
-        const { data: scanItem, error: insertError } = await supabase
-          .from("scan_items")
-          .insert({
-            dropbox_path: file.path_display,
-            file_name: file.name,
-            status: "processing",
-            user_id: userId,
-          })
-          .select("id")
-          .single()
-
-        const scanItemId = (scanItem as { id: string } | null)?.id
-        if (insertError || !scanItemId) {
-          console.error("スキャン: scan_items挿入エラー:", insertError)
-          totalErrors++
-          continue
-        }
-
-        try {
-          await processFile(supabase, scanItemId, file.path_display, file.name, mimeType, userId)
-          totalRegistered++
-        } catch (error) {
-          console.error("スキャン: 処理エラー:", file.name, error)
-
-          // scan_itemsをerrorに更新
-          await supabase
-            .from("scan_items")
-            .update({
-              status: "error",
-              error_message: error instanceof Error ? error.message : "処理に失敗しました",
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", scanItemId)
-
-          totalErrors++
-        }
-      }
-    }
-
-    // needs_reviewの再集計
-    const { count: reviewCount } = await supabase
-      .from("scan_items")
-      .select("id", { count: "exact", head: true })
-      .eq("status", "needs_review")
-      .eq("user_id", userId)
-
-    totalNeedsReview = reviewCount ?? 0
+    const result = await runScan(supabase, adminRole.user_id)
 
     return NextResponse.json({
       message: "スキャン完了",
-      processed: totalProcessed,
-      registered: totalRegistered,
-      needs_review: totalNeedsReview,
-      errors: totalErrors,
+      ...result,
     })
   } catch (error) {
     console.error("[Cron] スキャン監視エラー:", error)
-    return NextResponse.json(
-      { error: "スキャン監視に失敗しました" },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: "スキャン監視に失敗しました" }, { status: 500 })
+  }
+}
+
+// POST: 手動スキャン用（ユーザーセッション認証）
+export async function POST() {
+  const userSupabase = await createClient()
+  const { data: { user }, error: authError } = await userSupabase.auth.getUser()
+
+  if (authError || !user) {
+    return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
+  }
+
+  // サービスロールクライアントでRLSバイパス（scan_items書き込み等）
+  const supabase = createServiceClient()
+
+  try {
+    const result = await runScan(supabase, user.id)
+
+    return NextResponse.json(result)
+  } catch (error) {
+    console.error("手動スキャンエラー:", error)
+    return NextResponse.json({ error: "スキャンに失敗しました" }, { status: 500 })
   }
 }
 
 /**
  * 1ファイルの全自動登録処理
  * AI解析 → 重複チェック → Dropbox移動 → DB登録
+ * @returns 処理結果（登録 or 要確認）
  */
 async function processFile(
   supabase: ReturnType<typeof createServiceClient>,
@@ -230,7 +287,13 @@ async function processFile(
   fileName: string,
   mimeType: string,
   userId: string
-) {
+): Promise<{
+  needsReview: boolean
+  vendor?: string
+  docType?: string
+  amount?: number | null
+  reasons?: string[]
+}> {
   // 1. Dropboxからダウンロード
   const { buffer } = await downloadFile(dropboxPath)
 
@@ -370,7 +433,13 @@ async function processFile(
 
     // 通知を送る
     await sendNotification(supabase, userId, fileName, allReasons)
-    return
+    return {
+      needsReview: true,
+      vendor: ocrResult.vendor_name,
+      docType: ocrResult.type || undefined,
+      amount: ocrResult.amount,
+      reasons: allReasons,
+    }
   }
 
   // 8. 問題なければDropbox移動 + DB登録
@@ -443,6 +512,13 @@ async function processFile(
       updated_at: new Date().toISOString(),
     })
     .eq("id", scanItemId)
+
+  return {
+    needsReview: false,
+    vendor: ocrResult.vendor_name,
+    docType: docType,
+    amount: ocrResult.amount,
+  }
 }
 
 /**

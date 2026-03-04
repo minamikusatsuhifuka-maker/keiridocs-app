@@ -15,12 +15,16 @@ import {
   Download,
   Briefcase,
   Table2,
+  ScanLine,
+  Loader2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/hooks/use-auth"
 import { useRole } from "@/hooks/use-role"
+import { useState } from "react"
+import { toast } from "sonner"
 
 const navItems = [
   { href: "/", label: "ダッシュボード", icon: LayoutDashboard },
@@ -81,13 +85,44 @@ function isActive(href: string, pathname: string) {
   return pathname.startsWith(href)
 }
 
+// スキャン実行フック
+function useScan() {
+  const [isScanning, setIsScanning] = useState(false)
+
+  async function runScan() {
+    setIsScanning(true)
+    try {
+      const res = await fetch("/api/cron/scan-dropbox", { method: "POST" })
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(json.error || "スキャンに失敗しました")
+      }
+      const result = await res.json() as { scanned: number; registered: number; needs_review: number; errors: number }
+
+      if (result.scanned === 0) {
+        toast("新しいファイルはありませんでした")
+      } else {
+        if (result.registered > 0) toast.success(`${result.registered}件の書類を自動登録しました`)
+        if (result.needs_review > 0) toast.warning(`${result.needs_review}件の要確認書類があります`)
+        if (result.errors > 0) toast.error(`${result.errors}件のエラーが発生しました`)
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "スキャンに失敗しました")
+    } finally {
+      setIsScanning(false)
+    }
+  }
+
+  return { isScanning, runScan }
+}
+
 // デスクトップ用サイドバー
 export function Sidebar() {
   const pathname = usePathname()
   const { user, signOut } = useAuth()
   const { isAdmin } = useRole()
+  const { isScanning, runScan } = useScan()
 
-  // ユーザー表示名（メールアドレスまたはメタデータから取得）
   const displayName =
     user?.user_metadata?.full_name ??
     user?.email ??
@@ -116,6 +151,24 @@ export function Sidebar() {
             active={isActive(item.href, pathname)}
           />
         ))}
+        <Separator className="my-2" />
+        <button
+          type="button"
+          onClick={runScan}
+          disabled={isScanning}
+          className={cn(
+            "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
+            "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            isScanning && "opacity-50 cursor-not-allowed"
+          )}
+        >
+          {isScanning ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <ScanLine className="h-4 w-4" />
+          )}
+          {isScanning ? "スキャン中..." : "スキャン実行"}
+        </button>
       </nav>
 
       {/* ユーザー情報 + ログアウト */}
@@ -142,6 +195,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname()
   const { user, signOut } = useAuth()
   const { isAdmin } = useRole()
+  const { isScanning, runScan } = useScan()
 
   const displayName =
     user?.user_metadata?.full_name ??
@@ -170,6 +224,24 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             onClick={onNavigate}
           />
         ))}
+        <Separator className="my-2" />
+        <button
+          type="button"
+          onClick={runScan}
+          disabled={isScanning}
+          className={cn(
+            "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
+            "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            isScanning && "opacity-50 cursor-not-allowed"
+          )}
+        >
+          {isScanning ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <ScanLine className="h-4 w-4" />
+          )}
+          {isScanning ? "スキャン中..." : "スキャン実行"}
+        </button>
       </nav>
       <div className="border-t p-4">
         <div className="mb-2 truncate text-sm text-muted-foreground">

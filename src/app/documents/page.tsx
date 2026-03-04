@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { DocumentTable } from "@/components/documents/document-table"
-import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle } from "lucide-react"
+import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle } from "lucide-react"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
@@ -206,6 +206,25 @@ export default function DocumentsPage() {
   const [isDeleting, setIsDeleting] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
+  // Dropboxスキャン
+  const [isScanning, setIsScanning] = useState(false)
+  const [showScanResult, setShowScanResult] = useState(false)
+  const [scanResult, setScanResult] = useState<{
+    scanned: number
+    registered: number
+    needs_review: number
+    errors: number
+    details: {
+      filename: string
+      status: "registered" | "needs_review" | "error"
+      vendor?: string
+      type?: string
+      amount?: number | null
+      reasons?: string[]
+      error?: string
+    }[]
+  } | null>(null)
+
   // CSVエクスポート
   const [isExporting, setIsExporting] = useState(false)
 
@@ -342,6 +361,41 @@ export default function DocumentsPage() {
     }
   }
 
+  // Dropboxスキャン実行
+  async function handleScan() {
+    setIsScanning(true)
+    setScanResult(null)
+    try {
+      const res = await fetch("/api/cron/scan-dropbox", { method: "POST" })
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(json.error || "スキャンに失敗しました")
+      }
+      const result = await res.json() as typeof scanResult
+      setScanResult(result)
+
+      if (!result || result.scanned === 0) {
+        toast("新しいファイルはありませんでした")
+      } else {
+        if (result.registered > 0) {
+          toast.success(`${result.registered}件の書類を自動登録しました`)
+        }
+        if (result.needs_review > 0) {
+          toast.warning(`${result.needs_review}件の要確認書類があります`)
+        }
+        if (result.errors > 0) {
+          toast.error(`${result.errors}件のエラーが発生しました`)
+        }
+        setShowScanResult(true)
+        fetchDocuments()
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "スキャンに失敗しました")
+    } finally {
+      setIsScanning(false)
+    }
+  }
+
   async function handleExportCsv() {
     setIsExporting(true)
     try {
@@ -425,12 +479,26 @@ export default function DocumentsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">書類一覧</h1>
-        <Button asChild>
-          <Link href="/documents/new">
-            <Plus className="size-4" />
-            新規登録
-          </Link>
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={handleScan}
+            disabled={isScanning}
+          >
+            {isScanning ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <RefreshCw className="size-4" />
+            )}
+            {isScanning ? "スキャン中..." : "Dropboxスキャン"}
+          </Button>
+          <Button asChild>
+            <Link href="/documents/new">
+              <Plus className="size-4" />
+              新規登録
+            </Link>
+          </Button>
+        </div>
       </div>
 
       {/* 検索・フィルタ */}
@@ -741,6 +809,63 @@ export default function DocumentsPage() {
                 "本当に削除する"
               )}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* スキャン結果モーダル */}
+      <Dialog open={showScanResult} onOpenChange={setShowScanResult}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RefreshCw className="size-5" />
+              スキャン結果
+            </DialogTitle>
+            <DialogDescription>
+              {scanResult?.scanned ?? 0}件のファイルを処理しました
+            </DialogDescription>
+          </DialogHeader>
+          {scanResult && scanResult.details.length > 0 && (
+            <div className="max-h-60 space-y-2 overflow-y-auto">
+              {scanResult.details.map((d, i) => (
+                <div
+                  key={i}
+                  className={`flex items-start gap-2 rounded-md border p-3 text-sm ${
+                    d.status === "registered"
+                      ? "border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950/30"
+                      : d.status === "needs_review"
+                        ? "border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30"
+                        : "border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30"
+                  }`}
+                >
+                  {d.status === "registered" ? (
+                    <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-green-600" />
+                  ) : d.status === "needs_review" ? (
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
+                  ) : (
+                    <XCircle className="mt-0.5 size-4 shrink-0 text-red-600" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    {d.status === "registered" && d.vendor ? (
+                      <span>
+                        {d.vendor} / {d.type} / ¥{(d.amount ?? 0).toLocaleString()}
+                      </span>
+                    ) : d.status === "needs_review" ? (
+                      <span>
+                        {d.filename} — {d.reasons?.join("、")}
+                      </span>
+                    ) : (
+                      <span>
+                        {d.filename} — {d.error}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <DialogFooter>
+            <Button onClick={() => setShowScanResult(false)}>閉じる</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
