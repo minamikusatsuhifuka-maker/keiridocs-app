@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { StatusBadge } from "@/components/documents/status-badge"
 import { ArrowUpDown, ChevronDown, Eye } from "lucide-react"
 import type { Database } from "@/types/database"
@@ -35,6 +36,8 @@ interface DocumentTableProps {
   sortDirection: SortDirection
   onSort: (field: SortField) => void
   onStatusChange: (id: string, newStatus: DocumentStatus) => void
+  selectedIds?: Set<string>
+  onSelectionChange?: (ids: Set<string>) => void
 }
 
 const statuses: DocumentStatus[] = ["未処理", "処理済み", "アーカイブ"]
@@ -57,8 +60,34 @@ export function DocumentTable({
   sortDirection,
   onSort,
   onStatusChange,
+  selectedIds,
+  onSelectionChange,
 }: DocumentTableProps) {
   const [updatingId, setUpdatingId] = useState<string | null>(null)
+
+  const hasSelection = !!selectedIds && !!onSelectionChange
+
+  // 全選択/全解除
+  function toggleSelectAll() {
+    if (!onSelectionChange) return
+    if (selectedIds && selectedIds.size === documents.length) {
+      onSelectionChange(new Set())
+    } else {
+      onSelectionChange(new Set(documents.map((d) => d.id)))
+    }
+  }
+
+  // 個別選択切り替え
+  function toggleSelect(id: string) {
+    if (!onSelectionChange || !selectedIds) return
+    const next = new Set(selectedIds)
+    if (next.has(id)) {
+      next.delete(id)
+    } else {
+      next.add(id)
+    }
+    onSelectionChange(next)
+  }
 
   // ステータス変更ハンドラ
   async function handleStatusChange(doc: Document, newStatus: DocumentStatus) {
@@ -119,10 +148,22 @@ export function DocumentTable({
     )
   }
 
+  const allSelected = selectedIds && selectedIds.size === documents.length
+  const someSelected = selectedIds && selectedIds.size > 0 && selectedIds.size < documents.length
+
   return (
     <Table>
       <TableHeader>
         <TableRow>
+          {hasSelection && (
+            <TableHead className="w-[40px]">
+              <Checkbox
+                checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                onCheckedChange={toggleSelectAll}
+                aria-label="全選択"
+              />
+            </TableHead>
+          )}
           <SortableHead field="type">種別</SortableHead>
           <SortableHead field="vendor_name">取引先</SortableHead>
           <SortableHead field="amount">金額</SortableHead>
@@ -136,7 +177,19 @@ export function DocumentTable({
       </TableHeader>
       <TableBody>
         {documents.map((doc) => (
-          <TableRow key={doc.id}>
+          <TableRow
+            key={doc.id}
+            className={hasSelection && selectedIds?.has(doc.id) ? "bg-muted/50" : undefined}
+          >
+            {hasSelection && (
+              <TableCell>
+                <Checkbox
+                  checked={selectedIds?.has(doc.id) ?? false}
+                  onCheckedChange={() => toggleSelect(doc.id)}
+                  aria-label={`${doc.vendor_name}を選択`}
+                />
+              </TableCell>
+            )}
             <TableCell>{doc.type}</TableCell>
             <TableCell className="max-w-[200px] truncate">{doc.vendor_name}</TableCell>
             <TableCell className="text-right">{formatAmount(doc.amount)}</TableCell>

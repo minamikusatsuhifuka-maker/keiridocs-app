@@ -116,7 +116,7 @@ export default function NewDocumentPage() {
   const [autoAnalyzeMode, setAutoAnalyzeMode] = useState(false)
 
   // 登録モード（auto=全自動 / check=チェック）
-  const [registrationMode, setRegistrationMode] = useState<"auto" | "check">("check")
+  const [registrationMode, setRegistrationMode] = useState<"auto" | "check">("auto")
 
   // 全自動モードの処理状態
   const [autoProcessing, setAutoProcessing] = useState(false)

@@ -126,6 +126,7 @@ export default function DocumentsPage() {
   // データ取得
   const fetchDocuments = useCallback(async () => {
     setIsLoading(true)
+    setSelectedDocIds(new Set())
     try {
       const params = new URLSearchParams()
       params.set("limit", String(PAGE_SIZE))
@@ -191,6 +192,11 @@ export default function DocumentsPage() {
     setDateTo("")
     setPage(0)
   }
+
+  // 一覧チェックボックス選択（一括削除用）
+  const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set())
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false)
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false)
 
   // 重複チェック
   const [isDuplicateChecking, setIsDuplicateChecking] = useState(false)
@@ -298,6 +304,41 @@ export default function DocumentsPage() {
       toast.error("削除処理に失敗しました")
     } finally {
       setIsDeleting(false)
+    }
+  }
+
+  // 一括削除（一覧チェックボックスから）
+  async function handleBulkDeleteFromList() {
+    if (selectedDocIds.size === 0) return
+    setIsBulkDeleting(true)
+    try {
+      const ids = Array.from(selectedDocIds)
+      let successCount = 0
+      const errors: string[] = []
+
+      for (const id of ids) {
+        const res = await fetch(`/api/documents?id=${id}`, { method: "DELETE" })
+        if (res.ok) {
+          successCount++
+        } else {
+          const json = await res.json().catch(() => ({ error: "不明なエラー" })) as { error?: string }
+          errors.push(json.error || res.statusText)
+        }
+      }
+
+      if (successCount > 0) {
+        toast.success(`${successCount}件の書類を削除しました（Dropboxからも削除済み）`)
+      }
+      if (errors.length > 0) {
+        toast.error(`${errors.length}件の削除に失敗: ${errors[0]}`)
+      }
+      setShowBulkDeleteConfirm(false)
+      setSelectedDocIds(new Set())
+      fetchDocuments()
+    } catch {
+      toast.error("削除処理に失敗しました")
+    } finally {
+      setIsBulkDeleting(false)
     }
   }
 
@@ -471,6 +512,28 @@ export default function DocumentsPage() {
         </div>
       </div>
 
+      {/* 一括削除アクションバー */}
+      {selectedDocIds.size > 0 && (
+        <div className="flex items-center gap-3 rounded-lg border bg-muted/50 px-4 py-2.5">
+          <span className="text-sm font-medium">{selectedDocIds.size}件選択中</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setSelectedDocIds(new Set())}
+          >
+            選択を解除
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setShowBulkDeleteConfirm(true)}
+          >
+            <Trash2 className="mr-1.5 size-3.5" />
+            選択した書類を削除
+          </Button>
+        </div>
+      )}
+
       {/* テーブル */}
       {isLoading ? (
         <div className="flex items-center justify-center py-12">
@@ -483,6 +546,8 @@ export default function DocumentsPage() {
           sortDirection={sortDirection}
           onSort={handleSort}
           onStatusChange={handleStatusChange}
+          selectedIds={selectedDocIds}
+          onSelectionChange={setSelectedDocIds}
         />
       )}
 
@@ -620,7 +685,37 @@ export default function DocumentsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* 削除確認ダイアログ */}
+      {/* 一括削除確認ダイアログ（一覧チェックボックスから） */}
+      <Dialog open={showBulkDeleteConfirm} onOpenChange={setShowBulkDeleteConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <Trash2 className="size-5" />
+              削除の確認
+            </DialogTitle>
+            <DialogDescription>
+              {selectedDocIds.size}件の書類を削除しますか？Dropboxからもファイルが削除されます。この操作は取り消せません。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setShowBulkDeleteConfirm(false)} disabled={isBulkDeleting}>
+              キャンセル
+            </Button>
+            <Button variant="destructive" onClick={handleBulkDeleteFromList} disabled={isBulkDeleting}>
+              {isBulkDeleting ? (
+                <>
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                  削除中...
+                </>
+              ) : (
+                "削除する"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 削除確認ダイアログ（重複チェックから） */}
       <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
         <DialogContent>
           <DialogHeader>
