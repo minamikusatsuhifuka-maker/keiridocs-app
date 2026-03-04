@@ -24,7 +24,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Camera, Upload, ArrowRight, Loader2, CheckCircle2, ListIcon, Plus, AlertTriangle } from "lucide-react"
+import { Switch } from "@/components/ui/switch"
+import { Progress } from "@/components/ui/progress"
+import {
+  Camera, Upload, ArrowRight, Loader2, CheckCircle2, ListIcon, Plus,
+  AlertTriangle, Zap, Eye, XCircle,
+} from "lucide-react"
 import { toast } from "sonner"
 
 /** 重複候補の型 */
@@ -58,6 +63,16 @@ interface UploadedFile {
 
 interface DocumentTypeRecord {
   name: string
+}
+
+/** 全自動モード: 1ファイルの処理結果 */
+interface AutoResult {
+  filename: string
+  status: "registered" | "needs_review" | "error"
+  document?: Record<string, unknown>
+  review_reasons?: string[]
+  ocr_result?: OcrResult
+  error?: string
 }
 
 // 書類登録ページ
@@ -100,13 +115,29 @@ export default function NewDocumentPage() {
   // 自動解析モード
   const [autoAnalyzeMode, setAutoAnalyzeMode] = useState(false)
 
-  // 書類種別リスト・自動解析モード設定を取得
+  // 登録モード（auto=全自動 / check=チェック）
+  const [registrationMode, setRegistrationMode] = useState<"auto" | "check">("check")
+
+  // 全自動モードの処理状態
+  const [autoProcessing, setAutoProcessing] = useState(false)
+  const [autoProgress, setAutoProgress] = useState(0)
+  const [autoTotal, setAutoTotal] = useState(0)
+  const [autoCurrentFile, setAutoCurrentFile] = useState("")
+  const [autoResults, setAutoResults] = useState<AutoResult[]>([])
+  const [autoCompleted, setAutoCompleted] = useState(false)
+
+  // 要確認書類のレビュー状態
+  const [reviewIndex, setReviewIndex] = useState(0)
+  const [isReviewing, setIsReviewing] = useState(false)
+
+  // 書類種別リスト・設定を取得
   useEffect(() => {
     async function fetchSettings() {
       try {
-        const [typesRes, modeRes] = await Promise.all([
+        const [typesRes, modeRes, regModeRes] = await Promise.all([
           fetch("/api/settings?table=document_types"),
           fetch("/api/settings?table=settings&key=auto_analyze_mode"),
+          fetch("/api/settings?table=settings&key=registration_mode"),
         ])
 
         if (typesRes.ok) {
@@ -121,6 +152,13 @@ export default function NewDocumentPage() {
           const json = await modeRes.json() as { data: { value: unknown } | null }
           if (json.data && json.data.value === "auto") {
             setAutoAnalyzeMode(true)
+          }
+        }
+
+        if (regModeRes.ok) {
+          const json = await regModeRes.json() as { data: { value: unknown } | null }
+          if (json.data && (json.data.value === "auto" || json.data.value === "check")) {
+            setRegistrationMode(json.data.value as "auto" | "check")
           }
         }
       } catch {
@@ -142,7 +180,6 @@ export default function NewDocumentPage() {
     setOcrResult(null)
 
     try {
-      // 解析に使うデータを取得（最初のファイル/画像）
       let base64: string
       let mimeType: string
 
@@ -156,7 +193,6 @@ export default function NewDocumentPage() {
         throw new Error("ファイルが選択されていません")
       }
 
-      // ファイル名を取得（Word/Excel/CSV判定用）
       let fileName: string | undefined
       if (activeTab === "upload" && uploadedFiles.length > 0) {
         fileName = uploadedFiles[0].name
@@ -174,13 +210,10 @@ export default function NewDocumentPage() {
       }
 
       const json = await response.json() as { data: OcrResult; model_used?: string }
-      console.log("Gemini response:", json)
-      console.log("tax_category:", json.data?.tax_category, "account_title:", json.data?.account_title)
       setOcrResult(json.data)
       if (json.model_used) setModelUsed(json.model_used)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "AI解析に失敗しました")
-      // エラー時もフォームを表示（手動入力可能）
       setOcrResult(null)
     } finally {
       setIsAnalyzing(false)
@@ -189,6 +222,7 @@ export default function NewDocumentPage() {
 
   // 自動解析モード: ファイルが追加されたら自動でAI解析を実行
   useEffect(() => {
+    if (registrationMode === "auto") return // 全自動モードでは自動解析しない
     if (!autoAnalyzeMode) return
     if (isAnalyzing || showEditor) return
 
@@ -199,9 +233,104 @@ export default function NewDocumentPage() {
     if (hasData) {
       runAnalysis()
     }
-  }, [autoAnalyzeMode, capturedImages, uploadedFiles, activeTab, isAnalyzing, showEditor, runAnalysis])
+  }, [autoAnalyzeMode, capturedImages, uploadedFiles, activeTab, isAnalyzing, showEditor, runAnalysis, registrationMode])
 
-  // 書類を登録する
+  // 全自動モード: ファイルが追加されたら自動で全自動登録を開始
+  useEffect(() => {
+    if (registrationMode !== "auto") return
+    if (autoProcessing || autoCompleted) return
+    if (uploadedFiles.length === 0) return
+
+    runAutoRegister(uploadedFiles)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uploadedFiles, registrationMode])
+
+  // 全自動登録の実行
+  const runAutoRegister = useCallback(async (files: UploadedFile[]) => {
+    if (files.length === 0) return
+
+    setAutoProcessing(true)
+    setAutoProgress(0)
+    setAutoTotal(files.length)
+    setAutoResults([])
+    setAutoCompleted(false)
+
+    const results: AutoResult[] = []
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      setAutoProgress(i + 1)
+      setAutoCurrentFile(file.name)
+
+      try {
+        const response = await fetch("/api/documents/auto-register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            file: file.base64,
+            filename: file.name,
+            contentType: file.mimeType,
+          }),
+        })
+
+        const result = await response.json() as {
+          status: "registered" | "needs_review" | "error"
+          document?: Record<string, unknown>
+          review_reasons?: string[]
+          ocr_result?: OcrResult
+          error?: string
+          filename?: string
+        }
+
+        results.push({
+          filename: file.name,
+          status: result.status,
+          document: result.document,
+          review_reasons: result.review_reasons,
+          ocr_result: result.ocr_result,
+          error: result.error,
+        })
+      } catch (error) {
+        results.push({
+          filename: file.name,
+          status: "error",
+          error: error instanceof Error ? error.message : "処理に失敗しました",
+        })
+      }
+    }
+
+    setAutoResults(results)
+    setAutoProcessing(false)
+    setAutoCompleted(true)
+  }, [])
+
+  // 登録モードを切り替えてsettingsに保存
+  const toggleRegistrationMode = useCallback(async (checked: boolean) => {
+    const newMode = checked ? "auto" : "check"
+    setRegistrationMode(newMode)
+
+    // リセット
+    setAutoProcessing(false)
+    setAutoCompleted(false)
+    setAutoResults([])
+    setShowEditor(false)
+
+    try {
+      await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          table: "settings",
+          key: "registration_mode",
+          value: newMode,
+        }),
+      })
+    } catch {
+      // 保存失敗は無視
+    }
+  }, [])
+
+  // 書類を登録する（チェックモード）
   const handleSubmit = useCallback(
     async (formData: DocumentFormData) => {
       setIsSubmitting(true)
@@ -213,12 +342,7 @@ export default function NewDocumentPage() {
         let fileMimeType: string
 
         if (activeTab === "camera" && capturedImages.length > 0) {
-          // 複数画像の場合はPDF結合APIを使う
           if (capturedImages.length > 1) {
-            const pdfResponse = await fetch("/api/documents", {
-              method: "OPTIONS",
-            })
-            // PDF結合はクライアントサイドで実施
             const { combineImagesToPdf } = await import("@/lib/pdf")
             const pdfBytes = await combineImagesToPdf(
               capturedImages.map((img) => ({
@@ -236,7 +360,6 @@ export default function NewDocumentPage() {
           }
         } else if (activeTab === "upload" && uploadedFiles.length > 0) {
           if (uploadedFiles.length > 1) {
-            // 複数画像の場合はPDF結合
             const allImages = uploadedFiles.filter((f) =>
               f.mimeType.startsWith("image/")
             )
@@ -256,7 +379,6 @@ export default function NewDocumentPage() {
               fileName = `${formData.vendor_name}_${formData.issue_date || new Date().toISOString().slice(0, 10)}.pdf`
               fileMimeType = "application/pdf"
             } else {
-              // 単一ファイルとして扱う（最初のファイル）
               fileBase64 = uploadedFiles[0].base64
               fileName = uploadedFiles[0].name
               fileMimeType = uploadedFiles[0].mimeType
@@ -292,10 +414,8 @@ export default function NewDocumentPage() {
         let fileHash: string
 
         if (isForceSubmit && pendingDropboxPathRef.current) {
-          // 前回アップロード済みのパスとハッシュを再利用
           dropboxPath = pendingDropboxPathRef.current
           fileHash = pendingFileHashRef.current || ""
-          console.log("強制登録: Dropboxアップロードをスキップ", { dropboxPath, fileHash })
         } else {
           const uploadResponse = await fetch("/api/dropbox/upload", {
             method: "POST",
@@ -339,7 +459,6 @@ export default function NewDocumentPage() {
           skip_duplicate_check: isForceSubmit,
           items: ocrResult?.items ?? [],
         }
-        console.log("送信データ:", JSON.stringify(requestBody))
 
         // refをリセット
         skipDuplicateRef.current = false
@@ -369,11 +488,10 @@ export default function NewDocumentPage() {
           setPendingFormData(formData)
           setPendingDropboxPath(dropboxPath)
           setPendingFileHash(fileHash)
-          // refにも保存（stale closure対策）
           pendingDropboxPathRef.current = dropboxPath
           pendingFileHashRef.current = fileHash
           setShowDuplicateDialog(true)
-          return // 登録はまだ行わない
+          return
         }
 
         // 成功後にrefをクリア
@@ -389,7 +507,7 @@ export default function NewDocumentPage() {
         setIsSubmitting(false)
       }
     },
-    [activeTab, capturedImages, uploadedFiles, ocrResult, router]
+    [activeTab, capturedImages, uploadedFiles, ocrResult]
   )
 
   // フォーム全体をリセットして次の書類を登録可能にする
@@ -402,7 +520,14 @@ export default function NewDocumentPage() {
     setIsSubmitting(false)
     setShowEditor(false)
     setIsRegistered(false)
-    // 書類種別はデフォルトに戻す
+    setAutoProcessing(false)
+    setAutoCompleted(false)
+    setAutoResults([])
+    setAutoProgress(0)
+    setAutoTotal(0)
+    setAutoCurrentFile("")
+    setIsReviewing(false)
+    setReviewIndex(0)
     if (documentTypes.length > 0) {
       setDocumentType(documentTypes[0].name)
     } else {
@@ -413,17 +538,186 @@ export default function NewDocumentPage() {
   // 重複を無視して強制登録する
   const handleForceSubmit = useCallback(async () => {
     if (!pendingFormData) return
-    console.log("強制登録開始", { pendingFormData, pendingDropboxPath: pendingDropboxPathRef.current, pendingFileHash: pendingFileHashRef.current })
-    // refにフラグをセット（stale closure でも正しく読める）
     skipDuplicateRef.current = true
     setShowDuplicateDialog(false)
     await handleSubmit(pendingFormData)
   }, [pendingFormData, handleSubmit])
 
+  // 要確認書類のレビューを開始
+  const startReview = useCallback(() => {
+    const needsReview = autoResults.filter((r) => r.status === "needs_review")
+    if (needsReview.length === 0) return
+    setReviewIndex(0)
+    setIsReviewing(true)
+    // 最初の要確認書類のOCR結果をセット
+    const first = needsReview[0]
+    if (first.ocr_result) {
+      setOcrResult(first.ocr_result)
+      setShowEditor(true)
+    }
+  }, [autoResults])
+
+  // 要確認書類のレビュー: 登録完了時
+  const handleReviewSubmit = useCallback(async (formData: DocumentFormData) => {
+    // 通常のチェックモードの登録フローを再利用
+    // ただしファイルデータは全自動登録APIから受け取ったOCR結果を使う
+    setIsSubmitting(true)
+    const needsReview = autoResults.filter((r) => r.status === "needs_review")
+    const currentItem = needsReview[reviewIndex]
+
+    if (!currentItem) {
+      setIsSubmitting(false)
+      return
+    }
+
+    try {
+      // 元のファイルデータを使って登録
+      const matchedFile = uploadedFiles.find((f) => f.name === currentItem.filename)
+      if (!matchedFile) {
+        throw new Error("元のファイルが見つかりません")
+      }
+
+      // Dropboxアップロード
+      const uploadResponse = await fetch("/api/dropbox/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          base64: matchedFile.base64,
+          fileName: matchedFile.name,
+          type: formData.type,
+          date: formData.issue_date || null,
+          status: "未処理",
+          vendorName: formData.vendor_name,
+        }),
+      })
+
+      if (!uploadResponse.ok) {
+        const errorData = await uploadResponse.json() as { error: string }
+        throw new Error(errorData.error || "Dropboxへのアップロードに失敗しました")
+      }
+
+      const { data: uploadData } = await uploadResponse.json() as {
+        data: { path: string; file_hash: string }
+      }
+
+      // DB登録（重複チェックスキップ — ユーザーが確認済み）
+      const requestBody = {
+        type: formData.type,
+        vendor_name: formData.vendor_name,
+        amount: formData.amount ? Number(formData.amount) : null,
+        issue_date: formData.issue_date || null,
+        due_date: formData.due_date || null,
+        description: formData.description || null,
+        input_method: "upload",
+        dropbox_path: uploadData.path,
+        ocr_raw: currentItem.ocr_result,
+        tax_category: formData.tax_category || "未判定",
+        account_title: formData.account_title || "",
+        file_hash: uploadData.file_hash,
+        skip_duplicate_check: true,
+        items: currentItem.ocr_result?.items ?? [],
+      }
+
+      const docResponse = await fetch("/api/documents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      })
+
+      if (!docResponse.ok) {
+        const errorData = await docResponse.json() as { error: string }
+        throw new Error(errorData.error || "書類の登録に失敗しました")
+      }
+
+      toast.success(`${currentItem.filename} を登録しました`)
+
+      // 結果を更新
+      setAutoResults((prev) =>
+        prev.map((r) =>
+          r.filename === currentItem.filename
+            ? { ...r, status: "registered" as const }
+            : r
+        )
+      )
+
+      // 次の要確認書類へ
+      moveToNextReview()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "登録に失敗しました")
+    } finally {
+      setIsSubmitting(false)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoResults, reviewIndex, uploadedFiles])
+
+  // 次の要確認書類へ移動、または完了
+  const moveToNextReview = useCallback(() => {
+    const needsReview = autoResults.filter((r) => r.status === "needs_review")
+    const nextIndex = reviewIndex + 1
+    if (nextIndex < needsReview.length) {
+      setReviewIndex(nextIndex)
+      const next = needsReview[nextIndex]
+      if (next.ocr_result) {
+        setOcrResult(next.ocr_result)
+      }
+    } else {
+      // 全部レビュー完了
+      setIsReviewing(false)
+      setShowEditor(false)
+      setOcrResult(null)
+      toast.success("すべての要確認書類を処理しました")
+    }
+  }, [autoResults, reviewIndex])
+
+  // スキップ（レビューせずに次へ）
+  const skipReview = useCallback(() => {
+    moveToNextReview()
+  }, [moveToNextReview])
+
+  // サマリー集計
+  const successCount = autoResults.filter((r) => r.status === "registered").length
+  const reviewCount = autoResults.filter((r) => r.status === "needs_review").length
+  const errorCount = autoResults.filter((r) => r.status === "error").length
+
+  // 全自動モードの進捗表示中かどうか
+  const showAutoProgress = registrationMode === "auto" && (autoProcessing || autoCompleted)
+
   return (
     <div className="mx-auto max-w-2xl space-y-6">
-      {/* 種別選択（登録成功後は非表示） */}
-      {!isRegistered && (
+      {/* モード切替 */}
+      {!isRegistered && !showAutoProgress && !isReviewing && (
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                {registrationMode === "auto" ? (
+                  <div className="flex items-center gap-2 rounded-full bg-green-100 px-3 py-1.5 text-sm font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                    <Zap className="size-4" />
+                    全自動
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 rounded-full bg-blue-100 px-3 py-1.5 text-sm font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+                    <Eye className="size-4" />
+                    確認
+                  </div>
+                )}
+                <span className="text-sm text-muted-foreground">
+                  {registrationMode === "auto"
+                    ? "ドロップするだけで自動登録"
+                    : "AI解析後に内容を確認して登録"}
+                </span>
+              </div>
+              <Switch
+                checked={registrationMode === "auto"}
+                onCheckedChange={toggleRegistrationMode}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 種別選択（チェックモード・登録成功後は非表示） */}
+      {registrationMode === "check" && !isRegistered && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">書類種別</CardTitle>
@@ -454,8 +748,8 @@ export default function NewDocumentPage() {
         </Card>
       )}
 
-      {/* ファイル選択（登録成功後は非表示） */}
-      {!isRegistered && (
+      {/* ファイル選択（登録成功後・全自動処理中は非表示） */}
+      {!isRegistered && !showAutoProgress && !isReviewing && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">書類を取り込む</CardTitle>
@@ -463,18 +757,27 @@ export default function NewDocumentPage() {
           <CardContent>
             {activeTab === "upload" ? (
               <>
-                <FileDropzone
-                  files={uploadedFiles}
-                  onFilesChange={setUploadedFiles}
-                />
-                <button
-                  type="button"
-                  onClick={() => setActiveTab("camera")}
-                  className="mt-3 flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <Camera className="size-3.5" />
-                  カメラで撮影する場合はこちら
-                </button>
+                {registrationMode === "auto" ? (
+                  <AutoDropzone
+                    files={uploadedFiles}
+                    onFilesChange={setUploadedFiles}
+                  />
+                ) : (
+                  <FileDropzone
+                    files={uploadedFiles}
+                    onFilesChange={setUploadedFiles}
+                  />
+                )}
+                {registrationMode === "check" && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("camera")}
+                    className="mt-3 flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Camera className="size-3.5" />
+                    カメラで撮影する場合はこちら
+                  </button>
+                )}
               </>
             ) : (
               <>
@@ -493,8 +796,8 @@ export default function NewDocumentPage() {
               </>
             )}
 
-            {/* AI解析ボタン */}
-            {hasFiles && !showEditor && (
+            {/* AI解析ボタン（チェックモードのみ） */}
+            {registrationMode === "check" && hasFiles && !showEditor && (
               <div className="mt-4">
                 <Button onClick={runAnalysis} className="w-full" disabled={isAnalyzing}>
                   {isAnalyzing ? (
@@ -515,8 +818,197 @@ export default function NewDocumentPage() {
         </Card>
       )}
 
-      {/* 登録成功画面 */}
-      {isRegistered && (
+      {/* 全自動モード: プログレス表示 */}
+      {registrationMode === "auto" && autoProcessing && (
+        <Card>
+          <CardContent className="pt-6">
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <Loader2 className="size-5 animate-spin text-green-600" />
+                <span className="text-sm font-medium">
+                  {autoProgress}/{autoTotal} ファイル処理中...
+                </span>
+              </div>
+              <Progress value={(autoProgress / autoTotal) * 100} className="h-2" />
+              {autoCurrentFile && (
+                <p className="text-xs text-muted-foreground truncate">
+                  {autoCurrentFile}
+                </p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 全自動モード: 結果サマリー */}
+      {registrationMode === "auto" && autoCompleted && !isReviewing && (
+        <Card className="border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950">
+          <CardContent className="pt-6">
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="size-6 text-green-600 dark:text-green-400" />
+                <span className="text-lg font-semibold text-green-700 dark:text-green-300">
+                  処理完了
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-lg bg-white/80 p-3 text-center dark:bg-white/5">
+                  <CheckCircle2 className="mx-auto size-5 text-green-600" />
+                  <p className="mt-1 text-lg font-bold">{successCount}件</p>
+                  <p className="text-xs text-muted-foreground">成功</p>
+                </div>
+                <div className="rounded-lg bg-white/80 p-3 text-center dark:bg-white/5">
+                  <AlertTriangle className="mx-auto size-5 text-amber-600" />
+                  <p className="mt-1 text-lg font-bold">{reviewCount}件</p>
+                  <p className="text-xs text-muted-foreground">要確認</p>
+                </div>
+                <div className="rounded-lg bg-white/80 p-3 text-center dark:bg-white/5">
+                  <XCircle className="mx-auto size-5 text-red-600" />
+                  <p className="mt-1 text-lg font-bold">{errorCount}件</p>
+                  <p className="text-xs text-muted-foreground">エラー</p>
+                </div>
+              </div>
+
+              {/* 成功した書類リスト */}
+              {autoResults.filter((r) => r.status === "registered").length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-green-700 dark:text-green-400">登録済み:</p>
+                  {autoResults
+                    .filter((r) => r.status === "registered")
+                    .map((r, i) => (
+                      <div key={i} className="flex items-center gap-2 text-sm">
+                        <CheckCircle2 className="size-3.5 shrink-0 text-green-600" />
+                        <span className="truncate">
+                          {r.document
+                            ? `${(r.document as Record<string, unknown>).vendor_name} / ${(r.document as Record<string, unknown>).type} / ¥${Number((r.document as Record<string, unknown>).amount || 0).toLocaleString()}`
+                            : r.filename}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              )}
+
+              {/* 要確認の書類リスト */}
+              {autoResults.filter((r) => r.status === "needs_review").length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-amber-700 dark:text-amber-400">要確認:</p>
+                  {autoResults
+                    .filter((r) => r.status === "needs_review")
+                    .map((r, i) => (
+                      <div key={i} className="flex items-center gap-2 text-sm">
+                        <AlertTriangle className="size-3.5 shrink-0 text-amber-600" />
+                        <span className="truncate">
+                          {r.filename} — {r.review_reasons?.join("、")}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              )}
+
+              {/* エラーの書類リスト */}
+              {autoResults.filter((r) => r.status === "error").length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-red-700 dark:text-red-400">エラー:</p>
+                  {autoResults
+                    .filter((r) => r.status === "error")
+                    .map((r, i) => (
+                      <div key={i} className="flex items-center gap-2 text-sm">
+                        <XCircle className="size-3.5 shrink-0 text-red-600" />
+                        <span className="truncate">
+                          {r.filename} — {r.error}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              )}
+
+              <div className="flex flex-col gap-3 sm:flex-row">
+                {reviewCount > 0 && (
+                  <Button onClick={startReview} className="flex-1">
+                    <AlertTriangle className="mr-2 size-4" />
+                    要確認書類を確認
+                  </Button>
+                )}
+                <Button
+                  variant={reviewCount > 0 ? "outline" : "default"}
+                  onClick={resetForNextDocument}
+                  className="flex-1"
+                >
+                  <Plus className="mr-2 size-4" />
+                  次の書類を登録
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => router.push("/documents")}
+                  className="flex-1"
+                >
+                  <ListIcon className="mr-2 size-4" />
+                  書類一覧へ
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 要確認書類のレビューヘッダー */}
+      {isReviewing && (
+        <Card className="border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950">
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="size-5 text-amber-600" />
+                <span className="text-sm font-medium">
+                  要確認書類 ({reviewIndex + 1}/{autoResults.filter((r) => r.status === "needs_review").length})
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={skipReview}
+                >
+                  スキップ
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setIsReviewing(false)
+                    setShowEditor(false)
+                    setOcrResult(null)
+                  }}
+                >
+                  レビュー終了
+                </Button>
+              </div>
+            </div>
+            {(() => {
+              const needsReview = autoResults.filter((r) => r.status === "needs_review")
+              const current = needsReview[reviewIndex]
+              return current ? (
+                <div className="mt-2 space-y-1">
+                  <p className="text-sm">{current.filename}</p>
+                  <div className="flex flex-wrap gap-1">
+                    {current.review_reasons?.map((reason, i) => (
+                      <span
+                        key={i}
+                        className="rounded-full bg-amber-200 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-800 dark:text-amber-200"
+                      >
+                        {reason}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null
+            })()}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* チェックモード: 登録成功画面 */}
+      {registrationMode === "check" && isRegistered && (
         <Card className="border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950">
           <CardContent className="pt-6">
             <div className="flex flex-col items-center gap-4 py-4">
@@ -546,14 +1038,14 @@ export default function NewDocumentPage() {
         </Card>
       )}
 
-      {/* OCR結果編集フォーム */}
+      {/* OCR結果編集フォーム（チェックモードまたはレビュー中） */}
       {showEditor && !isRegistered && (
         <OcrResultEditor
           ocrResult={ocrResult}
           defaultType={documentType}
           isAnalyzing={isAnalyzing}
           isSubmitting={isSubmitting}
-          onSubmit={handleSubmit}
+          onSubmit={isReviewing ? handleReviewSubmit : handleSubmit}
           modelUsed={modelUsed}
           documentTypes={documentTypes.length > 0 ? documentTypes : undefined}
         />
@@ -631,6 +1123,31 @@ export default function NewDocumentPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  )
+}
+
+/** 全自動モード用ドロップゾーン（テキスト変更版） */
+function AutoDropzone({
+  files,
+  onFilesChange,
+}: {
+  files: UploadedFile[]
+  onFilesChange: (files: UploadedFile[]) => void
+}) {
+  return (
+    <div>
+      <FileDropzone files={files} onFilesChange={onFilesChange} />
+      {files.length === 0 && (
+        <div className="mt-2 text-center">
+          <p className="text-xs text-green-600 dark:text-green-400">
+            ファイルをドロップすると自動で解析・登録されます
+          </p>
+          <p className="text-xs text-muted-foreground">
+            複数ファイルをまとめてドロップできます
+          </p>
+        </div>
+      )}
     </div>
   )
 }
