@@ -351,6 +351,48 @@ export interface Database {
         }
         Relationships: []
       }
+      scan_items: {
+        Row: {
+          id: string
+          dropbox_path: string
+          file_name: string
+          file_hash: string | null
+          status: string
+          review_reasons: string[] | null
+          error_message: string | null
+          document_id: string | null
+          user_id: string
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          dropbox_path: string
+          file_name: string
+          file_hash?: string | null
+          status?: string
+          review_reasons?: string[] | null
+          error_message?: string | null
+          document_id?: string | null
+          user_id: string
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          dropbox_path?: string
+          file_name?: string
+          file_hash?: string | null
+          status?: string
+          review_reasons?: string[] | null
+          error_message?: string | null
+          document_id?: string | null
+          user_id?: string
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           id: string
