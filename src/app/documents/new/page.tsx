@@ -714,19 +714,22 @@ export default function NewDocumentPage() {
       {/* ヘッダー */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">書類登録</h1>
-        <Button
-          onClick={handleScan}
-          disabled={isScanning}
-          className="btn-float-primary rounded-lg bg-blue-500 px-4 py-2 text-sm text-white hover:bg-blue-600"
-          size="sm"
-        >
-          {isScanning ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <ScanLine className="size-4" />
-          )}
-          {isScanning ? "スキャン中..." : "スキャン"}
-        </Button>
+        <div className="tooltip-wrapper">
+          <Button
+            onClick={handleScan}
+            disabled={isScanning}
+            className="btn-float-primary rounded-lg bg-blue-500 px-4 py-2 text-sm text-white hover:bg-blue-600"
+            size="sm"
+          >
+            {isScanning ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <ScanLine className="size-4" />
+            )}
+            {isScanning ? "スキャン中..." : "スキャン"}
+          </Button>
+          <span className="tooltip-text">Dropbox内の未登録ファイルを自動でAI解析・登録・仕分けします</span>
+        </div>
       </div>
 
       {/* モード切替 */}
@@ -975,14 +978,17 @@ export default function NewDocumentPage() {
                     要確認書類を確認
                   </Button>
                 )}
-                <Button
-                  variant={reviewCount > 0 ? "outline" : "default"}
-                  onClick={resetForNextDocument}
-                  className={`flex-1 ${reviewCount > 0 ? "btn-float" : "btn-float-primary"}`}
-                >
-                  <Plus className="mr-2 size-4" />
-                  次の書類を登録
-                </Button>
+                <div className="tooltip-wrapper flex-1">
+                  <Button
+                    variant={reviewCount > 0 ? "outline" : "default"}
+                    onClick={resetForNextDocument}
+                    className={`w-full ${reviewCount > 0 ? "btn-float" : "btn-float-primary"}`}
+                  >
+                    <Plus className="mr-2 size-4" />
+                    次の書類を登録
+                  </Button>
+                  <span className="tooltip-text">登録完了後、続けて次の書類を登録します</span>
+                </div>
                 <Button
                   variant="outline"
                   onClick={() => router.push("/documents")}
@@ -1062,13 +1068,16 @@ export default function NewDocumentPage() {
                 書類を登録しました
               </p>
               <div className="flex w-full flex-col gap-3 sm:flex-row">
-                <Button
-                  onClick={resetForNextDocument}
-                  className="btn-float-primary flex-1"
-                >
-                  <Plus className="mr-2 size-4" />
-                  次の書類を登録
-                </Button>
+                <div className="tooltip-wrapper flex-1">
+                  <Button
+                    onClick={resetForNextDocument}
+                    className="btn-float-primary w-full"
+                  >
+                    <Plus className="mr-2 size-4" />
+                    次の書類を登録
+                  </Button>
+                  <span className="tooltip-text">登録完了後、続けて次の書類を登録します</span>
+                </div>
                 <Button
                   variant="outline"
                   onClick={() => router.push("/documents")}

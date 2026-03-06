@@ -480,19 +480,22 @@ export default function DocumentsPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">書類一覧</h1>
         <div className="flex gap-2">
-          <Button
-            onClick={handleScan}
-            disabled={isScanning}
-            className="btn-float-primary rounded-lg bg-blue-500 px-4 py-2 text-sm text-white hover:bg-blue-600"
-            size="sm"
-          >
-            {isScanning ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <ScanLine className="size-4" />
-            )}
-            {isScanning ? "スキャン中..." : "スキャン"}
-          </Button>
+          <div className="tooltip-wrapper">
+            <Button
+              onClick={handleScan}
+              disabled={isScanning}
+              className="btn-float-primary rounded-lg bg-blue-500 px-4 py-2 text-sm text-white hover:bg-blue-600"
+              size="sm"
+            >
+              {isScanning ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <ScanLine className="size-4" />
+              )}
+              {isScanning ? "スキャン中..." : "スキャン"}
+            </Button>
+            <span className="tooltip-text">Dropbox内の未登録ファイルを自動でAI解析・登録・仕分けします</span>
+          </div>
           <Button asChild className="btn-float-primary">
             <Link href="/documents/new">
               <Plus className="size-4" />
@@ -592,15 +595,18 @@ export default function DocumentsPage() {
           >
             選択を解除
           </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() => setShowBulkDeleteConfirm(true)}
-            className="btn-float-danger"
-          >
-            <Trash2 className="mr-1.5 size-3.5" />
-            選択した書類を削除
-          </Button>
+          <div className="tooltip-wrapper">
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setShowBulkDeleteConfirm(true)}
+              className="btn-float-danger"
+            >
+              <Trash2 className="mr-1.5 size-3.5" />
+              選択した書類を削除
+            </Button>
+            <span className="tooltip-text">チェックした書類をDBとDropboxから一括削除します</span>
+          </div>
         </div>
       )}
 

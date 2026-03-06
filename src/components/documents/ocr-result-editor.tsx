@@ -234,23 +234,26 @@ export function OcrResultEditor({
             </div>
 
             {/* 登録ボタン */}
-            <Button
-              type="submit"
-              className="btn-float-primary w-full"
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? (
-                <>
-                  <Loader2 className="mr-2 size-4 animate-spin" />
-                  登録中...
-                </>
-              ) : (
-                <>
-                  <Save className="mr-2 size-4" />
-                  書類を登録
-                </>
-              )}
-            </Button>
+            <div className="tooltip-wrapper w-full">
+              <Button
+                type="submit"
+                className="btn-float-primary w-full"
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" />
+                    登録中...
+                  </>
+                ) : (
+                  <>
+                    <Save className="mr-2 size-4" />
+                    書類を登録
+                  </>
+                )}
+              </Button>
+              <span className="tooltip-text">ファイルをAIで解析して書類を登録します</span>
+            </div>
           </form>
         )}
       </CardContent>
