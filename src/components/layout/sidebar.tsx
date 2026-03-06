@@ -65,7 +65,7 @@ function NavLink({
       className={cn(
         "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
         active
-          ? "bg-primary text-primary-foreground"
+          ? "bg-primary text-primary-foreground btn-float-primary"
           : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
       )}
     >

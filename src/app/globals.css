@@ -124,3 +124,71 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* フローティングボタン共通スタイル */
+.btn-float {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12), 0 1px 3px rgba(0, 0, 0, 0.08);
+  transition: all 0.15s ease;
+  transform: translateY(0);
+}
+
+.btn-float:hover {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.1);
+  transform: translateY(-1px);
+}
+
+.btn-float:active {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+  transform: translateY(1px);
+}
+
+/* プライマリ（青）フローティング */
+.btn-float-primary {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12), 0 1px 3px rgba(59, 130, 246, 0.3);
+  transition: all 0.15s ease;
+  transform: translateY(0);
+}
+
+.btn-float-primary:hover {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(59, 130, 246, 0.4);
+  transform: translateY(-1px);
+}
+
+.btn-float-primary:active {
+  box-shadow: 0 1px 4px rgba(59, 130, 246, 0.2);
+  transform: translateY(1px);
+}
+
+/* 危険（赤）フローティング */
+.btn-float-danger {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12), 0 1px 3px rgba(239, 68, 68, 0.3);
+  transition: all 0.15s ease;
+  transform: translateY(0);
+}
+
+.btn-float-danger:hover {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(239, 68, 68, 0.4);
+  transform: translateY(-1px);
+}
+
+.btn-float-danger:active {
+  box-shadow: 0 1px 4px rgba(239, 68, 68, 0.2);
+  transform: translateY(1px);
+}
+
+/* 成功（緑）フローティング */
+.btn-float-success {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12), 0 1px 3px rgba(34, 197, 94, 0.3);
+  transition: all 0.15s ease;
+  transform: translateY(0);
+}
+
+.btn-float-success:hover {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(34, 197, 94, 0.4);
+  transform: translateY(-1px);
+}
+
+.btn-float-success:active {
+  box-shadow: 0 1px 4px rgba(34, 197, 94, 0.2);
+  transform: translateY(1px);
+}

@@ -28,7 +28,7 @@ import { Switch } from "@/components/ui/switch"
 import { Progress } from "@/components/ui/progress"
 import {
   Camera, Upload, ArrowRight, Loader2, CheckCircle2, ListIcon, Plus,
-  AlertTriangle, Zap, Eye, XCircle,
+  AlertTriangle, Zap, Eye, XCircle, ScanLine,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -129,6 +129,33 @@ export default function NewDocumentPage() {
   // 要確認書類のレビュー状態
   const [reviewIndex, setReviewIndex] = useState(0)
   const [isReviewing, setIsReviewing] = useState(false)
+
+  // スキャンボタン
+  const [isScanning, setIsScanning] = useState(false)
+
+  // Dropboxスキャン実行
+  const handleScan = useCallback(async () => {
+    setIsScanning(true)
+    try {
+      const res = await fetch("/api/cron/scan-dropbox", { method: "POST" })
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(json.error || "スキャンに失敗しました")
+      }
+      const result = await res.json() as { scanned: number; registered: number; needs_review: number; errors: number }
+      if (result.scanned === 0) {
+        toast("新しいファイルはありませんでした")
+      } else {
+        if (result.registered > 0) toast.success(`${result.registered}件の書類を自動登録しました`)
+        if (result.needs_review > 0) toast.warning(`${result.needs_review}件の要確認書類があります`)
+        if (result.errors > 0) toast.error(`${result.errors}件のエラーが発生しました`)
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "スキャンに失敗しました")
+    } finally {
+      setIsScanning(false)
+    }
+  }, [])
 
   // 書類種別リスト・設定を取得
   useEffect(() => {
@@ -684,6 +711,24 @@ export default function NewDocumentPage() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
+      {/* ヘッダー */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">書類登録</h1>
+        <Button
+          onClick={handleScan}
+          disabled={isScanning}
+          className="btn-float-primary rounded-lg bg-blue-500 px-4 py-2 text-sm text-white hover:bg-blue-600"
+          size="sm"
+        >
+          {isScanning ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <ScanLine className="size-4" />
+          )}
+          {isScanning ? "スキャン中..." : "スキャン"}
+        </Button>
+      </div>
+
       {/* モード切替 */}
       {!isRegistered && !showAutoProgress && !isReviewing && (
         <Card>
@@ -925,7 +970,7 @@ export default function NewDocumentPage() {
 
               <div className="flex flex-col gap-3 sm:flex-row">
                 {reviewCount > 0 && (
-                  <Button onClick={startReview} className="flex-1">
+                  <Button onClick={startReview} className="btn-float-primary flex-1">
                     <AlertTriangle className="mr-2 size-4" />
                     要確認書類を確認
                   </Button>
@@ -933,7 +978,7 @@ export default function NewDocumentPage() {
                 <Button
                   variant={reviewCount > 0 ? "outline" : "default"}
                   onClick={resetForNextDocument}
-                  className="flex-1"
+                  className={`flex-1 ${reviewCount > 0 ? "btn-float" : "btn-float-primary"}`}
                 >
                   <Plus className="mr-2 size-4" />
                   次の書類を登録
@@ -941,7 +986,7 @@ export default function NewDocumentPage() {
                 <Button
                   variant="outline"
                   onClick={() => router.push("/documents")}
-                  className="flex-1"
+                  className="btn-float flex-1"
                 >
                   <ListIcon className="mr-2 size-4" />
                   書類一覧へ
@@ -1019,7 +1064,7 @@ export default function NewDocumentPage() {
               <div className="flex w-full flex-col gap-3 sm:flex-row">
                 <Button
                   onClick={resetForNextDocument}
-                  className="flex-1"
+                  className="btn-float-primary flex-1"
                 >
                   <Plus className="mr-2 size-4" />
                   次の書類を登録
@@ -1027,7 +1072,7 @@ export default function NewDocumentPage() {
                 <Button
                   variant="outline"
                   onClick={() => router.push("/documents")}
-                  className="flex-1"
+                  className="btn-float flex-1"
                 >
                   <ListIcon className="mr-2 size-4" />
                   書類一覧へ

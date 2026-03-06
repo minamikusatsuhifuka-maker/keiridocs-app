@@ -216,13 +216,13 @@ export default function DocumentDetailPage() {
             </>
           ) : (
             <>
-              <Button variant="outline" size="sm" onClick={startEditing}>
+              <Button variant="outline" size="sm" onClick={startEditing} className="btn-float">
                 <Pencil className="size-4" />
                 編集
               </Button>
               <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
                 <DialogTrigger asChild>
-                  <Button variant="destructive" size="sm">
+                  <Button variant="destructive" size="sm" className="btn-float-danger">
                     <Trash2 className="size-4" />
                     削除
                   </Button>

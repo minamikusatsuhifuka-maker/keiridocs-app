@@ -236,7 +236,7 @@ export function OcrResultEditor({
             {/* 登録ボタン */}
             <Button
               type="submit"
-              className="w-full"
+              className="btn-float-primary w-full"
               disabled={isSubmitting}
             >
               {isSubmitting ? (

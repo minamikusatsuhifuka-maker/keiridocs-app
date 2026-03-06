@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { DocumentTable } from "@/components/documents/document-table"
-import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle } from "lucide-react"
+import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine } from "lucide-react"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
@@ -481,18 +481,19 @@ export default function DocumentsPage() {
         <h1 className="text-2xl font-bold">書類一覧</h1>
         <div className="flex gap-2">
           <Button
-            variant="outline"
             onClick={handleScan}
             disabled={isScanning}
+            className="btn-float-primary rounded-lg bg-blue-500 px-4 py-2 text-sm text-white hover:bg-blue-600"
+            size="sm"
           >
             {isScanning ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
-              <RefreshCw className="size-4" />
+              <ScanLine className="size-4" />
             )}
-            {isScanning ? "スキャン中..." : "Dropboxスキャン"}
+            {isScanning ? "スキャン中..." : "スキャン"}
           </Button>
-          <Button asChild>
+          <Button asChild className="btn-float-primary">
             <Link href="/documents/new">
               <Plus className="size-4" />
               新規登録
@@ -568,12 +569,12 @@ export default function DocumentsPage() {
             </Button>
           )}
 
-          <Button variant="outline" size="sm" onClick={handleDuplicateCheck} disabled={isDuplicateChecking}>
+          <Button variant="outline" size="sm" onClick={handleDuplicateCheck} disabled={isDuplicateChecking} className="btn-float">
             {isDuplicateChecking ? <Loader2 className="size-3.5 animate-spin" /> : <Copy className="size-3.5" />}
             重複チェック
           </Button>
 
-          <Button variant="outline" size="sm" onClick={handleExportCsv} disabled={isExporting}>
+          <Button variant="outline" size="sm" onClick={handleExportCsv} disabled={isExporting} className="btn-float">
             {isExporting ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
             CSVエクスポート
           </Button>
@@ -595,6 +596,7 @@ export default function DocumentsPage() {
             variant="destructive"
             size="sm"
             onClick={() => setShowBulkDeleteConfirm(true)}
+            className="btn-float-danger"
           >
             <Trash2 className="mr-1.5 size-3.5" />
             選択した書類を削除
