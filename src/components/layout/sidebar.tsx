@@ -18,6 +18,7 @@ import {
   ScanLine,
   Loader2,
   Receipt,
+  ClipboardList,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -43,6 +44,7 @@ const navItems = [
 
 // admin専用ナビ項目
 const adminNavItems = [
+  { href: "/staff-receipts/admin", label: "スタッフ領収書管理", icon: ClipboardList },
   { href: "/settings/users", label: "ユーザー管理", icon: Users },
 ]
 
@@ -84,6 +86,8 @@ function isActive(href: string, pathname: string) {
   if (href === "/documents") return pathname === "/documents" || (pathname.startsWith("/documents/") && pathname !== "/documents/new")
   if (href === "/analytics/ai-report") return pathname === "/analytics/ai-report"
   if (href === "/analytics") return pathname === "/analytics"
+  if (href === "/staff-receipts") return pathname === "/staff-receipts"
+  if (href === "/staff-receipts/admin") return pathname === "/staff-receipts/admin"
   return pathname.startsWith(href)
 }
 

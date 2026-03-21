@@ -36,6 +36,62 @@ function getStaffReceiptPath(
   return `/経理書類/スタッフ領収書/${safeName}/${year}${month}/${fileName}`
 }
 
+// スタッフ領収書一覧取得（staff_membersとJOIN）
+export async function GET(request: NextRequest) {
+  const supabase = await createClient()
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+  if (authError || !user) {
+    return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
+  }
+
+  try {
+    const { searchParams } = new URL(request.url)
+    const staffMemberId = searchParams.get("staff_member_id")
+    const year = searchParams.get("year")
+    const month = searchParams.get("month")
+
+    let query = supabase
+      .from("staff_receipts")
+      .select("*, staff_members!inner(name)")
+      .order("date", { ascending: false })
+
+    if (staffMemberId) {
+      query = query.eq("staff_member_id", staffMemberId)
+    }
+
+    // 年月フィルター
+    if (year && month) {
+      const startDate = `${year}-${month.padStart(2, "0")}-01`
+      const endMonth = parseInt(month)
+      const endYear = endMonth === 12 ? parseInt(year) + 1 : parseInt(year)
+      const nextMonth = endMonth === 12 ? 1 : endMonth + 1
+      const endDate = `${endYear}-${String(nextMonth).padStart(2, "0")}-01`
+      query = query.gte("date", startDate).lt("date", endDate)
+    } else if (year) {
+      query = query.gte("date", `${year}-01-01`).lt("date", `${parseInt(year) + 1}-01-01`)
+    }
+
+    const { data, error } = await query
+
+    if (error) throw error
+
+    // staff_members.name をフラットに追加
+    const rows = (data || []).map((row) => {
+      const { staff_members, ...rest } = row as Record<string, unknown> & { staff_members: { name: string } }
+      return { ...rest, staff_name: staff_members.name }
+    })
+
+    return NextResponse.json({ data: rows })
+  } catch (error) {
+    console.error("スタッフ領収書一覧取得エラー:", error)
+    return NextResponse.json(
+      { error: "スタッフ領収書一覧の取得に失敗しました" },
+      { status: 500 }
+    )
+  }
+}
+
 // スタッフ領収書: ファイル受取 → Gemini解析 → Dropbox保存 → DB保存
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
