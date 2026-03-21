@@ -718,8 +718,14 @@ export default function NewDocumentPage() {
           <Button
             onClick={handleScan}
             disabled={isScanning}
-            className="btn-float-primary rounded-lg bg-blue-500 px-4 py-2 text-sm text-white hover:bg-blue-600"
+            className="btn-float-primary rounded-lg px-4 py-2 text-sm text-white"
             size="sm"
+            style={{
+              background: "linear-gradient(135deg, #C8922A, #B8782A)",
+              boxShadow: "0 4px 12px rgba(180,120,40,0.35)",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "linear-gradient(135deg, #B8822A, #A8682A)" }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "linear-gradient(135deg, #C8922A, #B8782A)" }}
           >
             {isScanning ? (
               <Loader2 className="size-4 animate-spin" />
@@ -739,7 +745,7 @@ export default function NewDocumentPage() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 {registrationMode === "auto" ? (
-                  <div className="flex items-center gap-2 rounded-full bg-green-100 px-3 py-1.5 text-sm font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                  <div className="flex items-center gap-2 rounded-full bg-[#F0E0C8] px-3 py-1.5 text-sm font-medium text-[#A0703A] dark:bg-[#A0703A]/20 dark:text-[#D4A860]">
                     <Zap className="size-4" />
                     全自動
                   </div>
@@ -872,7 +878,7 @@ export default function NewDocumentPage() {
           <CardContent className="pt-6">
             <div className="space-y-4">
               <div className="flex items-center gap-2">
-                <Loader2 className="size-5 animate-spin text-green-600" />
+                <Loader2 className="size-5 animate-spin text-[#A0703A]" />
                 <span className="text-sm font-medium">
                   {autoProgress}/{autoTotal} ファイル処理中...
                 </span>
@@ -890,19 +896,19 @@ export default function NewDocumentPage() {
 
       {/* 全自動モード: 結果サマリー */}
       {registrationMode === "auto" && autoCompleted && !isReviewing && (
-        <Card className="border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950">
+        <Card className="border-[#E0CEB8] bg-[#FAF7F0] dark:border-[#A0703A]/30 dark:bg-[#A0703A]/10">
           <CardContent className="pt-6">
             <div className="space-y-4">
               <div className="flex items-center gap-2">
-                <CheckCircle2 className="size-6 text-green-600 dark:text-green-400" />
-                <span className="text-lg font-semibold text-green-700 dark:text-green-300">
+                <CheckCircle2 className="size-6 text-[#A0703A] dark:text-[#D4A860]" />
+                <span className="text-lg font-semibold text-[#8B5E2F] dark:text-[#D4A860]">
                   処理完了
                 </span>
               </div>
 
               <div className="grid grid-cols-3 gap-3">
                 <div className="rounded-lg bg-white/80 p-3 text-center dark:bg-white/5">
-                  <CheckCircle2 className="mx-auto size-5 text-green-600" />
+                  <CheckCircle2 className="mx-auto size-5 text-[#A0703A]" />
                   <p className="mt-1 text-lg font-bold">{successCount}件</p>
                   <p className="text-xs text-muted-foreground">成功</p>
                 </div>
@@ -921,12 +927,12 @@ export default function NewDocumentPage() {
               {/* 成功した書類リスト */}
               {autoResults.filter((r) => r.status === "registered").length > 0 && (
                 <div className="space-y-1">
-                  <p className="text-xs font-medium text-green-700 dark:text-green-400">登録済み:</p>
+                  <p className="text-xs font-medium text-[#8B5E2F] dark:text-[#D4A860]">登録済み:</p>
                   {autoResults
                     .filter((r) => r.status === "registered")
                     .map((r, i) => (
                       <div key={i} className="flex items-center gap-2 text-sm">
-                        <CheckCircle2 className="size-3.5 shrink-0 text-green-600" />
+                        <CheckCircle2 className="size-3.5 shrink-0 text-[#A0703A]" />
                         <span className="truncate">
                           {r.document
                             ? `${(r.document as Record<string, unknown>).vendor_name} / ${(r.document as Record<string, unknown>).type} / ¥${Number((r.document as Record<string, unknown>).amount || 0).toLocaleString()}`
@@ -1060,11 +1066,11 @@ export default function NewDocumentPage() {
 
       {/* チェックモード: 登録成功画面 */}
       {registrationMode === "check" && isRegistered && (
-        <Card className="border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950">
+        <Card className="border-[#E0CEB8] bg-[#FAF7F0] dark:border-[#A0703A]/30 dark:bg-[#A0703A]/10">
           <CardContent className="pt-6">
             <div className="flex flex-col items-center gap-4 py-4">
-              <CheckCircle2 className="size-12 text-green-600 dark:text-green-400" />
-              <p className="text-lg font-semibold text-green-700 dark:text-green-300">
+              <CheckCircle2 className="size-12 text-[#A0703A] dark:text-[#D4A860]" />
+              <p className="text-lg font-semibold text-[#8B5E2F] dark:text-[#D4A860]">
                 書類を登録しました
               </p>
               <div className="flex w-full flex-col gap-3 sm:flex-row">
@@ -1194,7 +1200,7 @@ function AutoDropzone({
       <FileDropzone files={files} onFilesChange={onFilesChange} />
       {files.length === 0 && (
         <div className="mt-2 text-center">
-          <p className="text-xs text-green-600 dark:text-green-400">
+          <p className="text-xs text-[#A0703A] dark:text-[#D4A860]">
             ファイルをドロップすると自動で解析・登録されます
           </p>
           <p className="text-xs text-muted-foreground">

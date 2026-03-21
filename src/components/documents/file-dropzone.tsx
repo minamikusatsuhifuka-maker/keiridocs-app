@@ -75,7 +75,7 @@ function FileIcon({ mimeType, name }: { mimeType: string; name: string }) {
     mimeType === "application/vnd.ms-excel" ||
     ext === "xlsx" || ext === "xls"
   ) {
-    return <FileSpreadsheet className="size-6 text-green-600" />
+    return <FileSpreadsheet className="size-6 text-[#A0703A]" />
   }
 
   // CSV

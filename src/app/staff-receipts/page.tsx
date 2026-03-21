@@ -422,7 +422,7 @@ export default function StaffReceiptsPage() {
                 >
                   <div className="flex items-center gap-2 mb-2">
                     {result.status === "success" ? (
-                      <CheckCircle2 className="size-4 text-green-600" />
+                      <CheckCircle2 className="size-4 text-[#A0703A]" />
                     ) : (
                       <X className="size-4 text-red-600" />
                     )}

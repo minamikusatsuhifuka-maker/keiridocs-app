@@ -135,7 +135,7 @@ export function Sidebar() {
     ""
 
   return (
-    <aside className="hidden w-64 flex-col md:flex" style={{ background: "linear-gradient(180deg, #FAF7F0 0%, #F5EEF8 100%)", borderRight: "1px solid var(--dusk-border)" }}>
+    <aside className="hidden w-64 flex-col md:flex" style={{ background: "linear-gradient(180deg, #F0E8D8 0%, #EAD8EC 100%)", borderRight: "1px solid var(--dusk-border)" }}>
       {/* ブランド名 + アクセントアイコン */}
       <div className="flex h-14 items-center gap-2.5 px-4" style={{ borderBottom: "1px solid var(--dusk-border)" }}>
         <div className="flex h-7 w-7 items-center justify-center rounded-full text-white text-xs font-bold" style={{ background: "var(--dusk-accent-gradient)" }}>
@@ -213,7 +213,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
     ""
 
   return (
-    <div className="flex h-full flex-col" style={{ background: "linear-gradient(180deg, #FAF7F0 0%, #F5EEF8 100%)" }}>
+    <div className="flex h-full flex-col" style={{ background: "linear-gradient(180deg, #F0E8D8 0%, #EAD8EC 100%)" }}>
       <div className="flex h-14 items-center gap-2.5 px-4" style={{ borderBottom: "1px solid var(--dusk-border)" }}>
         <div className="flex h-7 w-7 items-center justify-center rounded-full text-white text-xs font-bold" style={{ background: "var(--dusk-accent-gradient)" }}>
           K

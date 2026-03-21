@@ -9,7 +9,7 @@ const statusConfig: Record<DocumentStatus, { label: string; className: string }>
   },
   "処理済み": {
     label: "処理済み",
-    className: "bg-green-100 text-green-800 border-green-200 hover:bg-green-100",
+    className: "bg-[#F0E0C8] text-[#8B5E2F] border-[#E0CEB8] hover:bg-[#F0E0C8]",
   },
   "アーカイブ": {
     label: "アーカイブ",

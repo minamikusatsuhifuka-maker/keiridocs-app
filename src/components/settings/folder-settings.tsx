@@ -336,7 +336,7 @@ export function FolderSettings() {
                             variant="ghost"
                             size="icon"
                             onClick={handleSaveEdit}
-                            className="text-green-600 hover:text-green-600"
+                            className="text-[#A0703A] hover:text-[#A0703A]"
                           >
                             <Check className="size-4" />
                           </Button>

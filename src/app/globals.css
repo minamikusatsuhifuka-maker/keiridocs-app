@@ -82,7 +82,7 @@
   --sidebar-ring: #A0703A;
 
   /* Dusk Gold テーマ変数 */
-  --dusk-bg-main: linear-gradient(150deg, #FAF7F0 0%, #F5EEF8 40%, #EEF3FA 100%);
+  --dusk-bg-main: linear-gradient(150deg, #F5EDE0 0%, #EDE0F0 40%, #DDE8F5 100%);
   --dusk-bg-card: rgba(255, 255, 255, 0.6);
   --dusk-border: #E0CEB8;
   --dusk-primary: #A0703A;

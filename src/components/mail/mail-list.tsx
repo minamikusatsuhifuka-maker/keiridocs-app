@@ -177,7 +177,7 @@ export function MailList({ items, onApprove, onReject, isProcessing }: MailListP
                     onClick={() => onApprove([item.id])}
                     disabled={isProcessing}
                   >
-                    <Check className="mr-1 size-4 text-green-600" />
+                    <Check className="mr-1 size-4 text-[#A0703A]" />
                     承認
                   </Button>
                   <Button

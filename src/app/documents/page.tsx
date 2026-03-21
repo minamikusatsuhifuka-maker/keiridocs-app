@@ -484,8 +484,14 @@ export default function DocumentsPage() {
             <Button
               onClick={handleScan}
               disabled={isScanning}
-              className="btn-float-primary rounded-lg bg-blue-500 px-4 py-2 text-sm text-white hover:bg-blue-600"
+              className="btn-float-primary rounded-lg px-4 py-2 text-sm text-white"
               size="sm"
+              style={{
+                background: "linear-gradient(135deg, #C8922A, #B8782A)",
+                boxShadow: "0 4px 12px rgba(180,120,40,0.35)",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "linear-gradient(135deg, #B8822A, #A8682A)" }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "linear-gradient(135deg, #C8922A, #B8782A)" }}
             >
               {isScanning ? (
                 <Loader2 className="size-4 animate-spin" />
@@ -847,7 +853,7 @@ export default function DocumentsPage() {
                   }`}
                 >
                   {d.status === "registered" ? (
-                    <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-green-600" />
+                    <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-[#A0703A]" />
                   ) : d.status === "needs_review" ? (
                     <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
                   ) : (
