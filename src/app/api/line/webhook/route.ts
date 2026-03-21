@@ -18,11 +18,24 @@ interface LineEvent {
   message?: {
     type: string
     id: string
+    text?: string
     contentProvider?: {
       type: string
     }
   }
 }
+
+/* ---------- スタッフ名メモリ ---------- */
+
+interface StaffNameEntry {
+  staffId: string
+  staffName: string
+  expiresAt: number
+}
+
+/** userIdをキーにスタッフ名を一時保持（30分で期限切れ） */
+const staffNameCache = new Map<string, StaffNameEntry>()
+const CACHE_TTL_MS = 30 * 60 * 1000
 
 interface LineWebhookBody {
   destination: string
@@ -150,6 +163,21 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ status: "ok" })
 }
 
+/** スタッフ一覧からスタッフ名を部分一致検索 */
+function findStaffByName(
+  staffMembers: { id: string; name: string }[],
+  searchName: string
+): { id: string; name: string } | undefined {
+  return staffMembers.find(
+    (s) => searchName.includes(s.name) || s.name.includes(searchName)
+  )
+}
+
+/** スタッフ名の一覧テキストを生成 */
+function getStaffNameList(staffMembers: { id: string; name: string }[]): string {
+  return staffMembers.map((s) => s.name).join("・")
+}
+
 /** イベント振り分け */
 async function handleEvent(event: LineEvent): Promise<void> {
   if (event.type !== "message") return
@@ -158,7 +186,46 @@ async function handleEvent(event: LineEvent): Promise<void> {
   if (messageType === "image") {
     await handleImageMessage(event)
   } else if (messageType === "text") {
-    await replyMessage(event.replyToken, "📎 領収書の写真を送ってください")
+    await handleTextMessage(event)
+  }
+}
+
+/** テキストメッセージ処理: スタッフ名の照合・登録 */
+async function handleTextMessage(event: LineEvent): Promise<void> {
+  const { replyToken, source, message } = event
+  const inputText = message?.text?.trim()
+  if (!inputText) return
+
+  const supabase = createServiceClient()
+  const { data: staffMembers, error: staffError } = await supabase
+    .from("staff_members")
+    .select("id, name")
+
+  if (staffError || !staffMembers) {
+    console.error("staff_members取得エラー:", staffError)
+    await replyMessage(replyToken, "⚠️ システムエラーが発生しました。管理者にご連絡ください。")
+    return
+  }
+
+  const matched = findStaffByName(staffMembers, inputText)
+
+  if (matched) {
+    // キャッシュにスタッフ名を保存
+    staffNameCache.set(source.userId, {
+      staffId: matched.id,
+      staffName: matched.name,
+      expiresAt: Date.now() + CACHE_TTL_MS,
+    })
+    await replyMessage(
+      replyToken,
+      `✅ ${matched.name}さんとして登録します。\n次に領収書の写真を送ってください`
+    )
+  } else {
+    const nameList = getStaffNameList(staffMembers)
+    await replyMessage(
+      replyToken,
+      `⚠️ スタッフ名が見つかりません\n登録名：${nameList}`
+    )
   }
 }
 
@@ -167,53 +234,56 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
   const { replyToken, source, message } = event
   if (!message?.id) return
 
-  // 1. LINEユーザーのdisplayNameを取得
-  const profile = await getLineUserProfile(source.userId)
-  if (!profile) {
-    await replyMessage(replyToken, "⚠️ プロフィール情報を取得できませんでした。")
-    return
-  }
-
-  const displayName = profile.displayName
-
-  // 2. staff_membersテーブルから名前で部分一致検索
   const supabase = createServiceClient()
   const { data: staffMembers, error: staffError } = await supabase
     .from("staff_members")
     .select("id, name")
 
-  if (staffError) {
+  if (staffError || !staffMembers) {
     console.error("staff_members取得エラー:", staffError)
     await replyMessage(replyToken, "⚠️ システムエラーが発生しました。管理者にご連絡ください。")
     return
   }
 
-  // displayNameに含まれるスタッフ名、またはスタッフ名に含まれるdisplayNameで検索
-  const matchedStaff = (staffMembers || []).find(
-    (s) => displayName.includes(s.name) || s.name.includes(displayName)
-  )
+  // スタッフ名の解決: キャッシュ → displayName → 名前入力を促す
+  let matchedStaff: { id: string; name: string } | undefined
 
+  // 1. キャッシュから検索（テキストで事前送信されたスタッフ名）
+  const cached = staffNameCache.get(source.userId)
+  if (cached && cached.expiresAt > Date.now()) {
+    matchedStaff = { id: cached.staffId, name: cached.staffName }
+  }
+
+  // 2. キャッシュに無い場合、LINEのdisplayNameで部分一致検索
+  if (!matchedStaff) {
+    const profile = await getLineUserProfile(source.userId)
+    if (profile) {
+      matchedStaff = findStaffByName(staffMembers, profile.displayName)
+    }
+  }
+
+  // 3. どちらでも見つからない場合→テキストで名前入力を促す
   if (!matchedStaff) {
     await replyMessage(
       replyToken,
-      "⚠️ スタッフ名が登録されていません。\n管理者にご連絡ください。"
+      "⚠️ お名前をテキストで送ってください\n例：楠葉"
     )
     return
   }
 
-  // 3. LINEから画像バイナリを取得
+  // 4. LINEから画像バイナリを取得
   const imageBuffer = await getLineMessageContent(message.id)
   if (!imageBuffer || imageBuffer.length === 0) {
     await replyMessage(replyToken, "⚠️ 画像の取得に失敗しました。もう一度送ってください。")
     return
   }
 
-  // 4. Gemini AI解析
+  // 5. Gemini AI解析
   const base64Data = imageBuffer.toString("base64")
   const mimeType = "image/jpeg" // LINEの画像はJPEG
   const ocrResult = await analyzeDocument(base64Data, mimeType)
 
-  // 5. Dropboxに保存
+  // 6. Dropboxに保存
   const dateObj = ocrResult.issue_date ? new Date(ocrResult.issue_date) : new Date()
   const timestamp = Date.now().toString().slice(-6)
   const fileName = `${matchedStaff.name}_LINE_${timestamp}.jpg`
@@ -221,7 +291,7 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
 
   const resultPath = await uploadFile(dropboxPath, imageBuffer)
 
-  // 6. staff_receiptsに保存
+  // 7. staff_receiptsに保存
   const docType = ocrResult.type || "領収書"
   const { error: insertError } = await supabase
     .from("staff_receipts")
@@ -244,7 +314,7 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     return
   }
 
-  // 7. 完了メッセージをLINEに返信
+  // 8. 完了メッセージをLINEに返信
   const storeName = ocrResult.vendor_name || "不明"
   const amountStr = formatAmount(ocrResult.amount)
   const dateStr = ocrResult.issue_date || "日付不明"
