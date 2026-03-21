@@ -49,37 +49,47 @@
 
 :root {
   --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.129 0.042 264.695);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.129 0.042 264.695);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.129 0.042 264.695);
-  --primary: oklch(0.208 0.042 265.755);
-  --primary-foreground: oklch(0.984 0.003 247.858);
-  --secondary: oklch(0.968 0.007 247.896);
-  --secondary-foreground: oklch(0.208 0.042 265.755);
-  --muted: oklch(0.968 0.007 247.896);
-  --muted-foreground: oklch(0.554 0.046 257.417);
-  --accent: oklch(0.968 0.007 247.896);
-  --accent-foreground: oklch(0.208 0.042 265.755);
+  --background: #FAF7F0;
+  --foreground: #3A2D20;
+  --card: rgba(255, 255, 255, 0.6);
+  --card-foreground: #3A2D20;
+  --popover: #FFFFFF;
+  --popover-foreground: #3A2D20;
+  --primary: #A0703A;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F0E0C8;
+  --secondary-foreground: #3A2D20;
+  --muted: #F0E0C8;
+  --muted-foreground: #9A8070;
+  --accent: #F0E0C8;
+  --accent-foreground: #3A2D20;
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.929 0.013 255.508);
-  --input: oklch(0.929 0.013 255.508);
-  --ring: oklch(0.704 0.04 256.788);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.984 0.003 247.858);
-  --sidebar-foreground: oklch(0.129 0.042 264.695);
-  --sidebar-primary: oklch(0.208 0.042 265.755);
-  --sidebar-primary-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-accent: oklch(0.968 0.007 247.896);
-  --sidebar-accent-foreground: oklch(0.208 0.042 265.755);
-  --sidebar-border: oklch(0.929 0.013 255.508);
-  --sidebar-ring: oklch(0.704 0.04 256.788);
+  --border: #E0CEB8;
+  --input: #E0CEB8;
+  --ring: #A0703A;
+  --chart-1: #D4A860;
+  --chart-2: #C090C0;
+  --chart-3: #A0703A;
+  --chart-4: #E0CEB8;
+  --chart-5: #9A8070;
+  --sidebar: #FAF7F0;
+  --sidebar-foreground: #3A2D20;
+  --sidebar-primary: #A0703A;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #F0E0C8;
+  --sidebar-accent-foreground: #3A2D20;
+  --sidebar-border: #E0CEB8;
+  --sidebar-ring: #A0703A;
+
+  /* Dusk Gold テーマ変数 */
+  --dusk-bg-main: linear-gradient(150deg, #FAF7F0 0%, #F5EEF8 40%, #EEF3FA 100%);
+  --dusk-bg-card: rgba(255, 255, 255, 0.6);
+  --dusk-border: #E0CEB8;
+  --dusk-primary: #A0703A;
+  --dusk-primary-light: #F0E0C8;
+  --dusk-text-main: #3A2D20;
+  --dusk-text-muted: #9A8070;
+  --dusk-accent-gradient: linear-gradient(135deg, #D4A860, #C090C0);
 }
 
 .dark {
@@ -121,8 +131,33 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    background: var(--dusk-bg-main);
+    min-height: 100vh;
+    font-family: 'Zen Maru Gothic', sans-serif;
   }
+}
+
+/* Dusk Gold カードスタイル */
+.card,
+[data-slot="card"] {
+  background: var(--dusk-bg-card) !important;
+  border: 0.5px solid var(--dusk-border) !important;
+  border-radius: 16px !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Dusk Gold プライマリボタン */
+.btn-dusk-primary {
+  background: var(--dusk-accent-gradient);
+  color: white;
+  border: none;
+  border-radius: 12px;
+}
+
+.btn-dusk-primary:hover {
+  opacity: 0.9;
 }
 
 /* フローティングボタン共通スタイル */
@@ -142,20 +177,24 @@
   transform: translateY(1px);
 }
 
-/* プライマリ（青）フローティング */
+/* プライマリ（ゴールド）フローティング */
 .btn-float-primary {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12), 0 1px 3px rgba(59, 130, 246, 0.3);
+  background: var(--dusk-accent-gradient);
+  color: white;
+  border: none;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(160, 112, 58, 0.2), 0 1px 3px rgba(212, 168, 96, 0.3);
   transition: all 0.15s ease;
   transform: translateY(0);
 }
 
 .btn-float-primary:hover {
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(59, 130, 246, 0.4);
+  box-shadow: 0 4px 14px rgba(160, 112, 58, 0.3), 0 2px 6px rgba(212, 168, 96, 0.4);
   transform: translateY(-1px);
 }
 
 .btn-float-primary:active {
-  box-shadow: 0 1px 4px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 1px 4px rgba(160, 112, 58, 0.2);
   transform: translateY(1px);
 }
 

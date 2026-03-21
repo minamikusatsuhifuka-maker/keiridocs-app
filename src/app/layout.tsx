@@ -1,17 +1,13 @@
 import type { Metadata } from "next"
-import { Geist, Geist_Mono } from "next/font/google"
+import { Zen_Maru_Gothic } from "next/font/google"
 import "./globals.css"
 import { Toaster } from "@/components/ui/sonner"
 import { AppShell } from "@/components/layout/app-shell"
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const zenMaruGothic = Zen_Maru_Gothic({
+  weight: ["400", "500", "700"],
   subsets: ["latin"],
-})
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  display: "swap",
 })
 
 export const metadata: Metadata = {
@@ -26,9 +22,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ja">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      <body className={`${zenMaruGothic.className} antialiased`}>
         <AppShell>{children}</AppShell>
         <Toaster />
       </body>

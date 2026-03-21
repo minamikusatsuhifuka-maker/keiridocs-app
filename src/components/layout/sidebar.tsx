@@ -69,8 +69,8 @@ function NavLink({
       className={cn(
         "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
         active
-          ? "bg-primary text-primary-foreground btn-float-primary"
-          : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          ? "bg-[var(--dusk-primary-light)] text-[var(--dusk-primary)] font-medium"
+          : "text-[var(--dusk-text-muted)] hover:bg-[var(--dusk-primary-light)]/50 hover:text-[var(--dusk-text-main)]"
       )}
     >
       <Icon className="h-4 w-4" />
@@ -135,10 +135,13 @@ export function Sidebar() {
     ""
 
   return (
-    <aside className="hidden w-64 flex-col border-r bg-card md:flex">
-      {/* ブランド名 */}
-      <div className="flex h-14 items-center border-b px-4">
-        <h1 className="text-lg font-bold">経理書類管理</h1>
+    <aside className="hidden w-64 flex-col md:flex" style={{ background: "linear-gradient(180deg, #FAF7F0 0%, #F5EEF8 100%)", borderRight: "1px solid var(--dusk-border)" }}>
+      {/* ブランド名 + アクセントアイコン */}
+      <div className="flex h-14 items-center gap-2.5 px-4" style={{ borderBottom: "1px solid var(--dusk-border)" }}>
+        <div className="flex h-7 w-7 items-center justify-center rounded-full text-white text-xs font-bold" style={{ background: "var(--dusk-accent-gradient)" }}>
+          K
+        </div>
+        <h1 className="text-lg font-bold" style={{ color: "var(--dusk-text-main)" }}>経理書類管理</h1>
       </div>
 
       {/* ナビゲーション */}
@@ -178,14 +181,15 @@ export function Sidebar() {
       </nav>
 
       {/* ユーザー情報 + ログアウト */}
-      <div className="border-t p-4">
-        <div className="mb-2 truncate text-sm text-muted-foreground">
+      <div className="p-4" style={{ borderTop: "1px solid var(--dusk-border)" }}>
+        <div className="mb-2 truncate text-sm" style={{ color: "var(--dusk-text-muted)" }}>
           {displayName}
         </div>
         <Button
           variant="ghost"
           size="sm"
-          className="w-full justify-start gap-2 text-muted-foreground"
+          className="w-full justify-start gap-2"
+          style={{ color: "var(--dusk-text-muted)" }}
           onClick={signOut}
         >
           <LogOut className="h-4 w-4" />
@@ -209,9 +213,12 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
     ""
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex h-14 items-center border-b px-4">
-        <h1 className="text-lg font-bold">経理書類管理</h1>
+    <div className="flex h-full flex-col" style={{ background: "linear-gradient(180deg, #FAF7F0 0%, #F5EEF8 100%)" }}>
+      <div className="flex h-14 items-center gap-2.5 px-4" style={{ borderBottom: "1px solid var(--dusk-border)" }}>
+        <div className="flex h-7 w-7 items-center justify-center rounded-full text-white text-xs font-bold" style={{ background: "var(--dusk-accent-gradient)" }}>
+          K
+        </div>
+        <h1 className="text-lg font-bold" style={{ color: "var(--dusk-text-main)" }}>経理書類管理</h1>
       </div>
       <nav className="flex flex-1 flex-col gap-1 p-4">
         {navItems.map((item) => (
@@ -249,15 +256,16 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           {isScanning ? "スキャン中..." : "スキャン実行"}
         </button>
       </nav>
-      <div className="border-t p-4">
-        <div className="mb-2 truncate text-sm text-muted-foreground">
+      <div className="p-4" style={{ borderTop: "1px solid var(--dusk-border)" }}>
+        <div className="mb-2 truncate text-sm" style={{ color: "var(--dusk-text-muted)" }}>
           {displayName}
         </div>
         <Separator className="mb-2" />
         <Button
           variant="ghost"
           size="sm"
-          className="w-full justify-start gap-2 text-muted-foreground"
+          className="w-full justify-start gap-2"
+          style={{ color: "var(--dusk-text-muted)" }}
           onClick={() => {
             onNavigate?.()
             signOut()
