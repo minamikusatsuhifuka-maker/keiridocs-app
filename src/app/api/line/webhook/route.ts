@@ -6,6 +6,9 @@ import type { Database } from "@/types/database"
 import type { Json } from "@/types/database"
 import crypto from "crypto"
 
+/** Vercel関数のタイムアウトを60秒に延長（Gemini + Dropbox処理に十分な時間を確保） */
+export const maxDuration = 60
+
 /* ---------- 型定義 ---------- */
 
 interface LineEvent {
@@ -95,22 +98,80 @@ async function getLineMessageContent(messageId: string): Promise<Buffer | null> 
   return Buffer.from(arrayBuffer)
 }
 
-/** LINE返信メッセージ送信 */
-async function replyMessage(replyToken: string, text: string): Promise<void> {
+/** LINE Push メッセージ送信（replyToken不要、userIdに直接送信） */
+async function pushMessage(userId: string, text: string): Promise<boolean> {
   const token = process.env.LINE_CHANNEL_ACCESS_TOKEN
-  if (!token) return
+  if (!token) return false
 
-  await fetch("https://api.line.me/v2/bot/message/reply", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      replyToken,
-      messages: [{ type: "text", text }],
-    }),
-  })
+  try {
+    const res = await fetch("https://api.line.me/v2/bot/message/push", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        to: userId,
+        messages: [{ type: "text", text }],
+      }),
+    })
+
+    if (!res.ok) {
+      const errorBody = await res.text()
+      console.error("LINE Push送信失敗:", res.status, errorBody)
+      return false
+    }
+    return true
+  } catch (error) {
+    console.error("LINE Push送信エラー:", error)
+    return false
+  }
+}
+
+/** LINE返信メッセージ送信（失敗時はfalseを返す） */
+async function replyMessage(replyToken: string, text: string): Promise<boolean> {
+  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN
+  if (!token) return false
+
+  try {
+    const res = await fetch("https://api.line.me/v2/bot/message/reply", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        replyToken,
+        messages: [{ type: "text", text }],
+      }),
+    })
+
+    if (!res.ok) {
+      const errorBody = await res.text()
+      console.error("LINE Reply送信失敗:", res.status, errorBody)
+      return false
+    }
+    return true
+  } catch (error) {
+    console.error("LINE Reply送信エラー:", error)
+    return false
+  }
+}
+
+/**
+ * LINEにメッセージを送信する（reply → push フォールバック付き）
+ * replyTokenの有効期限切れ時にpushMessageで再送する
+ */
+async function sendLineMessage(
+  replyToken: string,
+  userId: string,
+  text: string
+): Promise<void> {
+  const replied = await replyMessage(replyToken, text)
+  if (!replied) {
+    console.log("Reply失敗のためPushで再送:", userId)
+    await pushMessage(userId, text)
+  }
 }
 
 /**
@@ -203,7 +264,7 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
 
   if (staffError || !staffMembers) {
     console.error("staff_members取得エラー:", staffError)
-    await replyMessage(replyToken, "⚠️ システムエラーが発生しました。管理者にご連絡ください。")
+    await sendLineMessage(replyToken, source.userId, "⚠️ システムエラーが発生しました。管理者にご連絡ください。")
     return
   }
 
@@ -216,14 +277,16 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
       staffName: matched.name,
       expiresAt: Date.now() + CACHE_TTL_MS,
     })
-    await replyMessage(
+    await sendLineMessage(
       replyToken,
+      source.userId,
       `✅ ${matched.name}さんとして登録します。\n次に領収書の写真を送ってください`
     )
   } else {
     const nameList = getStaffNameList(staffMembers)
-    await replyMessage(
+    await sendLineMessage(
       replyToken,
+      source.userId,
       `⚠️ スタッフ名が見つかりません\n登録名：${nameList}`
     )
   }
@@ -241,7 +304,7 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
 
   if (staffError || !staffMembers) {
     console.error("staff_members取得エラー:", staffError)
-    await replyMessage(replyToken, "⚠️ システムエラーが発生しました。管理者にご連絡ください。")
+    await sendLineMessage(replyToken, source.userId, "⚠️ システムエラーが発生しました。管理者にご連絡ください。")
     return
   }
 
@@ -264,63 +327,87 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
 
   // 3. どちらでも見つからない場合→テキストで名前入力を促す
   if (!matchedStaff) {
-    await replyMessage(
+    await sendLineMessage(
       replyToken,
+      source.userId,
       "⚠️ お名前をテキストで送ってください\n例：楠葉"
     )
     return
   }
 
-  // 4. LINEから画像バイナリを取得
-  const imageBuffer = await getLineMessageContent(message.id)
-  if (!imageBuffer || imageBuffer.length === 0) {
-    await replyMessage(replyToken, "⚠️ 画像の取得に失敗しました。もう一度送ってください。")
-    return
+  // 4以降は長時間処理になるため、全体をtry-catchで囲みエラー時もLINEに返信する
+  try {
+    // 4. LINEから画像バイナリを取得
+    console.log(`[LINE Bot] 画像取得開始: messageId=${message.id}, staff=${matchedStaff.name}`)
+    const imageBuffer = await getLineMessageContent(message.id)
+    if (!imageBuffer || imageBuffer.length === 0) {
+      await sendLineMessage(replyToken, source.userId, "⚠️ 画像の取得に失敗しました。もう一度送ってください。")
+      return
+    }
+    console.log(`[LINE Bot] 画像取得完了: ${imageBuffer.length} bytes`)
+
+    // 5. Gemini AI解析
+    console.log("[LINE Bot] Gemini AI解析開始")
+    const base64Data = imageBuffer.toString("base64")
+    const mimeType = "image/jpeg" // LINEの画像はJPEG
+    const ocrResult = await analyzeDocument(base64Data, mimeType)
+    console.log(`[LINE Bot] Gemini AI解析完了: vendor=${ocrResult.vendor_name}, amount=${ocrResult.amount}`)
+
+    // 6. Dropboxに保存
+    console.log("[LINE Bot] Dropboxアップロード開始")
+    const dateObj = ocrResult.issue_date ? new Date(ocrResult.issue_date) : new Date()
+    const timestamp = Date.now().toString().slice(-6)
+    const fileName = `${matchedStaff.name}_LINE_${timestamp}.jpg`
+    const dropboxPath = getStaffReceiptPath(matchedStaff.name, dateObj, fileName)
+
+    const resultPath = await uploadFile(dropboxPath, imageBuffer)
+    console.log(`[LINE Bot] Dropboxアップロード完了: ${resultPath}`)
+
+    // 7. staff_receiptsに保存
+    console.log("[LINE Bot] DB保存開始")
+    const docType = ocrResult.type || "領収書"
+    const { error: insertError } = await supabase
+      .from("staff_receipts")
+      .insert({
+        staff_member_id: matchedStaff.id,
+        file_name: fileName,
+        dropbox_path: resultPath,
+        document_type: docType,
+        date: ocrResult.issue_date || new Date().toISOString().split("T")[0],
+        amount: ocrResult.amount,
+        store_name: ocrResult.vendor_name || null,
+        tax_category: ocrResult.tax_category || null,
+        account_title: ocrResult.account_title || null,
+        ai_raw: JSON.parse(JSON.stringify(ocrResult)) as Json,
+      })
+
+    if (insertError) {
+      console.error("staff_receipts挿入エラー:", insertError)
+      await sendLineMessage(replyToken, source.userId, "⚠️ データベースへの保存に失敗しました。管理者にご連絡ください。")
+      return
+    }
+    console.log("[LINE Bot] DB保存完了")
+
+    // 8. 完了メッセージをLINEに返信
+    const storeName = ocrResult.vendor_name || "不明"
+    const amountStr = formatAmount(ocrResult.amount)
+    const dateStr = ocrResult.issue_date || "日付不明"
+
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      `✅ 登録完了！\n${storeName} ¥${amountStr}\n${dateStr}\nDropboxに保存しました`
+    )
+    console.log("[LINE Bot] 処理完了")
+  } catch (error) {
+    // 予期しないエラーが発生しても必ずLINEに返信する
+    console.error("[LINE Bot] 画像処理中にエラー発生:", error)
+    const errorMsg = error instanceof Error ? error.message : String(error)
+    console.error("[LINE Bot] エラー詳細:", errorMsg)
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ 処理中にエラーが発生しました。\nもう一度送ってください。"
+    )
   }
-
-  // 5. Gemini AI解析
-  const base64Data = imageBuffer.toString("base64")
-  const mimeType = "image/jpeg" // LINEの画像はJPEG
-  const ocrResult = await analyzeDocument(base64Data, mimeType)
-
-  // 6. Dropboxに保存
-  const dateObj = ocrResult.issue_date ? new Date(ocrResult.issue_date) : new Date()
-  const timestamp = Date.now().toString().slice(-6)
-  const fileName = `${matchedStaff.name}_LINE_${timestamp}.jpg`
-  const dropboxPath = getStaffReceiptPath(matchedStaff.name, dateObj, fileName)
-
-  const resultPath = await uploadFile(dropboxPath, imageBuffer)
-
-  // 7. staff_receiptsに保存
-  const docType = ocrResult.type || "領収書"
-  const { error: insertError } = await supabase
-    .from("staff_receipts")
-    .insert({
-      staff_member_id: matchedStaff.id,
-      file_name: fileName,
-      dropbox_path: resultPath,
-      document_type: docType,
-      date: ocrResult.issue_date || new Date().toISOString().split("T")[0],
-      amount: ocrResult.amount,
-      store_name: ocrResult.vendor_name || null,
-      tax_category: ocrResult.tax_category || null,
-      account_title: ocrResult.account_title || null,
-      ai_raw: JSON.parse(JSON.stringify(ocrResult)) as Json,
-    })
-
-  if (insertError) {
-    console.error("staff_receipts挿入エラー:", insertError)
-    await replyMessage(replyToken, "⚠️ データベースへの保存に失敗しました。管理者にご連絡ください。")
-    return
-  }
-
-  // 8. 完了メッセージをLINEに返信
-  const storeName = ocrResult.vendor_name || "不明"
-  const amountStr = formatAmount(ocrResult.amount)
-  const dateStr = ocrResult.issue_date || "日付不明"
-
-  await replyMessage(
-    replyToken,
-    `✅ 登録完了！\n${storeName} ¥${amountStr}\n${dateStr}\nDropboxに保存しました`
-  )
 }
