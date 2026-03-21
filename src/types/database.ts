@@ -393,6 +393,69 @@ export interface Database {
         }
         Relationships: []
       }
+      staff_members: {
+        Row: {
+          id: string
+          name: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          name: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          name?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
+      staff_receipts: {
+        Row: {
+          id: string
+          staff_member_id: string
+          file_name: string
+          dropbox_path: string
+          document_type: string | null
+          date: string | null
+          amount: number | null
+          store_name: string | null
+          tax_category: string | null
+          account_title: string | null
+          ai_raw: Json | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          staff_member_id: string
+          file_name: string
+          dropbox_path: string
+          document_type?: string | null
+          date?: string | null
+          amount?: number | null
+          store_name?: string | null
+          tax_category?: string | null
+          account_title?: string | null
+          ai_raw?: Json | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          staff_member_id?: string
+          file_name?: string
+          dropbox_path?: string
+          document_type?: string | null
+          date?: string | null
+          amount?: number | null
+          store_name?: string | null
+          tax_category?: string | null
+          account_title?: string | null
+          ai_raw?: Json | null
+          created_at?: string
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           id: string

@@ -17,6 +17,7 @@ import {
   Table2,
   ScanLine,
   Loader2,
+  Receipt,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -35,6 +36,7 @@ const navItems = [
   { href: "/spreadsheet", label: "スプレッドシート", icon: Table2 },
   { href: "/downloads", label: "自動取得", icon: Download },
   { href: "/accountant", label: "税理士提出", icon: Briefcase },
+  { href: "/staff-receipts", label: "スタッフ領収書", icon: Receipt },
   { href: "/mail", label: "メール確認", icon: Mail },
   { href: "/settings", label: "設定", icon: Settings },
 ]

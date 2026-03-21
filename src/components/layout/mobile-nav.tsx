@@ -11,6 +11,7 @@ import {
   BarChart3,
   Download,
   Briefcase,
+  Receipt,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -21,6 +22,7 @@ const navItems = [
   { href: "/analytics", label: "分析", icon: BarChart3 },
   { href: "/downloads", label: "自動取得", icon: Download },
   { href: "/accountant", label: "税理士", icon: Briefcase },
+  { href: "/staff-receipts", label: "領収書", icon: Receipt },
   { href: "/mail", label: "メール", icon: Mail },
   { href: "/settings", label: "設定", icon: Settings },
 ]
