@@ -241,6 +241,11 @@ function getStaffNameList(staffMembers: { id: string; name: string }[]): string 
 
 /** イベント振り分け */
 async function handleEvent(event: LineEvent): Promise<void> {
+  // デバッグ: LINE user IDをVercelログに出力
+  if (event.source?.userId) {
+    console.log(`LINE_USER_ID: ${event.source.userId}`)
+  }
+
   if (event.type !== "message") return
 
   const messageType = event.message?.type
