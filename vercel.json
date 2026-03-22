@@ -7,6 +7,14 @@
     {
       "path": "/api/cron/scan-dropbox",
       "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/monthly-close",
+      "schedule": "0 0 1 * *"
+    },
+    {
+      "path": "/api/cron/remind-missing",
+      "schedule": "0 1 25 * *"
     }
   ]
 }

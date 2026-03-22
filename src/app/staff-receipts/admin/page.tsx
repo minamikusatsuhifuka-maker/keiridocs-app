@@ -11,7 +11,7 @@ import {
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Loader2, Download, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react"
+import { Loader2, Download, ArrowUpDown, ArrowUp, ArrowDown, Play, Bell } from "lucide-react"
 import { toast } from "sonner"
 
 interface StaffMember {
@@ -61,6 +61,10 @@ export default function StaffReceiptsAdminPage() {
   // ソート
   const [sortKey, setSortKey] = useState<SortKey>("date")
   const [sortAsc, setSortAsc] = useState(false)
+
+  // 手動実行
+  const [isRunningClose, setIsRunningClose] = useState(false)
+  const [isRunningRemind, setIsRunningRemind] = useState(false)
 
   // スタッフ一覧取得
   useEffect(() => {
@@ -148,6 +152,36 @@ export default function StaffReceiptsAdminPage() {
       : <ArrowDown className="ml-1 h-3 w-3 inline" />
   }
 
+  // 月次締め手動実行
+  const handleMonthlyClose = async () => {
+    setIsRunningClose(true)
+    try {
+      const res = await fetch("/api/cron/monthly-close")
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || "実行に失敗しました")
+      toast.success(`月次締め完了: ${json.count}件 / ¥${json.total?.toLocaleString()}`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "月次締めの実行に失敗しました")
+    } finally {
+      setIsRunningClose(false)
+    }
+  }
+
+  // 未提出リマインダー手動実行
+  const handleRemindMissing = async () => {
+    setIsRunningRemind(true)
+    try {
+      const res = await fetch("/api/cron/remind-missing")
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || "送信に失敗しました")
+      toast.success(`リマインダー送信完了: 未提出${json.missing_count}名 / 通知${json.notified?.length}名`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "リマインダーの送信に失敗しました")
+    } finally {
+      setIsRunningRemind(false)
+    }
+  }
+
   // Excelエクスポート
   const handleExport = async () => {
     const { utils, writeFile } = await import("xlsx")
@@ -224,14 +258,32 @@ export default function StaffReceiptsAdminPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">スタッフ領収書管理</h1>
-        <Button
-          onClick={handleExport}
-          disabled={receipts.length === 0}
-          className="btn-float-primary"
-        >
-          <Download className="mr-2 size-4" />
-          Excelエクスポート
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            onClick={handleMonthlyClose}
+            disabled={isRunningClose}
+            variant="outline"
+          >
+            {isRunningClose ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Play className="mr-2 size-4" />}
+            今すぐ月次締め実行
+          </Button>
+          <Button
+            onClick={handleRemindMissing}
+            disabled={isRunningRemind}
+            variant="outline"
+          >
+            {isRunningRemind ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Bell className="mr-2 size-4" />}
+            未提出リマインダー送信
+          </Button>
+          <Button
+            onClick={handleExport}
+            disabled={receipts.length === 0}
+            className="btn-float-primary"
+          >
+            <Download className="mr-2 size-4" />
+            Excelエクスポート
+          </Button>
+        </div>
       </div>
 
       {/* フィルター */}
