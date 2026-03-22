@@ -270,25 +270,44 @@ async function handleManualQuery(
   query: string
 ): Promise<void> {
   try {
-    // 内部APIを呼ぶ代わりに直接検索を実行
     const supabase = createServiceClient()
 
-    // キーワードで部分一致検索
-    const keywords = query.split(/\s+/).filter(Boolean)
-    let searchQuery = supabase.from("manuals").select("*")
-    const orConditions = keywords
-      .map((kw) => `title.ilike.%${kw}%,content.ilike.%${kw}%`)
-      .join(",")
-    if (orConditions) {
-      searchQuery = searchQuery.or(orConditions)
+    // キーワードで部分一致検索（助詞・記号を除去してキーワード抽出）
+    const keywords = query
+      .replace(/[？?！!。、・\s]+/g, " ")
+      .split(/\s+/)
+      .filter((kw) => kw.length >= 2)
+    console.log("[LINE Bot] マニュアル検索クエリ:", query, "キーワード:", keywords)
+
+    let manuals: { id: string; category_id: string | null; title: string; content: string }[] = []
+
+    if (keywords.length > 0) {
+      // キーワードでOR検索
+      const orConditions = keywords
+        .map((kw) => `title.ilike.%${kw}%,content.ilike.%${kw}%`)
+        .join(",")
+      const { data: rawManuals, error: searchError } = await supabase
+        .from("manuals")
+        .select("*")
+        .or(orConditions)
+        .limit(10)
+
+      if (searchError) {
+        console.error("[LINE Bot] マニュアル検索エラー:", searchError)
+      }
+      manuals = (rawManuals || []) as typeof manuals
+      console.log("[LINE Bot] キーワード検索ヒット数:", manuals.length)
     }
 
-    const { data: rawManuals } = await searchQuery.limit(5)
-    const manuals = (rawManuals || []) as { id: string; category_id: string | null; title: string; content: string }[]
-
+    // キーワード検索で0件の場合、全件取得してGeminiに判断を委ねる
     if (manuals.length === 0) {
-      await sendLineMessage(replyToken, userId, `📖 「${query}」に関するマニュアルが見つかりませんでした。\n管理者にお問い合わせください。`)
-      return
+      console.log("[LINE Bot] キーワード検索0件 → 全件取得してGeminiに委ねます")
+      const { data: allManuals } = await supabase
+        .from("manuals")
+        .select("*")
+        .order("created_at", { ascending: true })
+      manuals = (allManuals || []) as typeof manuals
+      console.log("[LINE Bot] マニュアル全件数:", manuals.length)
     }
 
     // カテゴリ取得
@@ -299,7 +318,10 @@ async function handleManualQuery(
     // Gemini AIで回答生成
     const apiKey = process.env.GEMINI_API_KEY
     if (!apiKey) {
-      // Gemini未設定時はマニュアル内容を直接返す
+      if (manuals.length === 0) {
+        await sendLineMessage(replyToken, userId, "📖 マニュアルが登録されていません。管理者にお問い合わせください。")
+        return
+      }
       const top = manuals[0]
       const cat = top.category_id ? categoryMap.get(top.category_id) : null
       await sendLineMessage(replyToken, userId, `${cat?.emoji || "📄"} ${top.title}\n\n${top.content.slice(0, 400)}`)
@@ -307,15 +329,38 @@ async function handleManualQuery(
     }
 
     const { GoogleGenerativeAI } = await import("@google/generative-ai")
+    const genAI = new GoogleGenerativeAI(apiKey)
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" })
+
+    // マニュアルが0件の場合は一般知識でフォールバック
+    if (manuals.length === 0) {
+      console.log("[LINE Bot] マニュアル0件 → 一般知識フォールバック")
+      const fallbackPrompt = `あなたは皮膚科・美容皮膚科クリニック「南草津皮フ科」のAIアシスタントです。
+マニュアルが登録されていないため、皮膚科・美容皮膚科クリニックの一般的な知識として回答してください。
+
+【スタッフからの質問】
+${query}
+
+【回答ルール】
+- 皮膚科クリニックの一般的な知識に基づいて回答する
+- 「一般的な対応としては」と前置きして回答する
+- LINEメッセージとして読みやすいように改行を入れる
+- 箇条書きを活用して見やすくする
+- 回答は400文字以内に収める
+- 最後に「詳細は管理者にご確認ください」と付け加える`
+
+      const result = await model.generateContent(fallbackPrompt)
+      const answer = result.response.text()
+      await sendLineMessage(replyToken, userId, `📖 ${answer}`)
+      return
+    }
+
     const context = manuals
       .map((m) => {
         const cat = m.category_id ? categoryMap.get(m.category_id) : null
         return `【${cat?.emoji || "📄"} ${cat?.name || "未分類"}】${m.title}\n${m.content}`
       })
       .join("\n\n---\n\n")
-
-    const genAI = new GoogleGenerativeAI(apiKey)
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" })
 
     const prompt = `あなたは皮膚科・美容皮膚科クリニック「南草津皮フ科」のAIアシスタントです。
 スタッフからの質問に、以下のマニュアル内容を参照して簡潔に回答してください。
@@ -331,7 +376,8 @@ ${query}
 - LINEメッセージとして読みやすいように改行を入れる
 - 箇条書きを活用して見やすくする
 - 回答は400文字以内に収める
-- マニュアルに記載がない場合は「マニュアルに記載がありません」と伝える`
+- マニュアルに直接の記載がなくても、関連する内容から推測して回答する
+- どうしても回答できない場合のみ「該当するマニュアルが見つかりませんでした」と伝える`
 
     const result = await model.generateContent(prompt)
     const answer = result.response.text()
