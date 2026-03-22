@@ -251,7 +251,94 @@ async function handleEvent(event: LineEvent): Promise<void> {
   }
 }
 
-/** テキストメッセージ処理: スタッフ名の照合・登録 */
+/** 質問キーワードを含むかチェック */
+const QUESTION_KEYWORDS = ["？", "?", "は？", "教えて", "手順", "方法", "やり方", "どうすれば", "マニュアル", "ルール", "規則", "対応", "操作", "使い方", "どうやって", "なぜ", "何"]
+
+function isQuestionText(text: string): boolean {
+  return QUESTION_KEYWORDS.some((kw) => text.includes(kw))
+}
+
+/** マニュアル検索Bot: Gemini AIがマニュアルを参照して回答 */
+async function handleManualQuery(
+  replyToken: string,
+  userId: string,
+  query: string
+): Promise<void> {
+  try {
+    // 内部APIを呼ぶ代わりに直接検索を実行
+    const supabase = createServiceClient()
+
+    // キーワードで部分一致検索
+    const keywords = query.split(/\s+/).filter(Boolean)
+    let searchQuery = supabase.from("manuals").select("*")
+    const orConditions = keywords
+      .map((kw) => `title.ilike.%${kw}%,content.ilike.%${kw}%`)
+      .join(",")
+    if (orConditions) {
+      searchQuery = searchQuery.or(orConditions)
+    }
+
+    const { data: rawManuals } = await searchQuery.limit(5)
+    const manuals = (rawManuals || []) as { id: string; category_id: string | null; title: string; content: string }[]
+
+    if (manuals.length === 0) {
+      await sendLineMessage(replyToken, userId, `📖 「${query}」に関するマニュアルが見つかりませんでした。\n管理者にお問い合わせください。`)
+      return
+    }
+
+    // カテゴリ取得
+    const { data: rawCategories } = await supabase.from("manual_categories").select("*")
+    const categories = (rawCategories || []) as { id: string; name: string; emoji: string }[]
+    const categoryMap = new Map(categories.map((c) => [c.id, c]))
+
+    // Gemini AIで回答生成
+    const apiKey = process.env.GEMINI_API_KEY
+    if (!apiKey) {
+      // Gemini未設定時はマニュアル内容を直接返す
+      const top = manuals[0]
+      const cat = top.category_id ? categoryMap.get(top.category_id) : null
+      await sendLineMessage(replyToken, userId, `${cat?.emoji || "📄"} ${top.title}\n\n${top.content.slice(0, 400)}`)
+      return
+    }
+
+    const { GoogleGenerativeAI } = await import("@google/generative-ai")
+    const context = manuals
+      .map((m) => {
+        const cat = m.category_id ? categoryMap.get(m.category_id) : null
+        return `【${cat?.emoji || "📄"} ${cat?.name || "未分類"}】${m.title}\n${m.content}`
+      })
+      .join("\n\n---\n\n")
+
+    const genAI = new GoogleGenerativeAI(apiKey)
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" })
+
+    const prompt = `あなたは皮膚科・美容皮膚科クリニック「南草津皮フ科」のAIアシスタントです。
+スタッフからの質問に、以下のマニュアル内容を参照して簡潔に回答してください。
+
+【マニュアル内容】
+${context}
+
+【スタッフからの質問】
+${query}
+
+【回答ルール】
+- マニュアルの内容に基づいて正確に回答する
+- LINEメッセージとして読みやすいように改行を入れる
+- 箇条書きを活用して見やすくする
+- 回答は400文字以内に収める
+- マニュアルに記載がない場合は「マニュアルに記載がありません」と伝える`
+
+    const result = await model.generateContent(prompt)
+    const answer = result.response.text()
+
+    await sendLineMessage(replyToken, userId, `📖 ${answer}`)
+  } catch (error) {
+    console.error("[LINE Bot] マニュアル検索エラー:", error)
+    await sendLineMessage(replyToken, userId, "⚠️ マニュアル検索中にエラーが発生しました。")
+  }
+}
+
+/** テキストメッセージ処理: スタッフ名照合 / マニュアル検索 / その他 */
 async function handleTextMessage(event: LineEvent): Promise<void> {
   const { replyToken, source, message } = event
   const inputText = message?.text?.trim()
@@ -268,10 +355,9 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
     return
   }
 
+  // a. スタッフ名として登録済み → 既存のスタッフ登録フロー
   const matched = findStaffByName(staffMembers, inputText)
-
   if (matched) {
-    // キャッシュにスタッフ名を保存
     staffNameCache.set(source.userId, {
       staffId: matched.id,
       staffName: matched.name,
@@ -282,14 +368,21 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
       source.userId,
       `✅ ${matched.name}さんとして登録します。\n次に領収書の写真を送ってください`
     )
-  } else {
-    const nameList = getStaffNameList(staffMembers)
-    await sendLineMessage(
-      replyToken,
-      source.userId,
-      `⚠️ スタッフ名が見つかりません\n登録名：${nameList}`
-    )
+    return
   }
+
+  // b. 質問キーワードを含む → マニュアル検索Bot
+  if (isQuestionText(inputText)) {
+    await handleManualQuery(replyToken, source.userId, inputText)
+    return
+  }
+
+  // c. その他 → ガイドメッセージ
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    "📎 領収書の写真を送るか、質問をどうぞ\n\n💡 例:\n・領収書の写真を送信 → 自動登録\n・「受付の手順は？」→ マニュアル検索\n・スタッフ名を送信 → 名前登録"
+  )
 }
 
 /** 画像メッセージ処理: Gemini解析 → Dropbox保存 → DB保存 → LINE返信 */

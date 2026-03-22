@@ -459,6 +459,57 @@ export interface Database {
         }
         Relationships: []
       }
+      manual_categories: {
+        Row: {
+          id: string
+          name: string
+          emoji: string
+          description: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          name: string
+          emoji?: string
+          description?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          name?: string
+          emoji?: string
+          description?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
+      manuals: {
+        Row: {
+          id: string
+          category_id: string | null
+          title: string
+          content: string
+          source: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          category_id?: string | null
+          title: string
+          content: string
+          source?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          category_id?: string | null
+          title?: string
+          content?: string
+          source?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           id: string

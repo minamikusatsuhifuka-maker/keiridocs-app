@@ -19,6 +19,7 @@ import {
   Loader2,
   Receipt,
   ClipboardList,
+  BookOpen,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -45,6 +46,7 @@ const navItems = [
 // admin専用ナビ項目
 const adminNavItems = [
   { href: "/staff-receipts/admin", label: "スタッフ領収書管理", icon: ClipboardList },
+  { href: "/manuals", label: "マニュアル管理", icon: BookOpen },
   { href: "/settings/users", label: "ユーザー管理", icon: Users },
 ]
 
