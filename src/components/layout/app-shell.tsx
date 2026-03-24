@@ -6,14 +6,15 @@ import { useState } from "react"
 import { Sidebar, SidebarContent } from "@/components/layout/sidebar"
 import { MobileNav } from "@/components/layout/mobile-nav"
 import { Header } from "@/components/layout/header"
+import { ChatWidget } from "@/components/ChatWidget"
 
 // アプリ全体のシェル（サイドバー + ヘッダー + コンテンツ + モバイルナビ）
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const [open, setOpen] = useState(false)
 
-  // ログイン画面はシェルなし
-  if (pathname === "/login") {
+  // ログイン画面・ウィジェット埋め込み画面はシェルなし
+  if (pathname === "/login" || pathname === "/widget") {
     return <>{children}</>
   }
 
@@ -37,6 +38,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* モバイルボトムナビ */}
       <MobileNav />
+
+      {/* フローティングチャットウィジェット */}
+      <ChatWidget />
     </div>
   )
 }

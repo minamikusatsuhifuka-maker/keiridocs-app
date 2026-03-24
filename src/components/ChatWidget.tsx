@@ -10,12 +10,17 @@ interface ChatMessage {
   content: string
 }
 
+interface ChatWidgetProps {
+  /** 埋め込みモード（常にチャットパネルを表示、フローティングボタン非表示） */
+  embed?: boolean
+}
+
 /**
  * フローティングチャットウィジェット
  * マニュアル検索AIと音声入力に対応
  */
-export function ChatWidget() {
-  const [isOpen, setIsOpen] = useState(false)
+export function ChatWidget({ embed = false }: ChatWidgetProps) {
+  const [isOpen, setIsOpen] = useState(embed)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [inputValue, setInputValue] = useState("")
   const [isSending, setIsSending] = useState(false)
@@ -117,13 +122,119 @@ export function ChatWidget() {
     return `${m}:${String(s).padStart(2, "0")}`
   }
 
+  // 埋め込みモード: チャットパネルのみ（フルサイズ）
+  if (embed) {
+    return (
+      <div className="flex h-dvh w-full flex-col bg-background">
+        {/* ヘッダー */}
+        <div className="flex items-center bg-[#d4a860] px-4 py-3 text-white">
+          <span className="text-sm font-bold">AIアシスタント</span>
+        </div>
+
+        {/* メッセージ一覧 */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {messages.length === 0 && (
+            <div className="text-center text-sm text-muted-foreground mt-8">
+              <p>マニュアルについて質問できます</p>
+              <p className="mt-1 text-xs">例：「受付の手順は？」</p>
+            </div>
+          )}
+          {messages.map((msg) => (
+            <div
+              key={msg.id}
+              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+            >
+              <div
+                className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap ${
+                  msg.role === "user"
+                    ? "bg-[#d4a860] text-white"
+                    : "bg-muted text-foreground"
+                }`}
+              >
+                {msg.content}
+              </div>
+            </div>
+          ))}
+          {isSending && (
+            <div className="flex justify-start">
+              <div className="rounded-2xl bg-muted px-3 py-2">
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* 録音中バー */}
+        {isRecording && (
+          <div className="flex items-center gap-2 bg-red-50 px-4 py-2 text-sm text-red-600">
+            <div
+              className="h-2 w-2 rounded-full bg-red-500"
+              style={{ transform: `scale(${1 + audioLevel * 0.5})` }}
+            />
+            <span>録音中 {formatTime(recordingSeconds)}</span>
+          </div>
+        )}
+
+        {/* 書き起こし処理中バー */}
+        {isProcessing && (
+          <div className="flex items-center gap-2 bg-amber-50 px-4 py-2 text-sm text-amber-600">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            <span>音声を書き起こし中...</span>
+          </div>
+        )}
+
+        {/* 入力エリア */}
+        <div className="flex items-center gap-2 border-t px-3 py-3">
+          {!isRecording && (
+            <button
+              onClick={startRecording}
+              disabled={isProcessing || isSending}
+              className="flex-shrink-0 rounded-full p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label="音声入力"
+            >
+              <Mic className="h-5 w-5" />
+            </button>
+          )}
+
+          <input
+            ref={inputRef}
+            type="text"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={isRecording ? "録音中..." : "質問を入力..."}
+            disabled={isRecording || isProcessing}
+            className="flex-1 rounded-full border bg-muted/50 px-4 py-2 text-sm outline-none transition-colors focus:border-[#d4a860] disabled:cursor-not-allowed disabled:opacity-50"
+          />
+
+          <button
+            onClick={isRecording ? handleStopAndSend : handleSend}
+            disabled={isProcessing || (!isRecording && !inputValue.trim())}
+            className={`flex-shrink-0 rounded-full p-2 transition-all duration-200 ${
+              isRecording
+                ? "animate-pulse bg-red-500 text-white hover:bg-red-600"
+                : inputValue.trim()
+                  ? "bg-green-600 text-white hover:bg-green-700"
+                  : "cursor-not-allowed bg-gray-300 text-gray-400"
+            }`}
+            aria-label={isRecording ? "録音停止して送信" : "送信"}
+          >
+            <Send className="h-5 w-5" />
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // 通常モード: フローティングボタン + チャットパネル
   return (
     <>
-      {/* フローティングボタン */}
+      {/* フローティングボタン（常に表示、チャットパネルが開いている場合は非表示） */}
       {!isOpen && (
         <button
           onClick={() => setIsOpen(true)}
-          className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-[#d4a860] shadow-lg transition-transform duration-200 hover:scale-105"
+          className="fixed bottom-20 right-4 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-[#d4a860] shadow-lg transition-transform duration-200 hover:scale-105 md:bottom-6 md:right-6"
           aria-label="チャットを開く"
         >
           <MessageCircle className="h-6 w-6 text-white" />
@@ -132,7 +243,7 @@ export function ChatWidget() {
 
       {/* チャットパネル */}
       {isOpen && (
-        <div className="fixed bottom-6 right-6 z-50 flex h-[500px] w-[360px] flex-col overflow-hidden rounded-2xl border bg-background shadow-2xl">
+        <div className="fixed inset-x-0 bottom-0 z-50 flex h-[80dvh] max-h-[500px] flex-col overflow-hidden border-t bg-background shadow-2xl sm:inset-x-auto sm:bottom-6 sm:right-6 sm:h-[500px] sm:w-[360px] sm:rounded-2xl sm:border">
           {/* ヘッダー */}
           <div className="flex items-center justify-between bg-[#d4a860] px-4 py-3 text-white">
             <span className="text-sm font-bold">AIアシスタント</span>
@@ -237,11 +348,7 @@ export function ChatWidget() {
               }`}
               aria-label={isRecording ? "録音停止して送信" : "送信"}
             >
-              {isRecording ? (
-                <Send className="h-5 w-5" />
-              ) : (
-                <Send className="h-5 w-5" />
-              )}
+              <Send className="h-5 w-5" />
             </button>
           </div>
         </div>
