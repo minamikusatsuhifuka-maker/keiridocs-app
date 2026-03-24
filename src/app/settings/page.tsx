@@ -11,7 +11,8 @@ import { DocumentTypeSettings } from "@/components/settings/document-type-settin
 import { AutoClassifySettings } from "@/components/settings/auto-classify-settings"
 import { DownloadSourceSettings } from "@/components/settings/download-source-settings"
 import { AccountantSettings } from "@/components/settings/accountant-settings"
-import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase } from "lucide-react"
+import { FloatingButtonSettings } from "@/components/settings/floating-button-settings"
+import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick } from "lucide-react"
 
 // 設定画面（5タブ構成）
 export default function SettingsPage() {
@@ -53,6 +54,10 @@ export default function SettingsPage() {
             <Briefcase className="size-4" />
             税理士提出
           </TabsTrigger>
+          <TabsTrigger value="floating-button" className="flex items-center gap-1.5">
+            <MousePointerClick className="size-4" />
+            フローティングボタン
+          </TabsTrigger>
           <TabsTrigger value="ai" className="flex items-center gap-1.5">
             <Sparkles className="size-4" />
             AI設定
@@ -93,6 +98,10 @@ export default function SettingsPage() {
 
         <TabsContent value="accountant">
           <AccountantSettings />
+        </TabsContent>
+
+        <TabsContent value="floating-button">
+          <FloatingButtonSettings />
         </TabsContent>
 
         <TabsContent value="ai">
