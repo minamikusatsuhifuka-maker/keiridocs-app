@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useCallback } from "react"
+import { useState, useRef, useCallback, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
@@ -12,6 +12,7 @@ export function FloatingButtonSettings() {
   const [isDragging, setIsDragging] = useState(false)
   const [buttonPos, setButtonPos] = useState({ x: 10, y: 10 }) // right/bottomからの距離(%)
   const previewRef = useRef<HTMLDivElement>(null)
+  const isDraggingRef = useRef(false)
 
   // マウス座標からプレビュー内の相対位置(%)を計算
   const calcPosition = useCallback((clientX: number, clientY: number) => {
@@ -26,40 +27,60 @@ export function FloatingButtonSettings() {
     return { x: 100 - xPercent, y: 100 - yPercent }
   }, [])
 
-  // マウスドラッグ
+  // ドキュメントレベルのイベントリスナーで滑らかなドラッグを実現
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingRef.current) return
+      const pos = calcPosition(e.clientX, e.clientY)
+      if (pos) setButtonPos(pos)
+    }
+
+    const handleMouseUp = () => {
+      if (!isDraggingRef.current) return
+      isDraggingRef.current = false
+      setIsDragging(false)
+    }
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!isDraggingRef.current) return
+      e.preventDefault()
+      const touch = e.touches[0]
+      const pos = calcPosition(touch.clientX, touch.clientY)
+      if (pos) setButtonPos(pos)
+    }
+
+    const handleTouchEnd = () => {
+      if (!isDraggingRef.current) return
+      isDraggingRef.current = false
+      setIsDragging(false)
+    }
+
+    document.addEventListener("mousemove", handleMouseMove)
+    document.addEventListener("mouseup", handleMouseUp)
+    document.addEventListener("touchmove", handleTouchMove, { passive: false })
+    document.addEventListener("touchend", handleTouchEnd)
+
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove)
+      document.removeEventListener("mouseup", handleMouseUp)
+      document.removeEventListener("touchmove", handleTouchMove)
+      document.removeEventListener("touchend", handleTouchEnd)
+    }
+  }, [calcPosition])
+
+  // マウスドラッグ開始
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
+    isDraggingRef.current = true
     setIsDragging(true)
   }, [])
 
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!isDragging) return
-    const pos = calcPosition(e.clientX, e.clientY)
-    if (pos) setButtonPos(pos)
-  }, [isDragging, calcPosition])
-
-  const handleMouseUp = useCallback(() => {
-    if (!isDragging) return
-    setIsDragging(false)
-  }, [isDragging])
-
-  // タッチドラッグ
+  // タッチドラッグ開始
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     e.preventDefault()
+    isDraggingRef.current = true
     setIsDragging(true)
   }, [])
-
-  const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    if (!isDragging) return
-    const touch = e.touches[0]
-    const pos = calcPosition(touch.clientX, touch.clientY)
-    if (pos) setButtonPos(pos)
-  }, [isDragging, calcPosition])
-
-  const handleTouchEnd = useCallback(() => {
-    if (!isDragging) return
-    setIsDragging(false)
-  }, [isDragging])
 
   return (
     <Card>
@@ -102,11 +123,6 @@ export function FloatingButtonSettings() {
           <div
             ref={previewRef}
             className="relative h-64 w-full overflow-hidden rounded-lg border-2 border-dashed border-muted-foreground/25 bg-muted/30 select-none"
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            onTouchMove={handleTouchMove}
-            onTouchEnd={handleTouchEnd}
           >
             {/* 模擬ページコンテンツ */}
             <div className="p-4 opacity-30">
@@ -123,7 +139,7 @@ export function FloatingButtonSettings() {
               className={`absolute flex h-12 w-12 items-center justify-center rounded-full shadow-lg transition-transform duration-150 ${
                 isDragging
                   ? "cursor-grabbing scale-110 shadow-xl"
-                  : "cursor-grab hover:scale-105"
+                  : "cursor-grab"
               }`}
               style={{
                 right: `${buttonPos.x}%`,
@@ -134,7 +150,8 @@ export function FloatingButtonSettings() {
               onMouseDown={handleMouseDown}
               onTouchStart={handleTouchStart}
             >
-              <MessageCircle className="h-5 w-5 text-white" />
+              {/* ホバーエフェクトはアイコンのみに適用（ボタン位置ずれ防止） */}
+              <MessageCircle className="h-5 w-5 text-white transition-transform duration-200 hover:scale-110" />
               {/* ドラッグヒント */}
               {!isDragging && (
                 <div className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-white shadow">
