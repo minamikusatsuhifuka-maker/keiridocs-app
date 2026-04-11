@@ -167,6 +167,7 @@ export function DocumentTable({
           <SortableHead field="type">種別</SortableHead>
           <SortableHead field="vendor_name">取引先</SortableHead>
           <SortableHead field="amount">金額</SortableHead>
+          <SortableHead field="created_at">取り込み日</SortableHead>
           <SortableHead field="issue_date">発行日</SortableHead>
           <SortableHead field="due_date">支払期日</SortableHead>
           <TableHead className="hidden lg:table-cell">税区分</TableHead>
@@ -193,6 +194,7 @@ export function DocumentTable({
             <TableCell>{doc.type}</TableCell>
             <TableCell className="max-w-[200px] truncate">{doc.vendor_name}</TableCell>
             <TableCell className="text-right">{formatAmount(doc.amount)}</TableCell>
+            <TableCell>{formatDate(doc.created_at)}</TableCell>
             <TableCell>{formatDate(doc.issue_date)}</TableCell>
             <TableCell>{formatDate(doc.due_date)}</TableCell>
             <TableCell className="hidden lg:table-cell text-xs">{doc.tax_category || "-"}</TableCell>
