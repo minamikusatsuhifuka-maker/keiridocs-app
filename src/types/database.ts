@@ -31,6 +31,7 @@ export interface Database {
           file_hash: string | null
           calendar_event_id: string | null
           registrant_id: string | null
+          payment_status: string
           user_id: string
           created_at: string
           updated_at: string
@@ -53,6 +54,7 @@ export interface Database {
           file_hash?: string | null
           calendar_event_id?: string | null
           registrant_id?: string | null
+          payment_status?: string
           user_id: string
           created_at?: string
           updated_at?: string
@@ -75,6 +77,7 @@ export interface Database {
           file_hash?: string | null
           calendar_event_id?: string | null
           registrant_id?: string | null
+          payment_status?: string
           user_id?: string
           created_at?: string
           updated_at?: string

@@ -324,6 +324,7 @@ export async function PATCH(request: NextRequest) {
     if (typeof body.status === "string") update.status = body.status
     if (typeof body.tax_category === "string") update.tax_category = body.tax_category
     if (typeof body.account_title === "string") update.account_title = body.account_title
+    if (typeof body.payment_status === "string") update.payment_status = body.payment_status
 
     const hasUpdates = Object.keys(update).length > 0
     if (!hasUpdates) {

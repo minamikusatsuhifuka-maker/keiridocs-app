@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import { getCurrentUserRole } from "@/lib/auth"
 import { StatsCards } from "@/components/dashboard/stats-cards"
 import { DueAlerts } from "@/components/dashboard/due-alerts"
 import { StaffStatusCard, type StaffStatus } from "@/components/dashboard/staff-status-card"
@@ -16,6 +17,9 @@ export default async function DashboardPage() {
   const {
     data: { user },
   } = await supabase.auth.getUser()
+
+  const userRole = await getCurrentUserRole()
+  const isAdminUser = userRole?.role === "admin"
 
   if (!user) {
     return (
@@ -59,16 +63,16 @@ export default async function DashboardPage() {
       .eq("user_id", user.id)
       .eq("status", "未処理"),
 
-    // 支払期日が近い書類TOP5（7日以内）
+    // 支払期日が近い書類TOP5（7日以内）※支払済も含む（下部表示のため）
     supabase
       .from("documents")
-      .select("id, vendor_name, amount, due_date, type")
+      .select("id, vendor_name, amount, due_date, type, payment_status")
       .eq("user_id", user.id)
       .eq("status", "未処理")
       .gte("due_date", today)
       .lte("due_date", sevenDaysLater)
       .order("due_date", { ascending: true })
-      .limit(5),
+      .limit(10),
 
     // 過去6週間の金額推移（created_at + amount）
     supabase
@@ -105,8 +109,10 @@ export default async function DashboardPage() {
     amount: doc.amount,
     due_date: doc.due_date!,
     type: doc.type,
+    payment_status: doc.payment_status ?? "未対応",
   }))
-  const dueSoonCount = dueSoonDocs.length
+  // 未対応の件数のみカウント
+  const dueSoonCount = dueSoonDocs.filter((d) => d.payment_status !== "支払い済み").length
 
   // カテゴリ別集計（金額合計）
   const categoryMap = new Map<string, number>()
@@ -163,9 +169,9 @@ export default async function DashboardPage() {
         <WeeklyBarChartClient data={weeklyData} />
       </div>
 
-      {/* スタッフ状況 + 支払期限 */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        <StaffStatusCard staff={staffStatus} />
+      {/* スタッフ状況（admin のみ） + 支払期限 */}
+      <div className={`grid gap-6 ${isAdminUser ? "lg:grid-cols-2" : ""}`}>
+        {isAdminUser && <StaffStatusCard staff={staffStatus} />}
         <DueAlerts documents={dueSoonDocs} />
       </div>
     </div>
