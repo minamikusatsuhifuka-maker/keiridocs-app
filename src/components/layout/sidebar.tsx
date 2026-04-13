@@ -75,7 +75,7 @@ function NavLink({
         "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
         active
           ? "bg-[var(--dusk-primary-light)] text-[var(--dusk-primary)] font-medium"
-          : "text-[var(--dusk-text-muted)] hover:bg-[var(--dusk-primary-light)]/50 hover:text-[var(--dusk-text-main)]"
+          : "text-[#1A1A1A] hover:bg-[var(--dusk-primary-light)]/50 hover:text-[#1A1A1A]"
       )}
     >
       <Icon className="h-4 w-4" />
@@ -172,7 +172,7 @@ export function Sidebar() {
           disabled={isScanning}
           className={cn(
             "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-            "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            "text-[#1A1A1A] hover:bg-accent hover:text-[#1A1A1A]",
             isScanning && "opacity-50 cursor-not-allowed"
           )}
         >
@@ -187,14 +187,14 @@ export function Sidebar() {
 
       {/* ユーザー情報 + ログアウト */}
       <div className="p-4" style={{ borderTop: "1px solid var(--dusk-border)" }}>
-        <div className="mb-2 truncate text-sm" style={{ color: "var(--dusk-text-muted)" }}>
+        <div className="mb-2 truncate text-sm" style={{ color: "#1A1A1A" }}>
           {displayName}
         </div>
         <Button
           variant="ghost"
           size="sm"
           className="w-full justify-start gap-2"
-          style={{ color: "var(--dusk-text-muted)" }}
+          style={{ color: "#1A1A1A" }}
           onClick={signOut}
         >
           <LogOut className="h-4 w-4" />
@@ -249,7 +249,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           disabled={isScanning}
           className={cn(
             "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-            "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            "text-[#1A1A1A] hover:bg-accent hover:text-[#1A1A1A]",
             isScanning && "opacity-50 cursor-not-allowed"
           )}
         >
@@ -262,7 +262,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         </button>
       </nav>
       <div className="p-4" style={{ borderTop: "1px solid var(--dusk-border)" }}>
-        <div className="mb-2 truncate text-sm" style={{ color: "var(--dusk-text-muted)" }}>
+        <div className="mb-2 truncate text-sm" style={{ color: "#1A1A1A" }}>
           {displayName}
         </div>
         <Separator className="mb-2" />
@@ -270,7 +270,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           variant="ghost"
           size="sm"
           className="w-full justify-start gap-2"
-          style={{ color: "var(--dusk-text-muted)" }}
+          style={{ color: "#1A1A1A" }}
           onClick={() => {
             onNavigate?.()
             signOut()

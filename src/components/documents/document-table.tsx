@@ -24,7 +24,9 @@ import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
 import { toast } from "sonner"
 
-type Document = Database["public"]["Tables"]["documents"]["Row"]
+type Document = Database["public"]["Tables"]["documents"]["Row"] & {
+  registrant?: { id: string; name: string } | null
+}
 
 // ソート可能なカラム
 type SortField = "type" | "vendor_name" | "amount" | "issue_date" | "due_date" | "status" | "created_at"
@@ -218,6 +220,7 @@ export function DocumentTable({
           <SortableHead field="vendor_name">取引先</SortableHead>
           <SortableHead field="amount">金額</SortableHead>
           <SortableHead field="created_at">取り込み日</SortableHead>
+          <TableHead>登録者</TableHead>
           <SortableHead field="issue_date">発行日</SortableHead>
           <SortableHead field="due_date">支払期日</SortableHead>
           <TableHead className="hidden lg:table-cell">税区分</TableHead>
@@ -245,6 +248,7 @@ export function DocumentTable({
             <TableCell className="max-w-[200px] truncate">{doc.vendor_name}</TableCell>
             <TableCell className="text-right">{formatAmount(doc.amount)}</TableCell>
             <TableCell>{formatDate(doc.created_at)}</TableCell>
+            <TableCell className="text-sm">{doc.registrant?.name ?? "—"}</TableCell>
             <TableCell>{formatDate(doc.issue_date)}</TableCell>
             <TableCell>{formatDate(doc.due_date)}</TableCell>
             <TableCell className="hidden lg:table-cell text-xs">{doc.tax_category || "-"}</TableCell>

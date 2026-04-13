@@ -113,9 +113,11 @@ export async function POST(request: NextRequest) {
       file: unknown
       filename: unknown
       contentType: unknown
+      registrant_id?: unknown
     }
 
     const { file, filename, contentType } = body
+    const registrantId = typeof body.registrant_id === "string" ? body.registrant_id : null
 
     if (typeof file !== "string" || typeof filename !== "string" || typeof contentType !== "string") {
       return NextResponse.json(
@@ -309,6 +311,7 @@ export async function POST(request: NextRequest) {
         tax_category: ocrResult.tax_category || "未判定",
         account_title: ocrResult.account_title || "",
         file_hash: fileHash,
+        registrant_id: registrantId,
         user_id: user.id,
       })
       .select()

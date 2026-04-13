@@ -65,6 +65,11 @@ interface DocumentTypeRecord {
   name: string
 }
 
+interface RegistrantRecord {
+  id: string
+  name: string
+}
+
 /** 全自動モード: 1ファイルの処理結果 */
 interface AutoResult {
   filename: string
@@ -111,6 +116,10 @@ export default function NewDocumentPage() {
 
   // 動的書類種別
   const [documentTypes, setDocumentTypes] = useState<DocumentTypeRecord[]>([])
+
+  // 登録者一覧と選択中の登録者
+  const [registrants, setRegistrants] = useState<RegistrantRecord[]>([])
+  const [selectedRegistrantId, setSelectedRegistrantId] = useState<string>("")
 
   // 自動解析モード
   const [autoAnalyzeMode, setAutoAnalyzeMode] = useState(false)
@@ -198,6 +207,39 @@ export default function NewDocumentPage() {
     fetchSettings()
   }, [])
 
+  // 登録者一覧を取得
+  useEffect(() => {
+    async function fetchRegistrants() {
+      try {
+        const res = await fetch("/api/registrants")
+        if (res.ok) {
+          const json = await res.json() as { data?: RegistrantRecord[] }
+          if (json.data && json.data.length > 0) {
+            setRegistrants(json.data)
+            // 既定で先頭を選択（ローカル保存された選択があれば復元）
+            const saved = typeof window !== "undefined"
+              ? window.localStorage.getItem("keiridocs:last_registrant_id")
+              : null
+            const initial = saved && json.data.some((r) => r.id === saved)
+              ? saved
+              : json.data[0].id
+            setSelectedRegistrantId(initial)
+          }
+        }
+      } catch {
+        // フォールバック: 空のまま
+      }
+    }
+    fetchRegistrants()
+  }, [])
+
+  // 選択変更時にローカル保存
+  useEffect(() => {
+    if (selectedRegistrantId && typeof window !== "undefined") {
+      window.localStorage.setItem("keiridocs:last_registrant_id", selectedRegistrantId)
+    }
+  }, [selectedRegistrantId])
+
   // ファイルデータがあるかどうか
   const hasFiles =
     (activeTab === "camera" && capturedImages.length > 0) ||
@@ -278,6 +320,10 @@ export default function NewDocumentPage() {
   // 全自動登録の実行
   const runAutoRegister = useCallback(async (files: UploadedFile[]) => {
     if (files.length === 0) return
+    if (!selectedRegistrantId) {
+      toast.error("登録者を選択してください")
+      return
+    }
 
     setAutoProcessing(true)
     setAutoProgress(0)
@@ -300,6 +346,7 @@ export default function NewDocumentPage() {
             file: file.base64,
             filename: file.name,
             contentType: file.mimeType,
+            registrant_id: selectedRegistrantId,
           }),
         })
 
@@ -361,7 +408,7 @@ export default function NewDocumentPage() {
     setAutoResults(results)
     setAutoProcessing(false)
     setAutoCompleted(true)
-  }, [registerToCalendar])
+  }, [registerToCalendar, selectedRegistrantId])
 
   // 登録モードを切り替えてsettingsに保存
   const toggleRegistrationMode = useCallback(async (checked: boolean) => {
@@ -392,6 +439,10 @@ export default function NewDocumentPage() {
   // 書類を登録する（チェックモード）
   const handleSubmit = useCallback(
     async (formData: DocumentFormData) => {
+      if (!selectedRegistrantId) {
+        toast.error("登録者を選択してください")
+        return
+      }
       setIsSubmitting(true)
 
       try {
@@ -515,6 +566,7 @@ export default function NewDocumentPage() {
           tax_category: formData.tax_category || "未判定",
           account_title: formData.account_title || "",
           file_hash: fileHash,
+          registrant_id: selectedRegistrantId,
           skip_duplicate_check: isForceSubmit,
           items: ocrResult?.items ?? [],
         }
@@ -605,7 +657,7 @@ export default function NewDocumentPage() {
         setIsSubmitting(false)
       }
     },
-    [activeTab, capturedImages, uploadedFiles, ocrResult, registerToCalendar]
+    [activeTab, capturedImages, uploadedFiles, ocrResult, registerToCalendar, selectedRegistrantId]
   )
 
   // フォーム全体をリセットして次の書類を登録可能にする
@@ -712,6 +764,7 @@ export default function NewDocumentPage() {
         tax_category: formData.tax_category || "未判定",
         account_title: formData.account_title || "",
         file_hash: uploadData.file_hash,
+        registrant_id: selectedRegistrantId,
         skip_duplicate_check: true,
         items: currentItem.ocr_result?.items ?? [],
       }
@@ -746,7 +799,7 @@ export default function NewDocumentPage() {
       setIsSubmitting(false)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoResults, reviewIndex, uploadedFiles])
+  }, [autoResults, reviewIndex, uploadedFiles, selectedRegistrantId])
 
   // 次の要確認書類へ移動、または完了
   const moveToNextReview = useCallback(() => {
@@ -852,6 +905,38 @@ export default function NewDocumentPage() {
                 checked={registerToCalendar}
                 onCheckedChange={setRegisterToCalendar}
               />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 登録者選択（登録完了後は非表示） */}
+      {!isRegistered && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base" style={{ color: "#1A1A1A" }}>登録者</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              <Label htmlFor="registrant" style={{ color: "#1A1A1A" }}>
+                書類を取り込む登録者を選択 <span className="text-red-600">*</span>
+              </Label>
+              {registrants.length === 0 ? (
+                <p className="text-sm" style={{ color: "#4A4A4A" }}>
+                  登録者が未登録です。設定画面の「登録者管理」から追加してください。
+                </p>
+              ) : (
+                <Select value={selectedRegistrantId} onValueChange={setSelectedRegistrantId}>
+                  <SelectTrigger id="registrant" className="w-full">
+                    <SelectValue placeholder="登録者を選択" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {registrants.map((r) => (
+                      <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -1186,6 +1271,11 @@ export default function NewDocumentPage() {
       )}
 
       {/* OCR結果編集フォーム（チェックモードまたはレビュー中） */}
+      {showEditor && !isRegistered && selectedRegistrantId && (
+        <div className="rounded-md border px-3 py-2 text-sm" style={{ color: "#1A1A1A", background: "rgba(255,255,255,0.6)" }}>
+          登録者: <span className="font-medium">{registrants.find((r) => r.id === selectedRegistrantId)?.name ?? "—"}</span>
+        </div>
+      )}
       {showEditor && !isRegistered && (
         <OcrResultEditor
           ocrResult={ocrResult}

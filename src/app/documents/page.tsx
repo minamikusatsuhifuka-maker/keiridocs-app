@@ -26,7 +26,9 @@ import { toast } from "sonner"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
 
-type Document = Database["public"]["Tables"]["documents"]["Row"]
+type Document = Database["public"]["Tables"]["documents"]["Row"] & {
+  registrant?: { id: string; name: string } | null
+}
 type SortField = "type" | "vendor_name" | "amount" | "issue_date" | "due_date" | "status" | "created_at"
 type SortDirection = "asc" | "desc"
 

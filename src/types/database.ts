@@ -30,6 +30,7 @@ export interface Database {
           account_title: string | null
           file_hash: string | null
           calendar_event_id: string | null
+          registrant_id: string | null
           user_id: string
           created_at: string
           updated_at: string
@@ -51,6 +52,7 @@ export interface Database {
           account_title?: string | null
           file_hash?: string | null
           calendar_event_id?: string | null
+          registrant_id?: string | null
           user_id: string
           created_at?: string
           updated_at?: string
@@ -72,9 +74,28 @@ export interface Database {
           account_title?: string | null
           file_hash?: string | null
           calendar_event_id?: string | null
+          registrant_id?: string | null
           user_id?: string
           created_at?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      registrants: {
+        Row: {
+          id: string
+          name: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          name: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          name?: string
+          created_at?: string
         }
         Relationships: []
       }
