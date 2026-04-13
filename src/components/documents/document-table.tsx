@@ -19,7 +19,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { StatusBadge } from "@/components/documents/status-badge"
-import { ArrowUpDown, ChevronDown, Eye } from "lucide-react"
+import { ArrowUpDown, Calendar, Check, ChevronDown, Eye, Loader2 } from "lucide-react"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
 import { toast } from "sonner"
@@ -64,6 +64,56 @@ export function DocumentTable({
   onSelectionChange,
 }: DocumentTableProps) {
   const [updatingId, setUpdatingId] = useState<string | null>(null)
+  const [calendarLoadingId, setCalendarLoadingId] = useState<string | null>(null)
+  // カレンダー登録済みIDをローカル管理（DBの calendar_event_id 更新を即時反映）
+  const [registeredEventIds, setRegisteredEventIds] = useState<Record<string, string>>({})
+
+  // カレンダー登録ハンドラ
+  async function handleCalendarRegister(doc: Document) {
+    if (!doc.due_date) return
+    setCalendarLoadingId(doc.id)
+    try {
+      const res = await fetch("/api/calendar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentId: doc.id }),
+      })
+      const json = (await res.json()) as {
+        data?: { eventId: string; alreadyRegistered?: boolean }
+        error?: string
+        configRequired?: boolean
+      }
+      if (res.status === 412 || json.configRequired) {
+        toast.error(
+          "Google カレンダー連携が未設定です。設定ページから連携してください",
+          {
+            action: {
+              label: "設定を開く",
+              onClick: () => {
+                window.location.href = "/settings"
+              },
+            },
+          }
+        )
+        return
+      }
+      if (!res.ok || !json.data) {
+        throw new Error(json.error ?? "カレンダー登録に失敗しました")
+      }
+      setRegisteredEventIds((prev) => ({ ...prev, [doc.id]: json.data!.eventId }))
+      if (json.data.alreadyRegistered) {
+        toast("このイベントは登録済みです")
+      } else {
+        toast.success("Googleカレンダーに登録しました")
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "カレンダー登録に失敗しました"
+      )
+    } finally {
+      setCalendarLoadingId(null)
+    }
+  }
 
   const hasSelection = !!selectedIds && !!onSelectionChange
 
@@ -225,11 +275,37 @@ export function DocumentTable({
               </DropdownMenu>
             </TableCell>
             <TableCell>
-              <Button variant="ghost" size="icon-xs" asChild>
-                <Link href={`/documents/${doc.id}`}>
-                  <Eye className="size-4" />
-                </Link>
-              </Button>
+              <div className="flex items-center gap-1">
+                <Button variant="ghost" size="icon-xs" asChild>
+                  <Link href={`/documents/${doc.id}`}>
+                    <Eye className="size-4" />
+                  </Link>
+                </Button>
+                {doc.due_date && (() => {
+                  const registered =
+                    !!doc.calendar_event_id || !!registeredEventIds[doc.id]
+                  const isLoading = calendarLoadingId === doc.id
+                  return (
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={() => handleCalendarRegister(doc)}
+                      disabled={isLoading || registered}
+                      aria-label={registered ? "カレンダー登録済み" : "カレンダーに登録"}
+                      title={registered ? "カレンダー登録済み" : "Googleカレンダーに登録"}
+                      className={registered ? "text-green-600" : "text-red-600"}
+                    >
+                      {isLoading ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : registered ? (
+                        <Check className="size-4" />
+                      ) : (
+                        <Calendar className="size-4" />
+                      )}
+                    </Button>
+                  )
+                })()}
+              </div>
             </TableCell>
           </TableRow>
         ))}

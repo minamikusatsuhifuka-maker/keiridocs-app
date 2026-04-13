@@ -28,7 +28,7 @@ import { Switch } from "@/components/ui/switch"
 import { Progress } from "@/components/ui/progress"
 import {
   Camera, Upload, ArrowRight, Loader2, CheckCircle2, ListIcon, Plus,
-  AlertTriangle, Zap, Eye, XCircle, ScanLine,
+  AlertTriangle, Zap, Eye, XCircle, ScanLine, Calendar,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -132,6 +132,9 @@ export default function NewDocumentPage() {
 
   // スキャンボタン
   const [isScanning, setIsScanning] = useState(false)
+
+  // カレンダー登録オプション（支払期日がある場合はデフォルトON）
+  const [registerToCalendar, setRegisterToCalendar] = useState(true)
 
   // Dropboxスキャン実行
   const handleScan = useCallback(async () => {
@@ -317,6 +320,35 @@ export default function NewDocumentPage() {
           ocr_result: result.ocr_result,
           error: result.error,
         })
+
+        // 自動登録成功 & 支払期日あり & カレンダーON → Google カレンダーに登録
+        if (
+          result.status === "registered" &&
+          registerToCalendar &&
+          result.document &&
+          typeof (result.document as { id?: unknown }).id === "string" &&
+          (result.document as { due_date?: unknown }).due_date
+        ) {
+          try {
+            const calRes = await fetch("/api/calendar", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                documentId: (result.document as { id: string }).id,
+              }),
+            })
+            if (calRes.status === 412) {
+              const calJson = (await calRes.json()) as { configRequired?: boolean }
+              if (calJson.configRequired) {
+                toast.error(
+                  "Googleカレンダー連携が未設定です。設定ページから連携してください"
+                )
+              }
+            }
+          } catch {
+            // カレンダー登録失敗は無視（書類登録は成功している）
+          }
+        }
       } catch (error) {
         results.push({
           filename: file.name,
@@ -329,7 +361,7 @@ export default function NewDocumentPage() {
     setAutoResults(results)
     setAutoProcessing(false)
     setAutoCompleted(true)
-  }, [])
+  }, [registerToCalendar])
 
   // 登録モードを切り替えてsettingsに保存
   const toggleRegistrationMode = useCallback(async (checked: boolean) => {
@@ -526,6 +558,45 @@ export default function NewDocumentPage() {
         pendingFileHashRef.current = null
         toast.success("書類を登録しました")
         setIsRegistered(true)
+
+        // 支払期日 & カレンダー登録ONなら Google カレンダーに登録
+        if (registerToCalendar && formData.due_date) {
+          const savedDoc = (docResult.data as { id?: string } | null)
+          if (savedDoc?.id) {
+            try {
+              const calRes = await fetch("/api/calendar", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ documentId: savedDoc.id }),
+              })
+              const calJson = (await calRes.json()) as {
+                error?: string
+                configRequired?: boolean
+              }
+              if (calRes.status === 412 || calJson.configRequired) {
+                toast.error(
+                  "Googleカレンダー連携が未設定です。設定ページから連携してください",
+                  {
+                    action: {
+                      label: "設定を開く",
+                      onClick: () => {
+                        window.location.href = "/settings"
+                      },
+                    },
+                  }
+                )
+              } else if (!calRes.ok) {
+                toast.warning(
+                  calJson.error ?? "カレンダー登録に失敗しました"
+                )
+              } else {
+                toast.success("Googleカレンダーに支払期日を登録しました")
+              }
+            } catch {
+              toast.warning("カレンダー登録に失敗しました")
+            }
+          }
+        }
       } catch (error) {
         toast.error(
           error instanceof Error ? error.message : "登録に失敗しました"
@@ -534,7 +605,7 @@ export default function NewDocumentPage() {
         setIsSubmitting(false)
       }
     },
-    [activeTab, capturedImages, uploadedFiles, ocrResult]
+    [activeTab, capturedImages, uploadedFiles, ocrResult, registerToCalendar]
   )
 
   // フォーム全体をリセットして次の書類を登録可能にする
@@ -764,6 +835,22 @@ export default function NewDocumentPage() {
               <Switch
                 checked={registrationMode === "auto"}
                 onCheckedChange={toggleRegistrationMode}
+              />
+            </div>
+            {/* Google カレンダー連携オプション */}
+            <div className="mt-4 flex items-center justify-between border-t pt-4">
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 rounded-full bg-red-50 px-3 py-1.5 text-sm font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400">
+                  <Calendar className="size-4" />
+                  カレンダー
+                </div>
+                <span className="text-sm text-muted-foreground">
+                  支払期日をGoogleカレンダーに登録する
+                </span>
+              </div>
+              <Switch
+                checked={registerToCalendar}
+                onCheckedChange={setRegisterToCalendar}
               />
             </div>
           </CardContent>

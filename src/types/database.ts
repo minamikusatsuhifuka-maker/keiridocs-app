@@ -29,6 +29,7 @@ export interface Database {
           tax_category: string | null
           account_title: string | null
           file_hash: string | null
+          calendar_event_id: string | null
           user_id: string
           created_at: string
           updated_at: string
@@ -49,6 +50,7 @@ export interface Database {
           tax_category?: string | null
           account_title?: string | null
           file_hash?: string | null
+          calendar_event_id?: string | null
           user_id: string
           created_at?: string
           updated_at?: string
@@ -69,6 +71,7 @@ export interface Database {
           tax_category?: string | null
           account_title?: string | null
           file_hash?: string | null
+          calendar_event_id?: string | null
           user_id?: string
           created_at?: string
           updated_at?: string
