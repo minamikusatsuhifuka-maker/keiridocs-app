@@ -20,6 +20,7 @@ import {
   Receipt,
   ClipboardList,
   BookOpen,
+  IdCard,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -39,6 +40,7 @@ const navItems = [
   { href: "/downloads", label: "自動取得", icon: Download },
   { href: "/accountant", label: "税理士提出", icon: Briefcase },
   { href: "/staff-receipts", label: "スタッフ領収書", icon: Receipt },
+  { href: "/business-cards", label: "名刺管理", icon: IdCard },
   { href: "/manuals", label: "マニュアル管理", icon: BookOpen },
   { href: "/mail", label: "メール確認", icon: Mail },
   { href: "/settings", label: "設定", icon: Settings },

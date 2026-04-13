@@ -263,6 +263,94 @@ function isQuestionText(text: string): boolean {
   return QUESTION_KEYWORDS.some((kw) => text.includes(kw))
 }
 
+/** 名刺検索キーワード */
+const BUSINESS_CARD_KEYWORDS = [
+  "連絡先", "電話番号", "電番", "携帯番号", "携帯電話",
+  "メールアドレス", "メアド", "名刺",
+]
+
+function isBusinessCardQuery(text: string): boolean {
+  return BUSINESS_CARD_KEYWORDS.some((kw) => text.includes(kw))
+}
+
+/** クエリから人名・会社名の候補を抽出 */
+function extractSearchTerms(text: string): string[] {
+  // 助詞・記号・キーワードを除去
+  const stopWords = [
+    ...BUSINESS_CARD_KEYWORDS,
+    "さん", "様", "の", "を", "は", "が", "教えて", "ください",
+    "会社", "株式会社", "有限会社", "合同会社",
+  ]
+  let cleaned = text
+  for (const sw of stopWords) {
+    cleaned = cleaned.split(sw).join(" ")
+  }
+  return cleaned
+    .replace(/[？?！!。、・\s　]+/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 1)
+}
+
+/** 名刺を検索してLINE返信 */
+async function handleBusinessCardQuery(
+  replyToken: string,
+  userId: string,
+  query: string
+): Promise<void> {
+  try {
+    const supabase = createServiceClient()
+    const terms = extractSearchTerms(query)
+    console.log("[LINE Bot] 名刺検索クエリ:", query, "抽出語:", terms)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let cards: any[] = []
+
+    if (terms.length > 0) {
+      const orConditions = terms
+        .flatMap((t) => [
+          `company_name.ilike.%${t}%`,
+          `name.ilike.%${t}%`,
+          `department.ilike.%${t}%`,
+        ])
+        .join(",")
+      const { data } = await supabase
+        .from("business_cards")
+        .select("*")
+        .or(orConditions)
+        .limit(5)
+      cards = data || []
+    }
+
+    if (cards.length === 0) {
+      await sendLineMessage(
+        replyToken,
+        userId,
+        "🪪 該当する名刺が見つかりませんでした。\n会社名や氏名を指定してもう一度お試しください。"
+      )
+      return
+    }
+
+    // 返信メッセージ整形
+    const lines: string[] = []
+    for (const c of cards.slice(0, 5)) {
+      const header = [c.company_name, c.department, c.name].filter(Boolean).join(" / ")
+      lines.push(`🪪 ${header || "（名称不明）"}`)
+      if (c.title) lines.push(`  ${c.title}`)
+      if (c.phone) lines.push(`  ☎ ${c.phone}`)
+      if (c.mobile) lines.push(`  📱 ${c.mobile}`)
+      if (c.email) lines.push(`  ✉️ ${c.email}`)
+      if (c.address) lines.push(`  📍 ${c.address}`)
+      if (c.website) lines.push(`  🌐 ${c.website}`)
+      lines.push("")
+    }
+    const message = lines.join("\n").trim().slice(0, 4500)
+    await sendLineMessage(replyToken, userId, message)
+  } catch (error) {
+    console.error("[LINE Bot] 名刺検索エラー:", error)
+    await sendLineMessage(replyToken, userId, "⚠️ 名刺検索中にエラーが発生しました。")
+  }
+}
+
 /** マニュアル検索Bot: Gemini AIがマニュアルを参照して回答 */
 async function handleManualQuery(
   replyToken: string,
@@ -422,17 +510,23 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
     return
   }
 
-  // b. 質問キーワードを含む → マニュアル検索Bot
+  // b. 名刺検索キーワードを含む → 名刺検索
+  if (isBusinessCardQuery(inputText)) {
+    await handleBusinessCardQuery(replyToken, source.userId, inputText)
+    return
+  }
+
+  // c. 質問キーワードを含む → マニュアル検索Bot
   if (isQuestionText(inputText)) {
     await handleManualQuery(replyToken, source.userId, inputText)
     return
   }
 
-  // c. その他 → ガイドメッセージ
+  // d. その他 → ガイドメッセージ
   await sendLineMessage(
     replyToken,
     source.userId,
-    "📎 領収書の写真を送るか、質問をどうぞ\n\n💡 例:\n・領収書の写真を送信 → 自動登録\n・「受付の手順は？」→ マニュアル検索\n・スタッフ名を送信 → 名前登録"
+    "📎 領収書の写真を送るか、質問をどうぞ\n\n💡 例:\n・領収書の写真を送信 → 自動登録\n・「受付の手順は？」→ マニュアル検索\n・「田中さんの連絡先」→ 名刺検索\n・スタッフ名を送信 → 名前登録"
   )
 }
 

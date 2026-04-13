@@ -306,6 +306,104 @@ ${text}`
   }
 }
 
+/** 名刺AI解析結果の型 */
+export interface BusinessCardResult {
+  company_name: string
+  department: string
+  name: string
+  title: string
+  email: string
+  phone: string
+  mobile: string
+  address: string
+  website: string
+}
+
+const BUSINESS_CARD_FALLBACK: BusinessCardResult = {
+  company_name: "",
+  department: "",
+  name: "",
+  title: "",
+  email: "",
+  phone: "",
+  mobile: "",
+  address: "",
+  website: "",
+}
+
+/**
+ * Gemini AIで名刺画像/PDFを解析し、連絡先情報を抽出する
+ */
+export async function analyzeBusinessCard(
+  base64Data: string,
+  mimeType: string
+): Promise<BusinessCardResult> {
+  const apiKey = process.env.GEMINI_API_KEY
+  if (!apiKey) {
+    console.error("GEMINI_API_KEY が設定されていません")
+    return BUSINESS_CARD_FALLBACK
+  }
+
+  const genAI = new GoogleGenerativeAI(apiKey)
+  const model = genAI.getGenerativeModel({ model: DEFAULT_GEMINI_MODEL })
+
+  const prompt = `この画像は名刺です。以下の情報をJSON形式で抽出してください。
+必ず以下のJSON形式のみで回答してください。余計なテキストやマークダウン記号は含めないでください。
+情報が見つからない項目は空文字列("")にしてください。
+
+{
+  "company_name": "会社名・団体名",
+  "department": "部署名",
+  "name": "氏名（フルネーム）",
+  "title": "役職・肩書き",
+  "email": "メールアドレス",
+  "phone": "固定電話番号",
+  "mobile": "携帯電話番号",
+  "address": "住所",
+  "website": "ウェブサイトURL"
+}
+
+【抽出ルール】
+- 電話番号は固定電話と携帯電話を区別する（090/080/070始まりは携帯）
+- 複数のメールアドレスがある場合は最初の1件のみ
+- 住所は郵便番号も含めて1行にまとめる
+- 氏名は姓と名の間に全角スペースを入れる`
+
+  try {
+    const result = await model.generateContent([
+      prompt,
+      {
+        inlineData: {
+          data: base64Data,
+          mimeType,
+        },
+      },
+    ])
+
+    const responseText = result.response.text()
+    const cleaned = responseText
+      .replace(/```json\s*/g, "")
+      .replace(/```\s*/g, "")
+      .trim()
+
+    const parsed = JSON.parse(cleaned) as Record<string, unknown>
+    return {
+      company_name: typeof parsed.company_name === "string" ? parsed.company_name : "",
+      department: typeof parsed.department === "string" ? parsed.department : "",
+      name: typeof parsed.name === "string" ? parsed.name : "",
+      title: typeof parsed.title === "string" ? parsed.title : "",
+      email: typeof parsed.email === "string" ? parsed.email : "",
+      phone: typeof parsed.phone === "string" ? parsed.phone : "",
+      mobile: typeof parsed.mobile === "string" ? parsed.mobile : "",
+      address: typeof parsed.address === "string" ? parsed.address : "",
+      website: typeof parsed.website === "string" ? parsed.website : "",
+    }
+  } catch (error) {
+    console.error("Gemini 名刺解析エラー:", error)
+    return BUSINESS_CARD_FALLBACK
+  }
+}
+
 /**
  * Geminiの応答テキストからJSONをパースする
  * 失敗時はフォールバック値を返す

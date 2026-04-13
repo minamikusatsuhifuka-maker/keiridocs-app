@@ -510,6 +510,57 @@ export interface Database {
         }
         Relationships: []
       }
+      business_cards: {
+        Row: {
+          id: string
+          company_name: string | null
+          department: string | null
+          name: string | null
+          title: string | null
+          email: string | null
+          phone: string | null
+          mobile: string | null
+          address: string | null
+          website: string | null
+          memo: string | null
+          dropbox_path: string | null
+          file_name: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          company_name?: string | null
+          department?: string | null
+          name?: string | null
+          title?: string | null
+          email?: string | null
+          phone?: string | null
+          mobile?: string | null
+          address?: string | null
+          website?: string | null
+          memo?: string | null
+          dropbox_path?: string | null
+          file_name?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          company_name?: string | null
+          department?: string | null
+          name?: string | null
+          title?: string | null
+          email?: string | null
+          phone?: string | null
+          mobile?: string | null
+          address?: string | null
+          website?: string | null
+          memo?: string | null
+          dropbox_path?: string | null
+          file_name?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           id: string
