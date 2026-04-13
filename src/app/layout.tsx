@@ -3,6 +3,7 @@ import { Zen_Maru_Gothic } from "next/font/google"
 import "./globals.css"
 import { Toaster } from "@/components/ui/sonner"
 import { AppShell } from "@/components/layout/app-shell"
+import { AiChatWidget } from "@/components/ai-chat/AiChatWidget"
 
 const zenMaruGothic = Zen_Maru_Gothic({
   weight: ["400", "500", "700"],
@@ -24,6 +25,7 @@ export default function RootLayout({
     <html lang="ja">
       <body className={`${zenMaruGothic.className} antialiased`}>
         <AppShell>{children}</AppShell>
+        <AiChatWidget />
         <Toaster />
       </body>
     </html>
