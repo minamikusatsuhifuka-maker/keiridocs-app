@@ -102,6 +102,48 @@ export interface Database {
         }
         Relationships: []
       }
+      analysis_reports: {
+        Row: {
+          id: string
+          title: string
+          year: number
+          month: number
+          total_amount: number
+          doc_count: number
+          category_breakdown: Json
+          weekly_breakdown: Json
+          ai_summary: string | null
+          ai_suggestions: Json | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          title: string
+          year: number
+          month: number
+          total_amount?: number
+          doc_count?: number
+          category_breakdown?: Json
+          weekly_breakdown?: Json
+          ai_summary?: string | null
+          ai_suggestions?: Json | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          title?: string
+          year?: number
+          month?: number
+          total_amount?: number
+          doc_count?: number
+          category_breakdown?: Json
+          weekly_breakdown?: Json
+          ai_summary?: string | null
+          ai_suggestions?: Json | null
+          created_at?: string
+        }
+        Relationships: []
+      }
       mail_pending: {
         Row: {
           id: string

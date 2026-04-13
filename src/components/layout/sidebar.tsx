@@ -21,6 +21,7 @@ import {
   ClipboardList,
   BookOpen,
   IdCard,
+  LineChart,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -35,6 +36,7 @@ const navItems = [
   { href: "/documents/new", label: "書類登録", icon: FilePlus },
   { href: "/documents", label: "書類一覧", icon: FileText },
   { href: "/analytics", label: "分析", icon: BarChart3 },
+  { href: "/reports", label: "分析レポート", icon: LineChart },
   { href: "/analytics/ai-report", label: "AIレポート", icon: Sparkles },
   { href: "/spreadsheet", label: "スプレッドシート", icon: Table2 },
   { href: "/downloads", label: "自動取得", icon: Download },
@@ -91,6 +93,7 @@ function isActive(href: string, pathname: string) {
   if (href === "/documents") return pathname === "/documents" || (pathname.startsWith("/documents/") && pathname !== "/documents/new")
   if (href === "/analytics/ai-report") return pathname === "/analytics/ai-report"
   if (href === "/analytics") return pathname === "/analytics"
+  if (href === "/reports") return pathname === "/reports" || pathname.startsWith("/reports/")
   if (href === "/staff-receipts") return pathname === "/staff-receipts"
   if (href === "/staff-receipts/admin") return pathname === "/staff-receipts/admin"
   return pathname.startsWith(href)

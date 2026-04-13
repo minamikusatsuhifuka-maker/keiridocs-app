@@ -7,6 +7,7 @@ import {
   CategoryPieChartClient,
   WeeklyBarChartClient,
 } from "@/app/_components/dashboard-charts"
+import { SaveReportButton } from "@/app/_components/save-report-button"
 import { format, addDays, startOfWeek, startOfMonth } from "date-fns"
 
 // ダッシュボードページ（Server Component）
@@ -147,13 +148,23 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold" style={{ color: "#3A2D20" }}>
-          ダッシュボード
-        </h1>
-        <p className="mt-1 text-sm text-[#9A8070]">
-          {format(now, "yyyy年MM月")}の経理書類サマリー
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold" style={{ color: "#1A1A1A" }}>
+            ダッシュボード
+          </h1>
+          <p className="mt-1 text-sm" style={{ color: "#4A4A4A" }}>
+            {format(now, "yyyy年MM月")}の経理書類サマリー
+          </p>
+        </div>
+        <SaveReportButton
+          year={now.getFullYear()}
+          month={now.getMonth() + 1}
+          totalAmount={monthlyTotal}
+          docCount={monthlyCount}
+          categoryBreakdown={categoryData}
+          weeklyBreakdown={weeklyData}
+        />
       </div>
 
       {/* メトリクスカード */}
