@@ -1,7 +1,14 @@
 "use client"
 
 import { useState } from "react"
-import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, Loader2 } from "lucide-react"
+import {
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  Loader2,
+  Wallet,
+} from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   DropdownMenu,
@@ -12,7 +19,8 @@ import {
 import { format, differenceInDays } from "date-fns"
 import { toast } from "sonner"
 
-type PaymentStatus = "未対応" | "支払い済み"
+// カードの表示ステータス（3値）
+type CardStatus = "未処理" | "処理済み" | "支払済み"
 
 interface DueDocument {
   id: string
@@ -20,6 +28,7 @@ interface DueDocument {
   amount: number | null
   due_date: string
   type: string
+  status?: string
   payment_status?: string
 }
 
@@ -27,44 +36,97 @@ interface DueAlertsProps {
   documents: DueDocument[]
 }
 
-// 支払期日が近い書類TOP5（未対応は上部・支払済は下部）
+// ドキュメントの status + payment_status から3値のカードステータスを算出
+function toCardStatus(doc: DueDocument): CardStatus {
+  if ((doc.payment_status ?? "") === "支払い済み") return "支払済み"
+  if ((doc.status ?? "未処理") === "処理済み") return "処理済み"
+  return "未処理"
+}
+
+// カードステータスごとの配色
+function getStyle(cardStatus: CardStatus) {
+  switch (cardStatus) {
+    case "未処理":
+      return {
+        borderColor: "#DC2626",
+        bgColor: "rgba(254, 226, 226, 0.7)", // 赤背景
+        accentColor: "#DC2626",
+        badgeBg: "#DC2626",
+        badgeFg: "#FFFFFF",
+        badgeLabel: "⚠️ 未処理",
+      }
+    case "処理済み":
+      return {
+        borderColor: "#F59E0B",
+        bgColor: "rgba(254, 243, 199, 0.75)", // 黄背景
+        accentColor: "#B45309",
+        badgeBg: "#F59E0B",
+        badgeFg: "#FFFFFF",
+        badgeLabel: "📝 処理済み",
+      }
+    case "支払済み":
+      return {
+        borderColor: "#059669",
+        bgColor: "rgba(209, 250, 229, 0.75)", // 緑背景
+        accentColor: "#047857",
+        badgeBg: "#059669",
+        badgeFg: "#FFFFFF",
+        badgeLabel: "✅ 支払済み",
+      }
+  }
+}
+
+// 支払期日が近い書類TOP5
 export function DueAlerts({ documents }: DueAlertsProps) {
   // ローカル状態で即時反映
   const [items, setItems] = useState<DueDocument[]>(documents)
   const [updatingId, setUpdatingId] = useState<string | null>(null)
 
-  // 支払ステータスを変更
-  async function handleChangeStatus(doc: DueDocument, newStatus: PaymentStatus) {
-    if ((doc.payment_status ?? "未対応") === newStatus) return
+  // ステータスを変更（3値 → DBフィールドへマッピング）
+  async function handleChangeStatus(doc: DueDocument, newStatus: CardStatus) {
+    if (toCardStatus(doc) === newStatus) return
+
+    // 3値を status + payment_status にマッピング
+    const body: Record<string, string> =
+      newStatus === "未処理"
+        ? { status: "未処理", payment_status: "未対応" }
+        : newStatus === "処理済み"
+        ? { status: "処理済み", payment_status: "未対応" }
+        : { status: "処理済み", payment_status: "支払い済み" }
+
     setUpdatingId(doc.id)
     try {
       const res = await fetch(`/api/documents?id=${doc.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payment_status: newStatus }),
+        body: JSON.stringify(body),
       })
       if (!res.ok) {
         const json = (await res.json().catch(() => ({}))) as { error?: string }
-        throw new Error(json.error ?? "支払ステータスの更新に失敗しました")
+        throw new Error(json.error ?? "ステータスの更新に失敗しました")
       }
       setItems((prev) =>
-        prev.map((d) => (d.id === doc.id ? { ...d, payment_status: newStatus } : d))
+        prev.map((d) =>
+          d.id === doc.id
+            ? { ...d, status: body.status, payment_status: body.payment_status }
+            : d
+        )
       )
       toast.success(`「${newStatus}」に変更しました`)
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "支払ステータスの更新に失敗しました"
+        error instanceof Error ? error.message : "ステータスの更新に失敗しました"
       )
     } finally {
       setUpdatingId(null)
     }
   }
 
-  // 未対応を上、支払済を下にソート
+  // 支払済みを下、未処理・処理済みを上に。同グループ内は期日昇順
   const sorted = [...items].sort((a, b) => {
-    const ap = (a.payment_status ?? "未対応") === "支払い済み" ? 1 : 0
-    const bp = (b.payment_status ?? "未対応") === "支払い済み" ? 1 : 0
-    if (ap !== bp) return ap - bp
+    const aPaid = toCardStatus(a) === "支払済み" ? 1 : 0
+    const bPaid = toCardStatus(b) === "支払済み" ? 1 : 0
+    if (aPaid !== bPaid) return aPaid - bPaid
     return new Date(a.due_date).getTime() - new Date(b.due_date).getTime()
   })
 
@@ -91,19 +153,23 @@ export function DueAlerts({ documents }: DueAlertsProps) {
                 new Date(doc.due_date),
                 new Date()
               )
-              const status: PaymentStatus =
-                (doc.payment_status as PaymentStatus) ?? "未対応"
-              const isPaid = status === "支払い済み"
+              const cardStatus = toCardStatus(doc)
+              const style = getStyle(cardStatus)
+              const isPaid = cardStatus === "支払済み"
               const isUpdating = updatingId === doc.id
 
-              // 未対応=赤系 / 支払済=グレーアウト
-              const borderColor = isPaid ? "#D1D5DB" : "#DC2626"
-              const bgColor = isPaid
-                ? "rgba(243, 244, 246, 0.7)"
-                : "rgba(254, 226, 226, 0.55)"
-              const textColor = isPaid ? "#6B7280" : "#1A1A1A"
-              const amountColor = isPaid ? "#9CA3AF" : "#DC2626"
-              const dueTextColor = isPaid ? "#9CA3AF" : "#DC2626"
+              // 期日当日・超過は「期日超過」と表示
+              const dueLabel =
+                daysLeft <= 0 ? "期日超過" : `残り${daysLeft}日`
+
+              // 未支払い（未処理・処理済み）は金額・残り日数を赤字強調
+              const isUnpaid = !isPaid
+              const amountClass = isUnpaid
+                ? "text-red-600 text-sm font-bold"
+                : "text-sm font-bold"
+              const dueClass = isUnpaid
+                ? "text-red-600 mt-0.5 text-xs font-bold"
+                : "mt-0.5 text-xs font-semibold"
 
               return (
                 <DropdownMenu key={doc.id}>
@@ -113,20 +179,20 @@ export function DueAlerts({ documents }: DueAlertsProps) {
                       disabled={isUpdating}
                       className="w-full rounded-lg border p-3 text-left transition-colors hover:opacity-90"
                       style={{
-                        borderColor,
-                        borderWidth: isPaid ? "1px" : "2px",
-                        backgroundColor: bgColor,
-                        opacity: isPaid ? 0.7 : 1,
+                        borderColor: style.borderColor,
+                        borderWidth: "2px",
+                        backgroundColor: style.bgColor,
+                        opacity: isPaid ? 0.85 : 1,
                         cursor: isUpdating ? "wait" : "pointer",
                       }}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <span
                               className="truncate text-sm font-medium"
                               style={{
-                                color: textColor,
+                                color: "#1A1A1A",
                                 textDecoration: isPaid ? "line-through" : "none",
                               }}
                             >
@@ -141,31 +207,22 @@ export function DueAlerts({ documents }: DueAlertsProps) {
                             >
                               {doc.type}
                             </span>
-                            {isPaid ? (
-                              <span
-                                className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
-                                style={{
-                                  backgroundColor: "#E5E7EB",
-                                  color: "#374151",
-                                }}
-                              >
-                                ✅ 支払済
-                              </span>
-                            ) : (
-                              <span
-                                className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
-                                style={{
-                                  backgroundColor: "#DC2626",
-                                  color: "#FFFFFF",
-                                }}
-                              >
-                                ⚠️ 未対応
-                              </span>
-                            )}
+                            <span
+                              className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                              style={{
+                                backgroundColor: style.badgeBg,
+                                color: style.badgeFg,
+                              }}
+                            >
+                              {style.badgeLabel}
+                            </span>
                           </div>
                           <div
                             className="mt-0.5 text-xs"
-                            style={{ color: dueTextColor }}
+                            style={{
+                              color: isUnpaid ? "#DC2626" : "#6B7280",
+                              fontWeight: isUnpaid ? 600 : 400,
+                            }}
                           >
                             期限: {format(new Date(doc.due_date), "yyyy/MM/dd")}
                           </div>
@@ -174,30 +231,34 @@ export function DueAlerts({ documents }: DueAlertsProps) {
                           <div className="text-right">
                             {doc.amount !== null && (
                               <div
-                                className="text-sm font-bold"
+                                className={amountClass}
                                 style={{
-                                  color: amountColor,
-                                  textDecoration: isPaid ? "line-through" : "none",
+                                  textDecoration: isPaid
+                                    ? "line-through"
+                                    : "none",
+                                  color: isPaid ? "#6B7280" : undefined,
                                 }}
                               >
                                 ¥{doc.amount.toLocaleString()}
                               </div>
                             )}
                             <div
-                              className="mt-0.5 text-xs font-semibold"
-                              style={{ color: dueTextColor }}
+                              className={dueClass}
+                              style={{ color: isPaid ? "#6B7280" : undefined }}
                             >
-                              {daysLeft < 0
-                                ? `${Math.abs(daysLeft)}日超過`
-                                : daysLeft === 0
-                                ? "本日期限"
-                                : `残り${daysLeft}日`}
+                              {dueLabel}
                             </div>
                           </div>
                           {isUpdating ? (
-                            <Loader2 className="size-4 animate-spin" style={{ color: textColor }} />
+                            <Loader2
+                              className="size-4 animate-spin"
+                              style={{ color: "#6B7280" }}
+                            />
                           ) : (
-                            <ChevronDown className="size-4" style={{ color: textColor }} />
+                            <ChevronDown
+                              className="size-4"
+                              style={{ color: "#6B7280" }}
+                            />
                           )}
                         </div>
                       </div>
@@ -205,18 +266,25 @@ export function DueAlerts({ documents }: DueAlertsProps) {
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem
-                      onClick={() => handleChangeStatus(doc, "未対応")}
-                      disabled={status === "未対応"}
+                      onClick={() => handleChangeStatus(doc, "未処理")}
+                      disabled={cardStatus === "未処理"}
                     >
                       <AlertTriangle className="mr-2 size-4 text-red-600" />
-                      未対応にする
+                      未処理にする
                     </DropdownMenuItem>
                     <DropdownMenuItem
-                      onClick={() => handleChangeStatus(doc, "支払い済み")}
-                      disabled={status === "支払い済み"}
+                      onClick={() => handleChangeStatus(doc, "処理済み")}
+                      disabled={cardStatus === "処理済み"}
                     >
-                      <CheckCircle2 className="mr-2 size-4 text-gray-600" />
-                      支払い済みにする
+                      <CheckCircle2 className="mr-2 size-4 text-amber-600" />
+                      処理済みにする
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => handleChangeStatus(doc, "支払済み")}
+                      disabled={cardStatus === "支払済み"}
+                    >
+                      <Wallet className="mr-2 size-4 text-emerald-600" />
+                      支払済みにする
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>

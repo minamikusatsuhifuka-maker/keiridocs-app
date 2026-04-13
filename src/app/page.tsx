@@ -63,13 +63,13 @@ export default async function DashboardPage() {
       .eq("user_id", user.id)
       .eq("status", "未処理"),
 
-    // 支払期日が近い書類TOP5（7日以内）※支払済も含む（下部表示のため）
+    // 支払期日が近い書類TOP5（7日以内・期日超過含む）
+    // 未処理・処理済み・支払済み すべて表示
     supabase
       .from("documents")
-      .select("id, vendor_name, amount, due_date, type, payment_status")
+      .select("id, vendor_name, amount, due_date, type, status, payment_status")
       .eq("user_id", user.id)
-      .eq("status", "未処理")
-      .gte("due_date", today)
+      .not("status", "eq", "アーカイブ")
       .lte("due_date", sevenDaysLater)
       .order("due_date", { ascending: true })
       .limit(10),
@@ -109,9 +109,10 @@ export default async function DashboardPage() {
     amount: doc.amount,
     due_date: doc.due_date!,
     type: doc.type,
+    status: doc.status ?? "未処理",
     payment_status: doc.payment_status ?? "未対応",
   }))
-  // 未対応の件数のみカウント
+  // 未支払い（支払済み以外）の件数をカウント
   const dueSoonCount = dueSoonDocs.filter((d) => d.payment_status !== "支払い済み").length
 
   // カテゴリ別集計（金額合計）
