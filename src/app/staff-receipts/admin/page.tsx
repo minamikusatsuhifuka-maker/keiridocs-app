@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useMemo } from "react"
+import Link from "next/link"
 import {
   Select,
   SelectContent,
@@ -11,7 +12,7 @@ import {
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Loader2, Download, ArrowUpDown, ArrowUp, ArrowDown, Play, Bell } from "lucide-react"
+import { Loader2, Download, ArrowUpDown, ArrowUp, ArrowDown, Play, Bell, Users } from "lucide-react"
 import { toast } from "sonner"
 
 interface StaffMember {
@@ -259,6 +260,12 @@ export default function StaffReceiptsAdminPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">スタッフ領収書管理</h1>
         <div className="flex gap-2">
+          <Button asChild variant="outline">
+            <Link href="/line-staff">
+              <Users className="mr-1 size-4" />
+              LINEスタッフ管理へ
+            </Link>
+          </Button>
           <Button
             onClick={handleMonthlyClose}
             disabled={isRunningClose}

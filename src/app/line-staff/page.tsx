@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -28,6 +29,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   MessageCircle,
+  ArrowRight,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -272,13 +274,21 @@ export default function LineStaffPage() {
             LINEスタッフ管理
           </h1>
         </div>
-        <Button
-          className="btn-dusk-primary gap-2"
-          onClick={() => setAddDialogOpen(true)}
-        >
-          <Plus className="h-4 w-4" />
-          スタッフを追加
-        </Button>
+        <div className="flex gap-2">
+          <Button asChild variant="outline">
+            <Link href="/staff-receipts/admin">
+              スタッフ領収書管理へ
+              <ArrowRight className="ml-1 h-4 w-4" />
+            </Link>
+          </Button>
+          <Button
+            className="btn-dusk-primary gap-2"
+            onClick={() => setAddDialogOpen(true)}
+          >
+            <Plus className="h-4 w-4" />
+            スタッフを追加
+          </Button>
+        </div>
       </div>
 
       {/* 説明カード */}
