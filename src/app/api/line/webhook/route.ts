@@ -226,9 +226,9 @@ export async function POST(request: NextRequest) {
 
 /** スタッフ一覧からスタッフ名を部分一致検索 */
 function findStaffByName(
-  staffMembers: { id: string; name: string }[],
+  staffMembers: { id: string; name: string; line_user_id?: string | null }[],
   searchName: string
-): { id: string; name: string } | undefined {
+): { id: string; name: string; line_user_id?: string | null } | undefined {
   return staffMembers.find(
     (s) => searchName.includes(s.name) || s.name.includes(searchName)
   )
@@ -486,7 +486,7 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
   const supabase = createServiceClient()
   const { data: staffMembers, error: staffError } = await supabase
     .from("staff_members")
-    .select("id, name")
+    .select("id, name, line_user_id")
 
   if (staffError || !staffMembers) {
     console.error("staff_members取得エラー:", staffError)
@@ -497,6 +497,20 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
   // a. スタッフ名として登録済み → 既存のスタッフ登録フロー
   const matched = findStaffByName(staffMembers, inputText)
   if (matched) {
+    // line_user_idが未登録の場合、自動でDBに保存する
+    if (!matched.line_user_id) {
+      const { error: updateError } = await supabase
+        .from("staff_members")
+        .update({ line_user_id: source.userId })
+        .eq("id", matched.id)
+
+      if (updateError) {
+        console.error("line_user_id更新エラー:", updateError)
+      } else {
+        console.log(`line_user_id登録: ${matched.name} = ${source.userId}`)
+      }
+    }
+
     staffNameCache.set(source.userId, {
       staffId: matched.id,
       staffName: matched.name,
@@ -538,7 +552,7 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
   const supabase = createServiceClient()
   const { data: staffMembers, error: staffError } = await supabase
     .from("staff_members")
-    .select("id, name")
+    .select("id, name, line_user_id")
 
   if (staffError || !staffMembers) {
     console.error("staff_members取得エラー:", staffError)
