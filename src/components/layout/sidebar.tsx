@@ -46,6 +46,7 @@ const navItems = [
   { href: "/manuals", label: "マニュアル管理", icon: BookOpen },
   { href: "/mail", label: "メール確認", icon: Mail },
   { href: "/settings", label: "設定", icon: Settings },
+  { href: "/line-staff", label: "LINEスタッフ管理", icon: Users },
 ]
 
 // admin専用ナビ項目
@@ -96,6 +97,7 @@ function isActive(href: string, pathname: string) {
   if (href === "/reports") return pathname === "/reports" || pathname.startsWith("/reports/")
   if (href === "/staff-receipts") return pathname === "/staff-receipts"
   if (href === "/staff-receipts/admin") return pathname === "/staff-receipts/admin"
+  if (href === "/line-staff") return pathname === "/line-staff"
   return pathname.startsWith(href)
 }
 
