@@ -38,7 +38,7 @@ interface StaffMember {
   created_at: string
 }
 
-const SESSION_KEY = "line-staff-authed"
+const SESSION_KEY = "line-staff-auth"
 
 export default function LineStaffPage() {
   // パスワード認証
@@ -67,6 +67,9 @@ export default function LineStaffPage() {
 
   /* ---------- sessionStorage認証チェック ---------- */
   useEffect(() => {
+    // 旧キーを削除（キー名変更に伴うクリーンアップ）
+    sessionStorage.removeItem("line-staff-authed")
+
     const stored = sessionStorage.getItem(SESSION_KEY)
     if (stored === "true") {
       setIsAuthed(true)
