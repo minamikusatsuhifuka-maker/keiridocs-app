@@ -12,7 +12,15 @@ import {
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Loader2, Download, ArrowUpDown, ArrowUp, ArrowDown, Play, Bell, Users } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Loader2, Download, ArrowUpDown, ArrowUp, ArrowDown, Play, Bell, Users, AlertTriangle } from "lucide-react"
 import { toast } from "sonner"
 
 interface StaffMember {
@@ -67,6 +75,12 @@ export default function StaffReceiptsAdminPage() {
   const [isRunningClose, setIsRunningClose] = useState(false)
   const [isRunningRemind, setIsRunningRemind] = useState(false)
 
+  // 小口現金連携
+  const [pettyCashRegistered, setPettyCashRegistered] = useState<Set<string>>(new Set())
+  const [pettyCashTarget, setPettyCashTarget] = useState<StaffReceipt | null>(null)
+  const [isRegisteringPettyCash, setIsRegisteringPettyCash] = useState(false)
+  const [pettyCashBalance, setPettyCashBalance] = useState<number>(0)
+
   // スタッフ一覧取得
   useEffect(() => {
     async function fetchStaff() {
@@ -104,6 +118,52 @@ export default function StaffReceiptsAdminPage() {
     }
     fetchReceipts()
   }, [selectedStaffId, selectedYear, selectedMonth])
+
+  // 小口現金登録済み情報を取得
+  useEffect(() => {
+    async function fetchPettyCash() {
+      try {
+        const res = await fetch("/api/petty-cash")
+        if (!res.ok) return
+        const json = await res.json() as {
+          balance: number
+          transactions: { staff_receipt_id: string | null }[]
+        }
+        setPettyCashBalance(json.balance)
+        const registeredIds = new Set<string>()
+        for (const tx of json.transactions) {
+          if (tx.staff_receipt_id) registeredIds.add(tx.staff_receipt_id)
+        }
+        setPettyCashRegistered(registeredIds)
+      } catch {
+        // 取得失敗は無視
+      }
+    }
+    fetchPettyCash()
+  }, [])
+
+  // 小口現金出金登録
+  const handlePettyCashRegister = async (receipt: StaffReceipt) => {
+    setIsRegisteringPettyCash(true)
+    try {
+      const res = await fetch("/api/petty-cash/from-receipt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ staff_receipt_id: receipt.id }),
+      })
+      const json = await res.json() as { error?: string; balance?: number }
+      if (!res.ok) throw new Error(json.error || "登録に失敗しました")
+
+      toast.success(`¥${(receipt.amount || 0).toLocaleString()} を小口現金から出金登録しました`)
+      setPettyCashRegistered((prev) => new Set(prev).add(receipt.id))
+      if (typeof json.balance === "number") setPettyCashBalance(json.balance)
+      setPettyCashTarget(null)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "小口現金登録に失敗しました")
+    } finally {
+      setIsRegisteringPettyCash(false)
+    }
+  }
 
   // ソート処理
   const sortedReceipts = useMemo(() => {
@@ -384,6 +444,7 @@ export default function StaffReceiptsAdminPage() {
                     </th>
                     <th className="px-4 py-3 text-left font-medium">税区分</th>
                     <th className="px-4 py-3 text-left font-medium">勘定科目</th>
+                    <th className="px-4 py-3 text-center font-medium">小口現金</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -398,6 +459,24 @@ export default function StaffReceiptsAdminPage() {
                       <td className="px-4 py-3">{r.document_type || "—"}</td>
                       <td className="px-4 py-3">{r.tax_category || "—"}</td>
                       <td className="px-4 py-3">{r.account_title || "—"}</td>
+                      <td className="px-4 py-3 text-center">
+                        {pettyCashRegistered.has(r.id) ? (
+                          <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">
+                            ✅ 小口登録済
+                          </Badge>
+                        ) : r.amount && r.amount > 0 ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-xs"
+                            onClick={() => setPettyCashTarget(r)}
+                          >
+                            💰 小口対応
+                          </Button>
+                        ) : (
+                          <span className="text-muted-foreground text-xs">—</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -406,6 +485,65 @@ export default function StaffReceiptsAdminPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* 小口現金確認ダイアログ */}
+      <Dialog open={!!pettyCashTarget} onOpenChange={(open) => !open && setPettyCashTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>💰 小口現金から出金登録</DialogTitle>
+          </DialogHeader>
+          {pettyCashTarget && (
+            <div className="space-y-4">
+              <div className="rounded-lg bg-muted/50 p-4 space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">スタッフ</span>
+                  <span className="font-medium">{pettyCashTarget.staff_name}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">店名</span>
+                  <span className="font-medium">{pettyCashTarget.store_name || "—"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">金額</span>
+                  <span className="font-bold text-lg">¥{(pettyCashTarget.amount || 0).toLocaleString()}</span>
+                </div>
+              </div>
+
+              <p className="text-sm text-center">
+                ¥{(pettyCashTarget.amount || 0).toLocaleString()} を小口現金から支出として登録しますか？
+              </p>
+
+              {pettyCashBalance - (pettyCashTarget.amount || 0) < 0 && (
+                <Alert className="border-red-200 bg-red-50">
+                  <AlertTriangle className="size-4 text-red-600" />
+                  <AlertDescription className="text-red-700">
+                    残高がマイナス（¥{(pettyCashBalance - (pettyCashTarget.amount || 0)).toLocaleString()}）になります
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() => setPettyCashTarget(null)}
+                >
+                  キャンセル
+                </Button>
+                <Button
+                  className="flex-1"
+                  variant="destructive"
+                  disabled={isRegisteringPettyCash}
+                  onClick={() => handlePettyCashRegister(pettyCashTarget)}
+                >
+                  {isRegisteringPettyCash && <Loader2 className="mr-2 size-4 animate-spin" />}
+                  出金登録する
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

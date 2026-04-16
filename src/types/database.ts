@@ -657,6 +657,69 @@ export interface Database {
         }
         Relationships: []
       }
+      petty_cash_settings: {
+        Row: {
+          id: string
+          balance: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          balance?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          balance?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      petty_cash_transactions: {
+        Row: {
+          id: string
+          type: string
+          amount: number
+          description: string | null
+          staff_member_id: string | null
+          staff_receipt_id: string | null
+          document_id: string | null
+          receipt_image_url: string | null
+          dropbox_path: string | null
+          registered_by: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          type: string
+          amount: number
+          description?: string | null
+          staff_member_id?: string | null
+          staff_receipt_id?: string | null
+          document_id?: string | null
+          receipt_image_url?: string | null
+          dropbox_path?: string | null
+          registered_by?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          type?: string
+          amount?: number
+          description?: string | null
+          staff_member_id?: string | null
+          staff_receipt_id?: string | null
+          document_id?: string | null
+          receipt_image_url?: string | null
+          dropbox_path?: string | null
+          registered_by?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: Record<string, never>
     Functions: Record<string, never>
