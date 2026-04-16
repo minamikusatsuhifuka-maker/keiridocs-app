@@ -1,22 +1,44 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { createClient as createSupabaseClient } from "@supabase/supabase-js"
+import type { Database } from "@/types/database"
 
-// スタッフ一覧取得（line_user_id含む）
-export async function GET() {
+/** サービスロールキーでRLSをバイパスするSupabaseクライアント */
+function createServiceClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !serviceKey) {
+    throw new Error("NEXT_PUBLIC_SUPABASE_URL と SUPABASE_SERVICE_ROLE_KEY が必要です")
+  }
+  return createSupabaseClient<Database>(url, serviceKey)
+}
+
+/** 認証チェック（通常クライアントで行う） */
+async function checkAuth() {
   const supabase = await createClient()
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
+  const { data: { user }, error } = await supabase.auth.getUser()
+  if (error || !user) return null
+  return user
+}
 
-  if (authError || !user) {
+// スタッフ一覧取得（全カラム取得でline_user_idを確実に含む）
+export async function GET() {
+  const user = await checkAuth()
+  if (!user) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
   }
 
   try {
-    const { data, error } = await supabase
+    const service = createServiceClient()
+    const { data, error } = await service
       .from("staff_members")
-      .select("id, name, line_user_id, created_at")
+      .select("*")
       .order("created_at", { ascending: true })
 
-    if (error) throw error
+    if (error) {
+      console.error("LINEスタッフ一覧取得エラー:", error.message, error.details, error.hint)
+      throw error
+    }
 
     return NextResponse.json({ data })
   } catch (error) {
@@ -28,12 +50,10 @@ export async function GET() {
   }
 }
 
-// 新規スタッフ追加
+// 新規スタッフ追加（サービスロールでRLSバイパス）
 export async function POST(request: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  const user = await checkAuth()
+  if (!user) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
   }
 
@@ -45,19 +65,25 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "名前は必須です" }, { status: 400 })
     }
 
-    const { data, error } = await supabase
+    const service = createServiceClient()
+    const { data, error } = await service
       .from("staff_members")
       .insert({ name })
-      .select("id, name, line_user_id, created_at")
+      .select("*")
       .single()
 
-    if (error) throw error
+    if (error) {
+      console.error("スタッフ追加エラー:", error.message, error.details, error.hint, error.code)
+      throw error
+    }
 
+    console.log("スタッフ追加成功:", data)
     return NextResponse.json({ data })
   } catch (error) {
-    console.error("スタッフ追加エラー:", error)
+    const msg = error instanceof Error ? error.message : String(error)
+    console.error("スタッフ追加エラー:", msg)
     return NextResponse.json(
-      { error: "スタッフの追加に失敗しました" },
+      { error: `スタッフの追加に失敗しました: ${msg}` },
       { status: 500 }
     )
   }
@@ -65,10 +91,8 @@ export async function POST(request: NextRequest) {
 
 // スタッフ更新（名前・line_user_id）
 export async function PUT(request: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  const user = await checkAuth()
+  if (!user) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
   }
 
@@ -95,20 +119,25 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: "更新する項目がありません" }, { status: 400 })
     }
 
-    const { data, error } = await supabase
+    const service = createServiceClient()
+    const { data, error } = await service
       .from("staff_members")
       .update(updates)
       .eq("id", body.id)
-      .select("id, name, line_user_id, created_at")
+      .select("*")
       .single()
 
-    if (error) throw error
+    if (error) {
+      console.error("スタッフ更新エラー:", error.message, error.details, error.hint, error.code)
+      throw error
+    }
 
     return NextResponse.json({ data })
   } catch (error) {
-    console.error("スタッフ更新エラー:", error)
+    const msg = error instanceof Error ? error.message : String(error)
+    console.error("スタッフ更新エラー:", msg)
     return NextResponse.json(
-      { error: "スタッフの更新に失敗しました" },
+      { error: `スタッフの更新に失敗しました: ${msg}` },
       { status: 500 }
     )
   }
@@ -116,10 +145,8 @@ export async function PUT(request: NextRequest) {
 
 // スタッフ削除
 export async function DELETE(request: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
-
-  if (authError || !user) {
+  const user = await checkAuth()
+  if (!user) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
   }
 
@@ -131,18 +158,23 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: "IDは必須です" }, { status: 400 })
     }
 
-    const { error } = await supabase
+    const service = createServiceClient()
+    const { error } = await service
       .from("staff_members")
       .delete()
       .eq("id", id)
 
-    if (error) throw error
+    if (error) {
+      console.error("スタッフ削除エラー:", error.message, error.details, error.hint, error.code)
+      throw error
+    }
 
     return NextResponse.json({ success: true })
   } catch (error) {
-    console.error("スタッフ削除エラー:", error)
+    const msg = error instanceof Error ? error.message : String(error)
+    console.error("スタッフ削除エラー:", msg)
     return NextResponse.json(
-      { error: "スタッフの削除に失敗しました" },
+      { error: `スタッフの削除に失敗しました: ${msg}` },
       { status: 500 }
     )
   }
