@@ -29,6 +29,11 @@ import {
   Download,
   AlertTriangle,
   Wallet,
+  Upload,
+  FileSpreadsheet,
+  ScanLine,
+  CheckCircle2,
+  XCircle,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -92,6 +97,42 @@ export default function PettyCashPage() {
   const [cameraFile, setCameraFile] = useState<File | null>(null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // インポートフォーム
+  const [showImportDialog, setShowImportDialog] = useState(false)
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importLoading, setImportLoading] = useState(false)
+  const [importPreview, setImportPreview] = useState<{
+    headers: string[]
+    mapping: Record<string, unknown>
+    total_rows: number
+    mapped_rows: Array<{
+      date: string | null
+      type: string
+      amount: number
+      description: string | null
+      staff: string | null
+    }>
+    preview: unknown[]
+  } | null>(null)
+  const importFileInputRef = useRef<HTMLInputElement>(null)
+
+  // スキャナーフォーム
+  const [showScannerDialog, setShowScannerDialog] = useState(false)
+  const [scannerFile, setScannerFile] = useState<File | null>(null)
+  const [scannerPreview, setScannerPreview] = useState<{
+    vendor_name: string
+    amount: number | null
+    issue_date: string | null
+    description: string | null
+    type: string | null
+  } | null>(null)
+  const [scannerAmount, setScannerAmount] = useState("")
+  const [scannerDescription, setScannerDescription] = useState("")
+  const [scannerDate, setScannerDate] = useState("")
+  const [scannerType, setScannerType] = useState<"出金" | "入金" | "返金">("出金")
+  const [scannerLoading, setScannerLoading] = useState(false)
+  const scannerFileInputRef = useRef<HTMLInputElement>(null)
 
   // データ取得
   const fetchData = async () => {
@@ -317,6 +358,215 @@ export default function PettyCashPage() {
     }
   }
 
+  // インポート: プレビュー取得
+  const handleImportPreview = async () => {
+    if (!importFile) {
+      toast.error("ファイルを選択してください")
+      return
+    }
+
+    setImportLoading(true)
+    try {
+      const formData = new FormData()
+      formData.append("file", importFile)
+
+      const res = await fetch("/api/petty-cash/import", {
+        method: "PUT",
+        body: formData,
+      })
+
+      if (!res.ok) {
+        const json = await res.json() as { error?: string }
+        throw new Error(json.error || "プレビューに失敗しました")
+      }
+
+      const json = await res.json() as typeof importPreview
+      if (!json || json.mapped_rows.length === 0) {
+        toast.error("登録可能な行が見つかりませんでした")
+        return
+      }
+      setImportPreview(json)
+      toast.success(`${json.mapped_rows.length}件の取引を検出しました`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "プレビューに失敗しました")
+    } finally {
+      setImportLoading(false)
+    }
+  }
+
+  // インポート: 実行
+  const handleImportExecute = async () => {
+    if (!importPreview) return
+
+    setImportLoading(true)
+    try {
+      const res = await fetch("/api/petty-cash/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: importPreview.mapped_rows }),
+      })
+
+      if (!res.ok) {
+        const json = await res.json() as { error?: string }
+        throw new Error(json.error || "インポートに失敗しました")
+      }
+
+      const json = await res.json() as { inserted: number; skipped: number; balance: number }
+      toast.success(`インポート完了: ${json.inserted}件登録 / ${json.skipped}件スキップ`)
+      setShowImportDialog(false)
+      setImportFile(null)
+      setImportPreview(null)
+      if (importFileInputRef.current) importFileInputRef.current.value = ""
+      fetchData()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "インポートに失敗しました")
+    } finally {
+      setImportLoading(false)
+    }
+  }
+
+  // スキャナー: AI解析
+  const handleScannerAnalyze = async () => {
+    if (!scannerFile) {
+      toast.error("ファイルを選択してください")
+      return
+    }
+
+    setScannerLoading(true)
+    try {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => {
+          const result = reader.result as string
+          const commaIdx = result.indexOf(",")
+          resolve(commaIdx >= 0 ? result.substring(commaIdx + 1) : result)
+        }
+        reader.onerror = reject
+        reader.readAsDataURL(scannerFile)
+      })
+
+      const res = await fetch("/api/gemini", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          base64,
+          mimeType: scannerFile.type || "application/octet-stream",
+        }),
+      })
+
+      if (!res.ok) throw new Error("AI解析に失敗しました")
+      const json = await res.json() as {
+        vendor_name?: string
+        amount?: number | null
+        issue_date?: string | null
+        description?: string | null
+        type?: string | null
+      }
+
+      const preview = {
+        vendor_name: json.vendor_name || "",
+        amount: json.amount ?? null,
+        issue_date: json.issue_date ?? null,
+        description: json.description ?? null,
+        type: json.type ?? null,
+      }
+      setScannerPreview(preview)
+      setScannerAmount(preview.amount ? String(preview.amount) : "")
+      setScannerDescription(preview.vendor_name || preview.description || "")
+      setScannerDate(preview.issue_date || new Date().toISOString().substring(0, 10))
+      toast.success("AI解析完了。内容を確認してください")
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "AI解析に失敗しました")
+    } finally {
+      setScannerLoading(false)
+    }
+  }
+
+  // スキャナー: 登録実行（Dropbox保存 + DB登録）
+  const handleScannerSubmit = async () => {
+    if (!scannerFile) {
+      toast.error("ファイルを選択してください")
+      return
+    }
+    const amount = parseInt(scannerAmount)
+    if (!amount || amount <= 0) {
+      toast.error("金額を正しく入力してください")
+      return
+    }
+    if (!scannerDescription) {
+      toast.error("内容を入力してください")
+      return
+    }
+
+    setScannerLoading(true)
+    try {
+      // ファイルをbase64変換
+      const arrayBuffer = await scannerFile.arrayBuffer()
+      const bytes = new Uint8Array(arrayBuffer)
+      let binary = ""
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+      const base64 = btoa(binary)
+
+      // Dropboxパス生成
+      const targetDate = scannerDate ? new Date(scannerDate) : new Date()
+      const yyyy = targetDate.getFullYear()
+      const mm = String(targetDate.getMonth() + 1).padStart(2, "0")
+      const dd = String(targetDate.getDate()).padStart(2, "0")
+      const rand6 = Math.random().toString(36).substring(2, 8).toLowerCase()
+      const ext = scannerFile.name.split(".").pop() || "pdf"
+      const safeDesc = scannerDescription.replace(/[\\/:*?"<>|]/g, "_").slice(0, 40)
+      const dropboxPath = `/経理書類/小口現金/${yyyy}年${mm}月/${yyyy}${mm}${dd}_${safeDesc}_${rand6}.${ext}`
+
+      // Dropboxアップロード
+      const uploadRes = await fetch("/api/petty-cash/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          base64,
+          fileName: scannerFile.name,
+          dropboxPath,
+        }),
+      })
+      if (!uploadRes.ok) {
+        const json = await uploadRes.json().catch(() => ({})) as { error?: string }
+        throw new Error(json.error || "Dropboxアップロードに失敗しました")
+      }
+      const uploadJson = await uploadRes.json() as { path: string }
+
+      // 取引登録
+      const txRes = await fetch("/api/petty-cash", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: scannerType,
+          amount,
+          description: `📄 ${scannerDescription}`,
+          dropbox_path: uploadJson.path,
+        }),
+      })
+
+      if (!txRes.ok) {
+        const json = await txRes.json() as { error?: string }
+        throw new Error(json.error || "登録に失敗しました")
+      }
+
+      toast.success(`${scannerType}登録完了: ¥${amount.toLocaleString()} (${scannerDescription})`)
+      setShowScannerDialog(false)
+      setScannerFile(null)
+      setScannerPreview(null)
+      setScannerAmount("")
+      setScannerDescription("")
+      setScannerDate("")
+      setScannerType("出金")
+      if (scannerFileInputRef.current) scannerFileInputRef.current.value = ""
+      fetchData()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "登録に失敗しました")
+    } finally {
+      setScannerLoading(false)
+    }
+  }
+
   // Excelエクスポート
   const handleExport = async () => {
     const { utils, writeFile } = await import("xlsx")
@@ -417,6 +667,14 @@ export default function PettyCashPage() {
             <Button onClick={() => setShowCameraDialog(true)} variant="outline">
               <Camera className="mr-2 size-4" />
               写真から登録
+            </Button>
+            <Button onClick={() => setShowScannerDialog(true)} variant="outline">
+              <ScanLine className="mr-2 size-4" />
+              スキャナーから登録
+            </Button>
+            <Button onClick={() => setShowImportDialog(true)} variant="outline">
+              <Upload className="mr-2 size-4" />
+              過去データをインポート
             </Button>
           </div>
         </CardContent>
@@ -676,6 +934,292 @@ export default function PettyCashPage() {
                 </>
               )}
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* インポートダイアログ */}
+      <Dialog
+        open={showImportDialog}
+        onOpenChange={(v) => {
+          setShowImportDialog(v)
+          if (!v) {
+            setImportFile(null)
+            setImportPreview(null)
+            if (importFileInputRef.current) importFileInputRef.current.value = ""
+          }
+        }}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>過去データをインポート</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Excel(.xlsx)またはCSV(.csv)ファイルをアップロードすると、AIがカラムを自動判定して取引を一括登録します。
+              日付・金額・内容が同じ取引はスキップされます。
+            </p>
+
+            {!importPreview && (
+              <>
+                <div className="space-y-2">
+                  <Label>ファイル</Label>
+                  <input
+                    ref={importFileInputRef}
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    className="block w-full text-sm text-muted-foreground
+                      file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0
+                      file:text-sm file:font-semibold file:bg-[var(--dusk-primary-light)]
+                      file:text-[var(--dusk-primary)] hover:file:opacity-80"
+                    onChange={(e) => {
+                      setImportFile(e.target.files?.[0] || null)
+                      setImportPreview(null)
+                    }}
+                  />
+                </div>
+                {importFile && (
+                  <div className="text-sm text-muted-foreground flex items-center gap-2">
+                    <FileSpreadsheet className="size-4" />
+                    {importFile.name}（{(importFile.size / 1024).toFixed(0)} KB）
+                  </div>
+                )}
+                <Button
+                  onClick={handleImportPreview}
+                  disabled={importLoading || !importFile}
+                  className="w-full btn-float-primary"
+                >
+                  {importLoading ? (
+                    <>
+                      <Loader2 className="mr-2 size-4 animate-spin" />
+                      AI解析中...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="mr-2 size-4" />
+                      AIで解析
+                    </>
+                  )}
+                </Button>
+              </>
+            )}
+
+            {importPreview && (
+              <>
+                <div className="rounded-md border p-3 text-sm">
+                  <div className="font-medium mb-2">解析結果</div>
+                  <div className="grid grid-cols-2 gap-2 text-muted-foreground">
+                    <div>検出行数: {importPreview.mapped_rows.length}件</div>
+                    <div>全行数: {importPreview.total_rows}件</div>
+                  </div>
+                  <div className="mt-2 text-xs">
+                    カラムマッピング: {JSON.stringify(importPreview.mapping, null, 0)}
+                  </div>
+                </div>
+                <div className="max-h-60 overflow-y-auto rounded-md border">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-muted">
+                      <tr>
+                        <th className="px-2 py-1 text-left">日付</th>
+                        <th className="px-2 py-1 text-left">種別</th>
+                        <th className="px-2 py-1 text-left">内容</th>
+                        <th className="px-2 py-1 text-right">金額</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {importPreview.mapped_rows.slice(0, 100).map((row, idx) => (
+                        <tr key={idx} className="border-t">
+                          <td className="px-2 py-1">{row.date ? new Date(row.date).toLocaleDateString("ja-JP") : "—"}</td>
+                          <td className="px-2 py-1">{row.type}</td>
+                          <td className="px-2 py-1">{row.description || "—"}</td>
+                          <td className="px-2 py-1 text-right tabular-nums">¥{row.amount.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {importPreview.mapped_rows.length > 100 && (
+                    <div className="px-2 py-1 text-xs text-muted-foreground border-t">
+                      ...他 {importPreview.mapped_rows.length - 100} 件（登録時に全件処理されます）
+                    </div>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => setImportPreview(null)}
+                    variant="outline"
+                    className="flex-1"
+                  >
+                    やり直し
+                  </Button>
+                  <Button
+                    onClick={handleImportExecute}
+                    disabled={importLoading}
+                    className="flex-1 btn-float-primary"
+                  >
+                    {importLoading ? (
+                      <>
+                        <Loader2 className="mr-2 size-4 animate-spin" />
+                        登録中...
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="mr-2 size-4" />
+                        {importPreview.mapped_rows.length}件を登録
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* スキャナーダイアログ */}
+      <Dialog
+        open={showScannerDialog}
+        onOpenChange={(v) => {
+          setShowScannerDialog(v)
+          if (!v) {
+            setScannerFile(null)
+            setScannerPreview(null)
+            setScannerAmount("")
+            setScannerDescription("")
+            setScannerDate("")
+            setScannerType("出金")
+            if (scannerFileInputRef.current) scannerFileInputRef.current.value = ""
+          }
+        }}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>スキャナーから登録</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              PDFまたは画像（JPG/PNG）をアップロードすると、AIが領収書・帳票を解析し、
+              Dropboxに自動保存＋小口現金に登録します。
+            </p>
+
+            <div className="space-y-2">
+              <Label>ファイル（PDF / JPG / PNG）</Label>
+              <input
+                ref={scannerFileInputRef}
+                type="file"
+                accept="application/pdf,image/jpeg,image/jpg,image/png"
+                className="block w-full text-sm text-muted-foreground
+                  file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0
+                  file:text-sm file:font-semibold file:bg-[var(--dusk-primary-light)]
+                  file:text-[var(--dusk-primary)] hover:file:opacity-80"
+                onChange={(e) => {
+                  setScannerFile(e.target.files?.[0] || null)
+                  setScannerPreview(null)
+                }}
+              />
+            </div>
+            {scannerFile && (
+              <div className="text-sm text-muted-foreground">
+                選択: {scannerFile.name}（{(scannerFile.size / 1024).toFixed(0)} KB）
+              </div>
+            )}
+
+            {!scannerPreview && (
+              <Button
+                onClick={handleScannerAnalyze}
+                disabled={scannerLoading || !scannerFile}
+                className="w-full btn-float-primary"
+              >
+                {scannerLoading ? (
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" />
+                    AI解析中...
+                  </>
+                ) : (
+                  <>
+                    <ScanLine className="mr-2 size-4" />
+                    AIで解析
+                  </>
+                )}
+              </Button>
+            )}
+
+            {scannerPreview && (
+              <>
+                <div className="rounded-md border p-3 text-sm">
+                  <div className="font-medium mb-2 flex items-center gap-1">
+                    <CheckCircle2 className="size-4 text-emerald-600" />
+                    AI解析結果（修正可）
+                  </div>
+                  <div className="space-y-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">日付</Label>
+                      <Input
+                        type="date"
+                        value={scannerDate}
+                        onChange={(e) => setScannerDate(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">種別</Label>
+                      <Select value={scannerType} onValueChange={(v) => setScannerType(v as "出金" | "入金" | "返金")}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="出金">出金</SelectItem>
+                          <SelectItem value="入金">入金</SelectItem>
+                          <SelectItem value="返金">返金</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">金額（円）</Label>
+                      <Input
+                        type="number"
+                        value={scannerAmount}
+                        onChange={(e) => setScannerAmount(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">内容</Label>
+                      <Input
+                        value={scannerDescription}
+                        onChange={(e) => setScannerDescription(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => setScannerPreview(null)}
+                    variant="outline"
+                    className="flex-1"
+                    disabled={scannerLoading}
+                  >
+                    <XCircle className="mr-2 size-4" />
+                    やり直し
+                  </Button>
+                  <Button
+                    onClick={handleScannerSubmit}
+                    disabled={scannerLoading}
+                    className="flex-1 btn-float-primary"
+                  >
+                    {scannerLoading ? (
+                      <>
+                        <Loader2 className="mr-2 size-4 animate-spin" />
+                        登録中...
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="mr-2 size-4" />
+                        Dropbox保存 + 登録
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </>
+            )}
           </div>
         </DialogContent>
       </Dialog>

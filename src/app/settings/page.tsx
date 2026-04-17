@@ -13,7 +13,8 @@ import { DownloadSourceSettings } from "@/components/settings/download-source-se
 import { AccountantSettings } from "@/components/settings/accountant-settings"
 import { FloatingButtonSettings } from "@/components/settings/floating-button-settings"
 import { RegistrantList } from "@/components/settings/registrant-list"
-import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus } from "lucide-react"
+import { DocumentStaffList } from "@/components/settings/document-staff-list"
+import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus, Users } from "lucide-react"
 
 // 設定画面（5タブ構成）
 export default function SettingsPage() {
@@ -34,6 +35,10 @@ export default function SettingsPage() {
           <TabsTrigger value="registrants" className="flex items-center gap-1.5">
             <UserPlus className="size-4" />
             登録者管理
+          </TabsTrigger>
+          <TabsTrigger value="document-staff" className="flex items-center gap-1.5">
+            <Users className="size-4" />
+            書類登録スタッフ
           </TabsTrigger>
           <TabsTrigger value="doc-types" className="flex items-center gap-1.5">
             <FileType className="size-4" />
@@ -83,6 +88,10 @@ export default function SettingsPage() {
 
         <TabsContent value="registrants">
           <RegistrantList />
+        </TabsContent>
+
+        <TabsContent value="document-staff">
+          <DocumentStaffList />
         </TabsContent>
 
         <TabsContent value="doc-types">

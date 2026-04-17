@@ -31,6 +31,7 @@ export interface Database {
           file_hash: string | null
           calendar_event_id: string | null
           registrant_id: string | null
+          document_staff_id: string | null
           payment_status: string
           user_id: string
           created_at: string
@@ -54,6 +55,7 @@ export interface Database {
           file_hash?: string | null
           calendar_event_id?: string | null
           registrant_id?: string | null
+          document_staff_id?: string | null
           payment_status?: string
           user_id: string
           created_at?: string
@@ -77,6 +79,7 @@ export interface Database {
           file_hash?: string | null
           calendar_event_id?: string | null
           registrant_id?: string | null
+          document_staff_id?: string | null
           payment_status?: string
           user_id?: string
           created_at?: string
@@ -85,6 +88,24 @@ export interface Database {
         Relationships: []
       }
       registrants: {
+        Row: {
+          id: string
+          name: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          name: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          name?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
+      document_staff: {
         Row: {
           id: string
           name: string
