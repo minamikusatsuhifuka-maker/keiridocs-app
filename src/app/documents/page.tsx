@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { DocumentTable } from "@/components/documents/document-table"
-import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine } from "lucide-react"
+import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput } from "lucide-react"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
@@ -230,6 +230,13 @@ export default function DocumentsPage() {
   // CSVエクスポート
   const [isExporting, setIsExporting] = useState(false)
 
+  // 税理士フォルダへのコピー
+  const nowForTaxCopy = new Date()
+  const [showTaxCopyModal, setShowTaxCopyModal] = useState(false)
+  const [taxCopyYear, setTaxCopyYear] = useState<number>(nowForTaxCopy.getFullYear())
+  const [taxCopyMonth, setTaxCopyMonth] = useState<number>(nowForTaxCopy.getMonth() + 1)
+  const [isCopyingToTax, setIsCopyingToTax] = useState(false)
+
   // 重複チェック実行
   async function handleDuplicateCheck() {
     setIsDuplicateChecking(true)
@@ -395,6 +402,54 @@ export default function DocumentsPage() {
       toast.error(error instanceof Error ? error.message : "スキャンに失敗しました")
     } finally {
       setIsScanning(false)
+    }
+  }
+
+  // 税理士フォルダへ一括コピー実行
+  async function handleCopyToTaxFolder() {
+    setIsCopyingToTax(true)
+    try {
+      const res = await fetch("/api/documents/copy-to-taxfolder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ year: taxCopyYear, month: taxCopyMonth }),
+      })
+
+      const json = await res.json() as {
+        copied?: number
+        skipped?: number
+        failed?: number
+        total?: number
+        message?: string
+        error?: string
+      }
+
+      if (!res.ok) {
+        throw new Error(json.error || "コピー処理に失敗しました")
+      }
+
+      setShowTaxCopyModal(false)
+
+      const total = json.total ?? 0
+      const copied = json.copied ?? 0
+      const skipped = json.skipped ?? 0
+      const failed = json.failed ?? 0
+
+      if (total === 0) {
+        toast(json.message || "対象の処理済み書類はありませんでした")
+      } else if (failed > 0) {
+        toast.warning(
+          `✅ ${copied}件をコピーしました（スキップ: ${skipped}件 / 失敗: ${failed}件）`
+        )
+      } else {
+        toast.success(
+          `✅ ${copied}件をコピーしました（スキップ: ${skipped}件）`
+        )
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "コピー処理に失敗しました")
+    } finally {
+      setIsCopyingToTax(false)
     }
   }
 
@@ -588,6 +643,17 @@ export default function DocumentsPage() {
           <Button variant="outline" size="sm" onClick={handleExportCsv} disabled={isExporting} className="btn-float">
             {isExporting ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
             CSVエクスポート
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowTaxCopyModal(true)}
+            disabled={isCopyingToTax}
+            className="btn-float"
+          >
+            {isCopyingToTax ? <Loader2 className="size-3.5 animate-spin" /> : <FolderInput className="size-3.5" />}
+            税理士フォルダへ一括コピー
           </Button>
         </div>
       </div>
@@ -823,6 +889,81 @@ export default function DocumentsPage() {
                 </>
               ) : (
                 "本当に削除する"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 税理士フォルダへの一括コピー 年月選択モーダル */}
+      <Dialog open={showTaxCopyModal} onOpenChange={setShowTaxCopyModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FolderInput className="size-5" />
+              税理士フォルダへ一括コピー
+            </DialogTitle>
+            <DialogDescription>
+              指定した年月の「処理済み」書類をDropboxの税理士提出フォルダ（/経理書類/税理士提出/{taxCopyYear}年{String(taxCopyMonth).padStart(2, "0")}月）にコピーします。既に存在するファイルはスキップされます。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-end gap-3 py-2">
+            <div className="space-y-1">
+              <label className="text-sm font-medium">年</label>
+              <Select
+                value={String(taxCopyYear)}
+                onValueChange={(v) => setTaxCopyYear(Number(v))}
+              >
+                <SelectTrigger className="w-[120px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Array.from({ length: 6 }, (_, i) => nowForTaxCopy.getFullYear() - 4 + i).map((y) => (
+                    <SelectItem key={y} value={String(y)}>
+                      {y}年
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">月</label>
+              <Select
+                value={String(taxCopyMonth)}
+                onValueChange={(v) => setTaxCopyMonth(Number(v))}
+              >
+                <SelectTrigger className="w-[100px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                    <SelectItem key={m} value={String(m)}>
+                      {m}月
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              onClick={() => setShowTaxCopyModal(false)}
+              disabled={isCopyingToTax}
+            >
+              キャンセル
+            </Button>
+            <Button onClick={handleCopyToTaxFolder} disabled={isCopyingToTax}>
+              {isCopyingToTax ? (
+                <>
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                  コピー中...
+                </>
+              ) : (
+                <>
+                  <FolderInput className="mr-2 size-4" />
+                  コピーを実行
+                </>
               )}
             </Button>
           </DialogFooter>

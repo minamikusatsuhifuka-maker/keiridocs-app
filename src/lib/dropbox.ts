@@ -232,6 +232,50 @@ export async function copyFile(
   return data.metadata?.path_display ?? toPath
 }
 
+/**
+ * ファイルが存在するかチェックする（get_metadata API使用）
+ */
+export async function fileExists(path: string): Promise<boolean> {
+  const token = await getValidAccessToken()
+  const res = await fetch(`${DROPBOX_API}/files/get_metadata`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ path }),
+  })
+
+  if (res.ok) return true
+
+  const text = await res.text()
+  if (text.includes("path/not_found")) return false
+  // 不明なエラーは false を返す（呼び出し側でコピー試行 → conflict ハンドリング）
+  return false
+}
+
+/**
+ * ファイルをコピーする（既存ファイルはスキップしたい場合用、autorename: false）
+ * 既に存在する場合は to/conflict エラーが投げられる
+ */
+export async function copyFileNoOverwrite(
+  fromPath: string,
+  toPath: string
+): Promise<string> {
+  const folderPath = toPath.substring(0, toPath.lastIndexOf("/"))
+  if (folderPath) {
+    await ensureDropboxFolderExists(folderPath)
+  }
+
+  const data = await dbxPost("/files/copy_v2", {
+    from_path: fromPath,
+    to_path: toPath,
+    autorename: false,
+  })
+
+  return data.metadata?.path_display ?? toPath
+}
+
 /* ---------- 移動 ---------- */
 
 /**
