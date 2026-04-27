@@ -5,8 +5,10 @@ import {
   ensureDropboxFolderExists,
   fileExists,
   listFilesRecursive,
+  uploadFileOverwrite,
 } from "@/lib/dropbox"
 import { getCurrentUserRole } from "@/lib/auth"
+import { buildTaxSubmissionCsv } from "@/lib/tax-submission-csv"
 
 /** 税理士提出フォルダのコピー対象ソースフォルダ */
 const ALL_SOURCE_FOLDERS = [
@@ -249,7 +251,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // CSV 文字列を生成（ファイル名,種別,取引先,金額,日付,コピー結果）
+    // CSV 文字列を生成（ファイル名,種別,取引先,金額,日付,コピー結果）— UI表示用
     const csvHeader = ["ファイル名", "種別", "取引先", "金額", "日付", "コピー結果"]
     const csvRows = details.map((d) => [
       d.file_name,
@@ -263,6 +265,28 @@ export async function POST(request: NextRequest) {
       .map((row) => row.map(escapeCsv).join(","))
       .join("\n")
 
+    // 提出書類一覧CSVを生成し、Dropboxの税理士提出フォルダに自動保存（既存は上書き）
+    let csvDropboxPath: string | null = null
+    let csvSaveError: string | null = null
+    try {
+      const built = await buildTaxSubmissionCsv({
+        supabase,
+        isAdmin: auth.role === "admin",
+        userId: user.id,
+        year: yearNum,
+        month: monthNum,
+      })
+      const targetCsvPath = `${taxFolderBase}/${built.fileName}`
+      const buffer = Buffer.from(built.csvWithBom, "utf-8")
+      csvDropboxPath = await uploadFileOverwrite(targetCsvPath, buffer)
+      console.log(
+        `DropboxにCSVを保存しました: ${csvDropboxPath} (${built.rowCount}件)`
+      )
+    } catch (csvError) {
+      csvSaveError = csvError instanceof Error ? csvError.message : String(csvError)
+      console.error("提出書類一覧CSV保存エラー:", csvError)
+    }
+
     return NextResponse.json({
       copied,
       skipped,
@@ -270,6 +294,8 @@ export async function POST(request: NextRequest) {
       total: details.length,
       details,
       csv: csvBody,
+      csvDropboxPath,
+      csvSaveError,
     })
   } catch (error) {
     console.error("税理士フォルダコピーエラー:", error)

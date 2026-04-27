@@ -183,6 +183,51 @@ export async function uploadFile(
   return data.path_display ?? path
 }
 
+/**
+ * ファイルをDropboxに上書きアップロードする（既存ファイルがあれば置換）
+ * @param path Dropbox上のファイルパス
+ * @param contents ファイルデータ（Buffer）
+ * @returns アップロードされたファイルのパス
+ */
+export async function uploadFileOverwrite(
+  path: string,
+  contents: Buffer
+): Promise<string> {
+  const folderPath = path.substring(0, path.lastIndexOf("/"))
+  if (folderPath) {
+    await ensureDropboxFolderExists(folderPath)
+  }
+
+  const body = Buffer.from(contents)
+  if (body.length === 0) {
+    throw new Error("Dropbox upload error: ファイルデータが空です (0 bytes)")
+  }
+
+  const token = await getValidAccessToken()
+  const res = await fetch(`${DROPBOX_CONTENT}/files/upload`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Dropbox-API-Arg": escapeNonAscii(JSON.stringify({
+        path,
+        mode: "overwrite",
+        autorename: false,
+        mute: true,
+      })),
+      "Content-Type": "application/octet-stream",
+    },
+    body,
+  })
+
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`Dropbox upload error: ${res.status} ${text}`)
+  }
+
+  const data = await res.json()
+  return data.path_display ?? path
+}
+
 /* ---------- ダウンロード ---------- */
 
 /**
