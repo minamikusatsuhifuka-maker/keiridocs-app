@@ -404,3 +404,62 @@ export async function listFiles(path: string): Promise<Array<{
 
   return entries
 }
+
+/**
+ * フォルダ内のファイル一覧を再帰的に取得する
+ * フォルダが存在しない場合は空配列を返す
+ */
+export async function listFilesRecursive(path: string): Promise<Array<{
+  name: string
+  path_display: string
+  size: number
+  client_modified: string
+}>> {
+  const entries: Array<{
+    name: string
+    path_display: string
+    size: number
+    client_modified: string
+  }> = []
+  let cursor: string | null = null
+  let hasMore = true
+
+  try {
+    while (hasMore) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let data: any
+      if (!cursor) {
+        data = await dbxPost("/files/list_folder", {
+          path,
+          recursive: true,
+          include_deleted: false,
+        })
+      } else {
+        data = await dbxPost("/files/list_folder/continue", { cursor })
+      }
+
+      for (const entry of data.entries) {
+        if (entry[".tag"] === "file") {
+          entries.push({
+            name: entry.name,
+            path_display: entry.path_display,
+            size: entry.size,
+            client_modified: entry.client_modified,
+          })
+        }
+      }
+
+      hasMore = data.has_more
+      cursor = data.cursor
+    }
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error)
+    // フォルダが存在しない場合は空配列を返す
+    if (msg.includes("path/not_found")) {
+      return []
+    }
+    throw error
+  }
+
+  return entries
+}

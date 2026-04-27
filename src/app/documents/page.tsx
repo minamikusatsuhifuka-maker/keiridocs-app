@@ -232,10 +232,50 @@ export default function DocumentsPage() {
 
   // 税理士フォルダへのコピー
   const nowForTaxCopy = new Date()
+  const TAX_SOURCE_FOLDERS = ["請求書", "領収書", "社会保険料", "その他", "スタッフ領収書"] as const
   const [showTaxCopyModal, setShowTaxCopyModal] = useState(false)
   const [taxCopyYear, setTaxCopyYear] = useState<number>(nowForTaxCopy.getFullYear())
   const [taxCopyMonth, setTaxCopyMonth] = useState<number>(nowForTaxCopy.getMonth() + 1)
+  const [taxCopyFolders, setTaxCopyFolders] = useState<Set<string>>(
+    new Set(TAX_SOURCE_FOLDERS)
+  )
   const [isCopyingToTax, setIsCopyingToTax] = useState(false)
+  const [taxCopyResult, setTaxCopyResult] = useState<{
+    copied: number
+    skipped: number
+    failed: number
+    total: number
+    details: Array<{
+      file_name: string
+      type: string
+      vendor_name: string
+      amount: number | null
+      date: string
+      source: "db" | "dropbox"
+      status: "copied" | "skipped" | "failed"
+      message?: string
+    }>
+    csv: string
+    year: number
+    month: number
+  } | null>(null)
+
+  // フォルダチェックボックス切り替え
+  function toggleTaxCopyFolder(folder: string) {
+    setTaxCopyFolders((prev) => {
+      const next = new Set(prev)
+      if (next.has(folder)) next.delete(folder)
+      else next.add(folder)
+      return next
+    })
+  }
+
+  // モーダルを開くたびに結果をリセット
+  function openTaxCopyModal() {
+    setTaxCopyResult(null)
+    setTaxCopyFolders(new Set(TAX_SOURCE_FOLDERS))
+    setShowTaxCopyModal(true)
+  }
 
   // 重複チェック実行
   async function handleDuplicateCheck() {
@@ -407,12 +447,20 @@ export default function DocumentsPage() {
 
   // 税理士フォルダへ一括コピー実行
   async function handleCopyToTaxFolder() {
+    if (taxCopyFolders.size === 0) {
+      toast.warning("対象フォルダを1つ以上選択してください")
+      return
+    }
     setIsCopyingToTax(true)
     try {
       const res = await fetch("/api/documents/copy-to-taxfolder", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ year: taxCopyYear, month: taxCopyMonth }),
+        body: JSON.stringify({
+          year: taxCopyYear,
+          month: taxCopyMonth,
+          folders: Array.from(taxCopyFolders),
+        }),
       })
 
       const json = await res.json() as {
@@ -420,6 +468,17 @@ export default function DocumentsPage() {
         skipped?: number
         failed?: number
         total?: number
+        details?: Array<{
+          file_name: string
+          type: string
+          vendor_name: string
+          amount: number | null
+          date: string
+          source: "db" | "dropbox"
+          status: "copied" | "skipped" | "failed"
+          message?: string
+        }>
+        csv?: string
         message?: string
         error?: string
       }
@@ -428,22 +487,32 @@ export default function DocumentsPage() {
         throw new Error(json.error || "コピー処理に失敗しました")
       }
 
-      setShowTaxCopyModal(false)
-
       const total = json.total ?? 0
       const copied = json.copied ?? 0
       const skipped = json.skipped ?? 0
       const failed = json.failed ?? 0
 
+      // 結果を保存（モーダル内に詳細を表示）
+      setTaxCopyResult({
+        copied,
+        skipped,
+        failed,
+        total,
+        details: json.details ?? [],
+        csv: json.csv ?? "",
+        year: taxCopyYear,
+        month: taxCopyMonth,
+      })
+
       if (total === 0) {
-        toast(json.message || "対象の処理済み書類はありませんでした")
+        toast(json.message || "対象の書類はありませんでした")
       } else if (failed > 0) {
         toast.warning(
-          `✅ ${copied}件をコピーしました（スキップ: ${skipped}件 / 失敗: ${failed}件）`
+          `✅ ${copied}件コピー / スキップ ${skipped}件 / 失敗 ${failed}件`
         )
       } else {
         toast.success(
-          `✅ ${copied}件をコピーしました（スキップ: ${skipped}件）`
+          `✅ ${copied}件コピー / スキップ ${skipped}件 / 失敗 ${failed}件`
         )
       }
     } catch (error) {
@@ -451,6 +520,14 @@ export default function DocumentsPage() {
     } finally {
       setIsCopyingToTax(false)
     }
+  }
+
+  // 提出書類一覧CSVをダウンロード
+  function handleDownloadTaxCsv() {
+    if (!taxCopyResult) return
+    const url = `/api/documents/export-tax-csv?year=${taxCopyResult.year}&month=${taxCopyResult.month}`
+    // ブラウザでダウンロード
+    window.location.href = url
   }
 
   async function handleExportCsv() {
@@ -648,7 +725,7 @@ export default function DocumentsPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setShowTaxCopyModal(true)}
+            onClick={openTaxCopyModal}
             disabled={isCopyingToTax}
             className="btn-float"
           >
@@ -895,77 +972,189 @@ export default function DocumentsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* 税理士フォルダへの一括コピー 年月選択モーダル */}
+      {/* 税理士フォルダへの一括コピー 年月・対象フォルダ選択 + 結果表示モーダル */}
       <Dialog open={showTaxCopyModal} onOpenChange={setShowTaxCopyModal}>
-        <DialogContent>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FolderInput className="size-5" />
               税理士フォルダへ一括コピー
             </DialogTitle>
             <DialogDescription>
-              指定した年月の「処理済み」書類をDropboxの税理士提出フォルダ（/経理書類/税理士提出/{taxCopyYear}年{String(taxCopyMonth).padStart(2, "0")}月）にコピーします。既に存在するファイルはスキップされます。
+              指定した年月の処理済み書類および手動アップロード分をDropboxの税理士提出フォルダ
+              （/経理書類/税理士提出/{taxCopyYear}年{String(taxCopyMonth).padStart(2, "0")}月）にコピーします。
+              既に存在するファイルはスキップされます。
             </DialogDescription>
           </DialogHeader>
-          <div className="flex items-end gap-3 py-2">
-            <div className="space-y-1">
-              <label className="text-sm font-medium">年</label>
-              <Select
-                value={String(taxCopyYear)}
-                onValueChange={(v) => setTaxCopyYear(Number(v))}
-              >
-                <SelectTrigger className="w-[120px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {Array.from({ length: 6 }, (_, i) => nowForTaxCopy.getFullYear() - 4 + i).map((y) => (
-                    <SelectItem key={y} value={String(y)}>
-                      {y}年
-                    </SelectItem>
+
+          {!taxCopyResult ? (
+            // 入力フェーズ
+            <div className="space-y-4 overflow-y-auto pr-1">
+              <div className="flex items-end gap-3">
+                <div className="space-y-1">
+                  <label className="text-sm font-medium">年</label>
+                  <Select
+                    value={String(taxCopyYear)}
+                    onValueChange={(v) => setTaxCopyYear(Number(v))}
+                  >
+                    <SelectTrigger className="w-[120px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Array.from({ length: 6 }, (_, i) => nowForTaxCopy.getFullYear() - 4 + i).map((y) => (
+                        <SelectItem key={y} value={String(y)}>
+                          {y}年
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium">月</label>
+                  <Select
+                    value={String(taxCopyMonth)}
+                    onValueChange={(v) => setTaxCopyMonth(Number(v))}
+                  >
+                    <SelectTrigger className="w-[100px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                        <SelectItem key={m} value={String(m)}>
+                          {m}月
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-sm font-medium">対象フォルダ</div>
+                <div className="flex flex-wrap gap-3 rounded-md border p-3">
+                  {TAX_SOURCE_FOLDERS.map((folder) => (
+                    <label
+                      key={folder}
+                      className="flex items-center gap-2 cursor-pointer text-sm"
+                    >
+                      <Checkbox
+                        checked={taxCopyFolders.has(folder)}
+                        onCheckedChange={() => toggleTaxCopyFolder(folder)}
+                      />
+                      <span>{folder}</span>
+                    </label>
                   ))}
-                </SelectContent>
-              </Select>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  チェックしたフォルダを再帰的にスキャンします（DBに無い手動アップロード分も対象）。
+                </div>
+              </div>
             </div>
-            <div className="space-y-1">
-              <label className="text-sm font-medium">月</label>
-              <Select
-                value={String(taxCopyMonth)}
-                onValueChange={(v) => setTaxCopyMonth(Number(v))}
-              >
-                <SelectTrigger className="w-[100px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                    <SelectItem key={m} value={String(m)}>
-                      {m}月
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button
-              variant="outline"
-              onClick={() => setShowTaxCopyModal(false)}
-              disabled={isCopyingToTax}
-            >
-              キャンセル
-            </Button>
-            <Button onClick={handleCopyToTaxFolder} disabled={isCopyingToTax}>
-              {isCopyingToTax ? (
-                <>
-                  <Loader2 className="mr-2 size-4 animate-spin" />
-                  コピー中...
-                </>
-              ) : (
-                <>
-                  <FolderInput className="mr-2 size-4" />
-                  コピーを実行
-                </>
+          ) : (
+            // 結果表示フェーズ
+            <div className="space-y-3 overflow-y-auto pr-1">
+              <div className="rounded-md border bg-muted/40 p-4">
+                <div className="text-base font-semibold">
+                  ✅ {taxCopyResult.copied}件コピー / スキップ {taxCopyResult.skipped}件 / 失敗 {taxCopyResult.failed}件
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  対象: {taxCopyResult.year}年{String(taxCopyResult.month).padStart(2, "0")}月 / 合計 {taxCopyResult.total}件
+                </div>
+              </div>
+
+              {taxCopyResult.details.length > 0 && (
+                <div className="rounded-md border max-h-[40vh] overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-background border-b">
+                      <tr className="text-left">
+                        <th className="px-3 py-2 font-medium">ファイル名</th>
+                        <th className="px-3 py-2 font-medium">種別</th>
+                        <th className="px-3 py-2 font-medium">取引先</th>
+                        <th className="px-3 py-2 font-medium text-right">金額</th>
+                        <th className="px-3 py-2 font-medium">日付</th>
+                        <th className="px-3 py-2 font-medium">結果</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {taxCopyResult.details.map((d, i) => (
+                        <tr key={i} className="border-t">
+                          <td className="px-3 py-1.5 max-w-[200px] truncate" title={d.file_name}>
+                            {d.file_name}
+                          </td>
+                          <td className="px-3 py-1.5">{d.type}</td>
+                          <td className="px-3 py-1.5">{d.vendor_name || "-"}</td>
+                          <td className="px-3 py-1.5 text-right">
+                            {d.amount != null ? `¥${d.amount.toLocaleString()}` : "-"}
+                          </td>
+                          <td className="px-3 py-1.5">{d.date || "-"}</td>
+                          <td className="px-3 py-1.5">
+                            {d.status === "copied" ? (
+                              <span className="inline-flex items-center gap-1 text-green-700 dark:text-green-400">
+                                <CheckCircle2 className="size-3.5" /> 成功
+                              </span>
+                            ) : d.status === "skipped" ? (
+                              <span className="text-muted-foreground">スキップ</span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-red-600">
+                                <XCircle className="size-3.5" /> 失敗
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
-            </Button>
+
+              <Button
+                variant="outline"
+                onClick={handleDownloadTaxCsv}
+                className="w-full"
+              >
+                <Download className="mr-2 size-4" />
+                📄 提出書類一覧CSVをダウンロード
+              </Button>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            {!taxCopyResult ? (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowTaxCopyModal(false)}
+                  disabled={isCopyingToTax}
+                >
+                  キャンセル
+                </Button>
+                <Button onClick={handleCopyToTaxFolder} disabled={isCopyingToTax || taxCopyFolders.size === 0}>
+                  {isCopyingToTax ? (
+                    <>
+                      <Loader2 className="mr-2 size-4 animate-spin" />
+                      コピー中...
+                    </>
+                  ) : (
+                    <>
+                      <FolderInput className="mr-2 size-4" />
+                      コピーを実行
+                    </>
+                  )}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setTaxCopyResult(null)
+                  }}
+                >
+                  別の年月でやり直す
+                </Button>
+                <Button onClick={() => setShowTaxCopyModal(false)}>閉じる</Button>
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
