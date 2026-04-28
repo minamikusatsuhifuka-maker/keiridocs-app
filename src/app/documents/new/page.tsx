@@ -29,7 +29,7 @@ import { Switch } from "@/components/ui/switch"
 import { Progress } from "@/components/ui/progress"
 import {
   Camera, Upload, ArrowRight, Loader2, CheckCircle2, ListIcon, Plus,
-  AlertTriangle, Zap, Eye, XCircle, ScanLine, Calendar, TrendingUp,
+  AlertTriangle, Zap, Eye, XCircle, ScanLine, Calendar,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -868,48 +868,6 @@ export default function NewDocumentPage() {
         </div>
       </div>
 
-      {/* 売上登録ボタン（書類登録エリアの上部、ゴールドグラデーション） */}
-      {!isRegistered && !showAutoProgress && !isReviewing && (
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-3">
-                <div
-                  className="flex size-10 items-center justify-center rounded-full"
-                  style={{
-                    background: "linear-gradient(135deg, #C8922A, #B8782A)",
-                    color: "#fff",
-                  }}
-                >
-                  <TrendingUp className="size-5" />
-                </div>
-                <div>
-                  <p className="text-base font-semibold" style={{ color: "#1A1A1A" }}>
-                    📈 売上登録
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    売上書類をアップロードして月別フォルダに自動保存
-                  </p>
-                </div>
-              </div>
-              <Button
-                onClick={() => setShowSalesModal(true)}
-                className="text-white"
-                style={{
-                  background: "linear-gradient(135deg, #C8922A, #B8782A)",
-                  boxShadow: "0 4px 12px rgba(180,120,40,0.35)",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "linear-gradient(135deg, #B8822A, #A8682A)" }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "linear-gradient(135deg, #C8922A, #B8782A)" }}
-              >
-                <TrendingUp className="mr-2 size-4" />
-                売上登録を開く
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       {/* モード切替 */}
       {!isRegistered && !showAutoProgress && !isReviewing && (
         <Card>
@@ -1415,6 +1373,18 @@ export default function NewDocumentPage() {
         onOpenChange={setShowSalesModal}
         registrantId={selectedRegistrantId || null}
       />
+
+      {/* 売上登録への控えめなテキストリンク（ページ下部） */}
+      <div className="pt-6 text-center">
+        <button
+          type="button"
+          onClick={() => setShowSalesModal(true)}
+          className="text-sm no-underline hover:underline transition-colors"
+          style={{ color: "#9A8070" }}
+        >
+          売上書類の登録はこちら →
+        </button>
+      </div>
     </div>
   )
 }
