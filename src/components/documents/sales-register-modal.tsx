@@ -57,7 +57,7 @@ interface SalesPreviewItem {
   description: string
   isAnalyzing: boolean
   error: string | null
-  status: "preview" | "registered" | "register_error"
+  status: "preview" | "registered" | "register_error" | "skipped"
   registerError: string | null
   yearMonth: string | null
 }
@@ -256,7 +256,22 @@ export function SalesRegisterModal({
           continue
         }
 
-        const json = await res.json() as { year_month?: string }
+        const json = await res.json() as { year_month?: string; skipped?: boolean; reason?: string }
+
+        // スキップ扱い（10MB超など）
+        if (json.skipped) {
+          setItems((prev) => {
+            const next = [...prev]
+            next[idx] = {
+              ...next[idx],
+              status: "skipped",
+              registerError: json.reason || "サイズ超過のためスキップしました",
+            }
+            return next
+          })
+          continue
+        }
+
         if (json.year_month) yearMonthsRegistered.add(json.year_month)
 
         setItems((prev) => {
@@ -317,12 +332,13 @@ export function SalesRegisterModal({
 
   const successCount = items.filter((it) => it.status === "registered").length
   const errorCount = items.filter((it) => it.status === "register_error").length
+  const skippedCount = items.filter((it) => it.status === "skipped").length
   const previewCount = items.filter((it) => it.status === "preview" && !it.error).length
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[90vh] min-h-[80vh] w-[95vw] max-w-6xl flex-col overflow-hidden p-0">
+        <DialogHeader className="shrink-0 border-b px-6 py-4">
           <DialogTitle className="flex items-center gap-2">
             <TrendingUp className="size-5 text-[#B8956A]" />
             売上登録
@@ -333,9 +349,12 @@ export function SalesRegisterModal({
           </DialogDescription>
         </DialogHeader>
 
+        {/* スクロール可能な本体エリア */}
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+
         {/* 完了画面 */}
         {completed ? (
-          <div className="space-y-4 py-4">
+          <div className="space-y-4">
             <div className="flex flex-col items-center gap-3 rounded-lg border border-[#E0CEB8] bg-[#FAF7F0] py-6 dark:border-[#A0703A]/30 dark:bg-[#A0703A]/10">
               <CheckCircle2 className="size-12 text-[#A0703A] dark:text-[#D4A860]" />
               <p className="text-lg font-semibold text-[#8B5E2F] dark:text-[#D4A860]">
@@ -346,10 +365,14 @@ export function SalesRegisterModal({
                   Dropboxの{completedYearMonths.join("、")}フォルダに保存しました
                 </p>
               )}
-              <div className="grid grid-cols-2 gap-3 pt-2">
+              <div className="grid grid-cols-3 gap-3 pt-2">
                 <div className="rounded-md bg-white/80 px-4 py-2 text-center text-sm dark:bg-white/5">
                   <CheckCircle2 className="mx-auto size-4 text-[#A0703A]" />
                   <p className="mt-0.5 font-bold">{successCount}件 成功</p>
+                </div>
+                <div className="rounded-md bg-white/80 px-4 py-2 text-center text-sm dark:bg-white/5">
+                  <AlertTriangle className="mx-auto size-4 text-amber-600" />
+                  <p className="mt-0.5 font-bold">{skippedCount}件 スキップ</p>
                 </div>
                 <div className="rounded-md bg-white/80 px-4 py-2 text-center text-sm dark:bg-white/5">
                   <XCircle className="mx-auto size-4 text-red-600" />
@@ -358,19 +381,41 @@ export function SalesRegisterModal({
               </div>
             </div>
 
+            {/* スキップ一覧（全件表示・スクロール可） */}
+            {skippedCount > 0 && (
+              <div className="space-y-1 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/20">
+                <p className="text-xs font-medium text-amber-800 dark:text-amber-300">スキップ:</p>
+                <div className="max-h-48 space-y-1 overflow-y-auto">
+                  {items
+                    .filter((it) => it.status === "skipped")
+                    .map((it, i) => (
+                      <div key={i} className="flex items-start gap-2 text-sm">
+                        <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
+                        <span className="break-all">
+                          {it.file.name} — {it.registerError}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
+
+            {/* エラー一覧（全件表示・スクロール可） */}
             {errorCount > 0 && (
-              <div className="space-y-1">
+              <div className="space-y-1 rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950/20">
                 <p className="text-xs font-medium text-red-700 dark:text-red-400">エラー:</p>
-                {items
-                  .filter((it) => it.status === "register_error")
-                  .map((it, i) => (
-                    <div key={i} className="flex items-center gap-2 text-sm">
-                      <XCircle className="size-3.5 shrink-0 text-red-600" />
-                      <span className="truncate">
-                        {it.file.name} — {it.registerError}
-                      </span>
-                    </div>
-                  ))}
+                <div className="max-h-60 space-y-1 overflow-y-auto">
+                  {items
+                    .filter((it) => it.status === "register_error")
+                    .map((it, i) => (
+                      <div key={i} className="flex items-start gap-2 text-sm">
+                        <XCircle className="mt-0.5 size-3.5 shrink-0 text-red-600" />
+                        <span className="break-all">
+                          {it.file.name} — {it.registerError}
+                        </span>
+                      </div>
+                    ))}
+                </div>
               </div>
             )}
 
@@ -417,9 +462,11 @@ export function SalesRegisterModal({
                     className={`rounded-lg border p-3 ${
                       item.status === "registered"
                         ? "border-[#A0703A]/30 bg-[#FAF7F0] dark:border-[#A0703A]/30 dark:bg-[#A0703A]/10"
-                        : item.status === "register_error" || item.error
-                          ? "border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/20"
-                          : "border-border bg-card"
+                        : item.status === "skipped"
+                          ? "border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/20"
+                          : item.status === "register_error" || item.error
+                            ? "border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/20"
+                            : "border-border bg-card"
                     }`}
                   >
                     <div className="flex items-start gap-3">
@@ -447,6 +494,11 @@ export function SalesRegisterModal({
                             <span className="flex shrink-0 items-center gap-1 rounded-full bg-[#A0703A]/15 px-2 py-0.5 text-xs font-medium text-[#A0703A]">
                               <CheckCircle2 className="size-3" />
                               登録済み
+                            </span>
+                          ) : item.status === "skipped" ? (
+                            <span className="flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                              <AlertTriangle className="size-3" />
+                              スキップ
                             </span>
                           ) : item.status === "register_error" ? (
                             <span className="flex shrink-0 items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400">
@@ -478,8 +530,8 @@ export function SalesRegisterModal({
                           </p>
                         )}
 
-                        {/* 編集フォーム（登録済み・登録中以外） */}
-                        {item.status !== "registered" && (
+                        {/* 編集フォーム（登録済み・スキップ以外） */}
+                        {item.status !== "registered" && item.status !== "skipped" && (
                           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                             <div className="space-y-1">
                               <Label className="flex items-center gap-1 text-xs">
@@ -588,6 +640,7 @@ export function SalesRegisterModal({
             </DialogFooter>
           </div>
         )}
+        </div>
       </DialogContent>
     </Dialog>
   )

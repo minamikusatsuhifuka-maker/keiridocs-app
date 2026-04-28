@@ -18,8 +18,8 @@ const SUPPORTED_MIME_TYPES = [
   "application/pdf",
 ] as const
 
-/** Vercel Functionタイムアウト対策: 売上登録は最大300秒まで許容 */
-export const maxDuration = 300
+/** Vercel Functionタイムアウト: 売上登録は60秒まで（仕様要求） */
+export const maxDuration = 60
 
 /** ファイル名から拡張子を推定したMIMEタイプを返す */
 function guessMimeTypeFromFileName(fileName: string): string | null {
@@ -184,14 +184,16 @@ export async function POST(request: NextRequest) {
       base64Data = base64Data.substring(commaIndex + 1)
     }
 
-    // サイズチェック（10MB上限）
+    // サイズチェック（10MB超は処理スキップ。エラーではなくskipped扱いで返す）
     const sizeInBytes = (base64Data.length * 3) / 4
     if (sizeInBytes > 10 * 1024 * 1024) {
-      console.warn(`[売上登録] サイズ超過: ${filename} = ${(sizeInBytes / 1024 / 1024).toFixed(1)}MB`)
-      return NextResponse.json(
-        { error: "ファイルサイズが10MBを超えています。PDFは圧縮するかページを分割してください" },
-        { status: 400 }
-      )
+      const sizeMB = (sizeInBytes / 1024 / 1024).toFixed(1)
+      console.warn(`[売上登録] サイズ超過のためスキップ: ${filename} = ${sizeMB}MB`)
+      return NextResponse.json({
+        skipped: true,
+        filename,
+        reason: `ファイルサイズが10MBを超えています（${sizeMB}MB）。PDFは圧縮またはページ分割してください`,
+      })
     }
 
     console.log(`[売上登録] mode=${mode} filename=${filename} mimeType=${mimeType} size=${(sizeInBytes / 1024).toFixed(1)}KB`)
@@ -259,9 +261,19 @@ export async function POST(request: NextRequest) {
       ? body.vendor_name.trim()
       : (ocrResult.vendor_name || "")
 
-    const finalAmount = typeof body.amount === "number"
-      ? body.amount
-      : (typeof body.amount === "string" && body.amount.trim() ? Number(body.amount) : ocrResult.amount)
+    // 金額: ユーザー編集値 → OCR結果 → AI失敗時は0で登録継続
+    let finalAmount: number | null
+    if (typeof body.amount === "number" && !isNaN(body.amount)) {
+      finalAmount = body.amount
+    } else if (typeof body.amount === "string" && body.amount.trim()) {
+      const parsed = Number(body.amount)
+      finalAmount = isNaN(parsed) ? 0 : parsed
+    } else if (typeof ocrResult.amount === "number") {
+      finalAmount = ocrResult.amount
+    } else {
+      // AI解析失敗時のフォールバック: 0を入れて登録継続
+      finalAmount = 0
+    }
 
     const finalIssueDate = typeof body.issue_date === "string" && body.issue_date.trim()
       ? body.issue_date.trim()
@@ -309,10 +321,12 @@ export async function POST(request: NextRequest) {
     }
 
     // --- DB登録（種別="売上記録"固定） ---
+    // AI解析が失敗していてもDropbox保存は完了している。fallback値で必ずDB登録する
+    const safeAmount = typeof finalAmount === "number" && !isNaN(finalAmount) ? finalAmount : 0
     const insertPayload = {
       type: "売上記録",
       vendor_name: vendorForRecord,
-      amount: typeof finalAmount === "number" && !isNaN(finalAmount) ? finalAmount : null,
+      amount: safeAmount,
       issue_date: finalIssueDate || null,
       due_date: null,
       description: finalDescription || null,
