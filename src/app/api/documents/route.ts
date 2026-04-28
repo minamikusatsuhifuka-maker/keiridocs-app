@@ -47,6 +47,7 @@ export async function GET(request: NextRequest) {
   // 一覧取得（フィルタ・検索・ソート・ページネーション対応）
   const status = searchParams.get("status")
   const type = searchParams.get("type")
+  const excludeType = searchParams.get("exclude_type")
   const searchQuery = searchParams.get("search")
   const dateFrom = searchParams.get("date_from")
   const dateTo = searchParams.get("date_to")
@@ -76,6 +77,10 @@ export async function GET(request: NextRequest) {
   }
   if (type) {
     query = query.eq("type", type)
+  }
+  // 経費タブ用：特定種別を除外
+  if (excludeType) {
+    query = query.neq("type", excludeType)
   }
 
   // テキスト検索（取引先名・摘要）

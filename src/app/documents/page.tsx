@@ -66,6 +66,7 @@ const DEFAULT_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "請求書", label: "請求書" },
   { value: "領収書", label: "領収書" },
   { value: "契約書", label: "契約書" },
+  { value: "売上記録", label: "売上記録" },
 ]
 
 const statusOptions: { value: string; label: string }[] = [
@@ -86,10 +87,15 @@ export default function DocumentsPage() {
   // 動的種別をフィルタオプションに変換
   const typeOptions = useMemo(() => {
     if (dynamicTypes.length === 0) return DEFAULT_TYPE_OPTIONS
-    return [
+    const opts = [
       { value: "all", label: "すべての種別" },
       ...dynamicTypes.map((t) => ({ value: t.name, label: t.name })),
     ]
+    // 動的typesに「売上記録」が含まれていなければ末尾に追加
+    if (!opts.some((o) => o.value === "売上記録")) {
+      opts.push({ value: "売上記録", label: "売上記録" })
+    }
+    return opts
   }, [dynamicTypes])
 
   // 書類種別リストを取得
@@ -108,6 +114,9 @@ export default function DocumentsPage() {
     }
     fetchTypes()
   }, [])
+
+  // 表示切替タブ（経費書類 / 売上）
+  const [activeTab, setActiveTab] = useState<"expense" | "sales">("expense")
 
   // フィルタ
   const [search, setSearch] = useState("")
@@ -137,7 +146,19 @@ export default function DocumentsPage() {
       params.set("direction", sortDirection)
 
       if (search) params.set("search", search)
-      if (typeFilter !== "all") params.set("type", typeFilter)
+
+      // タブによる種別フィルタ
+      if (activeTab === "sales") {
+        // 売上タブは「売上記録」のみ
+        params.set("type", "売上記録")
+      } else {
+        // 経費タブは「売上記録」を除外しつつ、ユーザー選択の種別フィルタを尊重
+        if (typeFilter !== "all" && typeFilter !== "売上記録") {
+          params.set("type", typeFilter)
+        }
+        params.set("exclude_type", "売上記録")
+      }
+
       if (statusFilter !== "all") params.set("status", statusFilter)
       if (dateFrom) params.set("date_from", dateFrom)
       if (dateTo) params.set("date_to", dateTo)
@@ -154,7 +175,7 @@ export default function DocumentsPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [search, typeFilter, statusFilter, dateFrom, dateTo, sortField, sortDirection, page])
+  }, [search, typeFilter, statusFilter, dateFrom, dateTo, sortField, sortDirection, page, activeTab])
 
   useEffect(() => {
     fetchDocuments()
@@ -232,7 +253,7 @@ export default function DocumentsPage() {
 
   // 税理士フォルダへのコピー
   const nowForTaxCopy = new Date()
-  const TAX_SOURCE_FOLDERS = ["請求書", "領収書", "社会保険料", "その他", "スタッフ領収書"] as const
+  const TAX_SOURCE_FOLDERS = ["請求書", "領収書", "社会保険料", "その他", "スタッフ領収書", "売上"] as const
   const [showTaxCopyModal, setShowTaxCopyModal] = useState(false)
   const [taxCopyYear, setTaxCopyYear] = useState<number>(nowForTaxCopy.getFullYear())
   const [taxCopyMonth, setTaxCopyMonth] = useState<number>(nowForTaxCopy.getMonth() + 1)
@@ -541,7 +562,17 @@ export default function DocumentsPage() {
       params.set("direction", sortDirection)
 
       if (search) params.set("search", search)
-      if (typeFilter !== "all") params.set("type", typeFilter)
+
+      // タブによる種別フィルタ（CSV出力も現在のタブに従う）
+      if (activeTab === "sales") {
+        params.set("type", "売上記録")
+      } else {
+        if (typeFilter !== "all" && typeFilter !== "売上記録") {
+          params.set("type", typeFilter)
+        }
+        params.set("exclude_type", "売上記録")
+      }
+
       if (statusFilter !== "all") params.set("status", statusFilter)
       if (dateFrom) params.set("date_from", dateFrom)
       if (dateTo) params.set("date_to", dateTo)
@@ -584,10 +615,12 @@ export default function DocumentsPage() {
       const bom = new Uint8Array([0xEF, 0xBB, 0xBF])
       const blob = new Blob([bom, csvContent], { type: "text/csv;charset=utf-8" })
 
-      // ファイル名: 経理書類_YYYY-MM-DD.csv
+      // ファイル名: タブに応じた接頭辞 + YYYY-MM-DD.csv
       const today = new Date()
       const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`
-      const fileName = `経理書類_${dateStr}.csv`
+      const fileName = activeTab === "sales"
+        ? `売上記録_${dateStr}.csv`
+        : `経費書類_${dateStr}.csv`
 
       // ダウンロード
       const url = URL.createObjectURL(blob)
@@ -608,6 +641,14 @@ export default function DocumentsPage() {
   }
 
   const hasFilters = search || typeFilter !== "all" || statusFilter !== "all" || dateFrom || dateTo
+
+  // タブ切り替えハンドラ（ページネーション・選択もリセット）
+  function handleTabChange(tab: "expense" | "sales") {
+    if (tab === activeTab) return
+    setActiveTab(tab)
+    setPage(0)
+    setSelectedDocIds(new Set())
+  }
 
   return (
     <div className="space-y-6">
@@ -643,6 +684,38 @@ export default function DocumentsPage() {
             </Link>
           </Button>
         </div>
+      </div>
+
+      {/* 表示切替タブ（経費書類 / 売上） */}
+      <div className="flex gap-2">
+        {([
+          { key: "expense", label: "📄 経費書類" },
+          { key: "sales", label: "📈 売上" },
+        ] as const).map((tab) => {
+          const isActive = activeTab === tab.key
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => handleTabChange(tab.key)}
+              className="rounded-lg px-4 py-2 text-sm font-semibold transition-colors"
+              style={{
+                background: isActive
+                  ? "linear-gradient(135deg, #C8922A, #B8782A)"
+                  : "transparent",
+                color: isActive ? "#fff" : "#A0703A",
+                border: isActive
+                  ? "1px solid transparent"
+                  : "1px solid rgba(160,112,58,0.3)",
+                boxShadow: isActive
+                  ? "0 4px 12px rgba(180,120,40,0.35)"
+                  : "none",
+              }}
+            >
+              {tab.label}
+            </button>
+          )
+        })}
       </div>
 
       {/* 検索・フィルタ */}

@@ -17,7 +17,23 @@ const ALL_SOURCE_FOLDERS = [
   "社会保険料",
   "その他",
   "スタッフ領収書",
+  "売上",
 ] as const
+
+/** 税理士提出先フォルダ内でサブフォルダに配置するソースフォルダ */
+const TAX_SUBFOLDER_MAP: Record<string, string> = {
+  "売上": "売上",
+}
+
+/** dropbox_path から税理士提出先サブフォルダ名を判定する */
+function getTaxSubfolderForPath(dropboxPath: string): string | null {
+  for (const [sourceFolder, subfolder] of Object.entries(TAX_SUBFOLDER_MAP)) {
+    if (dropboxPath.startsWith(`/経理書類/${sourceFolder}/`)) {
+      return subfolder
+    }
+  }
+  return null
+}
 
 type CopyStatus = "copied" | "skipped" | "failed"
 
@@ -104,6 +120,15 @@ export async function POST(request: NextRequest) {
       console.error("税理士提出フォルダ作成エラー:", folderError)
     }
 
+    // 売上が選択されている場合は売上サブフォルダも作成
+    if (targetFolders.includes("売上")) {
+      try {
+        await ensureDropboxFolderExists(`${taxFolderBase}/売上`)
+      } catch (folderError) {
+        console.error("税理士提出 売上フォルダ作成エラー:", folderError)
+      }
+    }
+
     /* --- pass 1: DB 書類のコピー --- */
     let dbQuery = supabase
       .from("documents")
@@ -179,7 +204,11 @@ export async function POST(request: NextRequest) {
         continue
       }
 
-      const toPath = `${taxFolderBase}/${fileName}`
+      // 売上書類は税理士提出/売上/ サブフォルダに配置
+      const subfolder = getTaxSubfolderForPath(doc.dropbox_path)
+      const toPath = subfolder
+        ? `${taxFolderBase}/${subfolder}/${fileName}`
+        : `${taxFolderBase}/${fileName}`
       const result = await copyOne(doc.dropbox_path, toPath)
       if (result.status === "copied") copied++
       else if (result.status === "skipped") skipped++
@@ -227,10 +256,14 @@ export async function POST(request: NextRequest) {
         if (!fileMonth) continue
         if (fileMonth.year !== yearNum || fileMonth.month !== monthNum) continue
 
-        // 種別はフォルダ名から推定
-        const inferredType = folderName
+        // 種別はフォルダ名から推定（売上フォルダは「売上記録」として扱う）
+        const inferredType = folderName === "売上" ? "売上記録" : folderName
 
-        const toPath = `${taxFolderBase}/${file.name}`
+        // 売上書類は税理士提出/売上/ サブフォルダに配置
+        const subfolder = TAX_SUBFOLDER_MAP[folderName]
+        const toPath = subfolder
+          ? `${taxFolderBase}/${subfolder}/${file.name}`
+          : `${taxFolderBase}/${file.name}`
         const result = await copyOne(file.path_display, toPath)
         if (result.status === "copied") copied++
         else if (result.status === "skipped") skipped++
