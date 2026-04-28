@@ -65,7 +65,6 @@ interface SalesPreviewItem {
 interface SalesRegisterModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  registrantId: string | null
   onRegistered?: () => void
 }
 
@@ -78,7 +77,6 @@ interface SalesRegisterModalProps {
 export function SalesRegisterModal({
   open,
   onOpenChange,
-  registrantId,
   onRegistered,
 }: SalesRegisterModalProps) {
   const [files, setFiles] = useState<UploadedFile[]>([])
@@ -260,8 +258,6 @@ export function SalesRegisterModal({
             amount: item.amount ? Number(item.amount) : null,
             issue_date: item.issue_date || null,
             description: item.description,
-            // 書類登録スタッフ（document_staffテーブルのID）
-            document_staff_id: registrantId,
             // 事前解析済みのOCR結果を送ってサーバー側での再解析を回避（Gemini RPM節約）
             ocr_result: item.ocr,
           }),
@@ -331,7 +327,7 @@ export function SalesRegisterModal({
       toast.success(`✅ 売上登録完了！Dropboxの${folders}フォルダに保存しました`)
       onRegistered?.()
     }
-  }, [items, registrantId, onRegistered])
+  }, [items, onRegistered])
 
   /** 状態をリセット */
   const reset = useCallback(() => {

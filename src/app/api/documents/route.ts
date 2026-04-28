@@ -129,12 +129,10 @@ export async function POST(request: NextRequest) {
       tax_category: unknown
       account_title: unknown
       file_hash: unknown
-      registrant_id: unknown
-      document_staff_id: unknown
       items: unknown
     }
 
-    const { type, vendor_name, amount, issue_date, due_date, description, input_method, dropbox_path, ocr_raw, tax_category, account_title, file_hash, registrant_id, document_staff_id, items } = body
+    const { type, vendor_name, amount, issue_date, due_date, description, input_method, dropbox_path, ocr_raw, tax_category, account_title, file_hash, items } = body
 
     // 必須フィールドのバリデーション
     if (typeof type !== "string" || typeof vendor_name !== "string") {
@@ -226,8 +224,6 @@ export async function POST(request: NextRequest) {
         tax_category: typeof tax_category === "string" ? tax_category : "未判定",
         account_title: typeof account_title === "string" ? account_title : "",
         file_hash: fileHashStr || "",
-        registrant_id: typeof registrant_id === "string" ? registrant_id : null,
-        document_staff_id: typeof document_staff_id === "string" ? document_staff_id : null,
         user_id: user.id,
       })
       .select()
