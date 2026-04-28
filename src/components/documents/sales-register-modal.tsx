@@ -260,7 +260,8 @@ export function SalesRegisterModal({
             amount: item.amount ? Number(item.amount) : null,
             issue_date: item.issue_date || null,
             description: item.description,
-            registrant_id: registrantId,
+            // 書類登録スタッフ（document_staffテーブルのID）
+            document_staff_id: registrantId,
             // 事前解析済みのOCR結果を送ってサーバー側での再解析を回避（Gemini RPM節約）
             ocr_result: item.ocr,
           }),

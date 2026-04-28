@@ -175,6 +175,8 @@ export async function POST(request: NextRequest) {
       issue_date?: unknown
       description?: unknown
       mode?: unknown
+      // 書類登録スタッフ（document_staffテーブルのID）。registrant_idは旧名
+      document_staff_id?: unknown
       registrant_id?: unknown
       ocr_result?: unknown
     }
@@ -315,7 +317,44 @@ export async function POST(request: NextRequest) {
       ? body.description.trim()
       : (ocrResult.description || "")
 
-    const registrantId = typeof body.registrant_id === "string" ? body.registrant_id : null
+    // 書類登録スタッフID（document_staffテーブルへの外部キー）
+    // フロントから document_staff_id または旧名 registrant_id で受け取る
+    const rawStaffId = (typeof body.document_staff_id === "string" && body.document_staff_id) ||
+      (typeof body.registrant_id === "string" && body.registrant_id) || null
+
+    let documentStaffId: string | null = rawStaffId
+
+    // 指定されたIDが document_staff に存在するか確認（外部キー違反を未然に防ぐ）
+    if (documentStaffId) {
+      const { data: existsRow } = await supabase
+        .from("document_staff")
+        .select("id")
+        .eq("id", documentStaffId)
+        .maybeSingle()
+
+      if (!existsRow) {
+        console.warn(`[売上登録] 指定された document_staff_id が存在しません: ${documentStaffId}`)
+        documentStaffId = null
+      }
+    }
+
+    // 指定がない場合は document_staff から「管理者」のIDを取得
+    if (!documentStaffId) {
+      const { data: adminStaff } = await supabase
+        .from("document_staff")
+        .select("id")
+        .eq("name", "管理者")
+        .maybeSingle()
+
+      if (adminStaff?.id && typeof adminStaff.id === "string") {
+        documentStaffId = adminStaff.id
+        console.log(`[売上登録] 管理者IDをdocument_staffから取得: ${documentStaffId}`)
+      } else {
+        console.log(`[売上登録] 管理者が見つからないため document_staff_id をNULLにします`)
+      }
+    }
+
+    console.log(`[売上登録] document_staff_id: ${documentStaffId}`)
 
     // AI解析失敗時のフォールバック取引先名（ファイル名から拡張子を除いた部分）
     const vendorForRecord = finalVendorName || fileNameWithoutExt(filename) || "不明"
@@ -355,6 +394,8 @@ export async function POST(request: NextRequest) {
     // --- DB登録（種別="売上記録"固定） ---
     // AI解析が失敗していてもDropbox保存は完了している。fallback値で必ずDB登録する
     const safeAmount = typeof finalAmount === "number" && !isNaN(finalAmount) ? finalAmount : 0
+    // documents.registrant_id は registrants テーブル参照のため、document_staffのIDは使えない
+    // → document_staff_id カラムへ入れる。registrant_id は省略（NULL）
     const insertPayload = {
       type: "売上記録",
       vendor_name: vendorForRecord,
@@ -369,7 +410,7 @@ export async function POST(request: NextRequest) {
       tax_category: ocrResult.tax_category || "未判定",
       account_title: ocrResult.account_title || "",
       file_hash: fileHash,
-      registrant_id: registrantId,
+      document_staff_id: documentStaffId,
       user_id: user.id,
     }
 
