@@ -67,15 +67,15 @@ function guessMimeTypeFromFileName(fileName: string): string | null {
   }
 }
 
-/** ファイル名で安全に使える形に取引先名をサニタイズする */
+/** ファイル名で安全に使える形に取引先名をサニタイズする（最大30文字、「不明」は使わない） */
 function sanitizeVendorName(vendorName: string | null | undefined): string {
-  let v = (vendorName || "不明").replace(/[/\\:*?"<>|]/g, "_").trim()
-  if (v.length > 20) v = v.substring(0, 20)
-  if (!v) v = "不明"
+  if (!vendorName) return ""
+  let v = vendorName.replace(/[/\\:*?"<>|]/g, "_").trim()
+  if (v.length > 30) v = v.substring(0, 30)
   return v
 }
 
-/** ファイル名から拡張子を除いた部分を取り出す（取引先のフォールバック用） */
+/** ファイル名から拡張子を除いた部分を取り出す */
 function fileNameWithoutExt(fileName: string): string {
   const dotIndex = fileName.lastIndexOf(".")
   const base = dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName
@@ -83,15 +83,62 @@ function fileNameWithoutExt(fileName: string): string {
 }
 
 /**
+ * 元ファイル名から取引先名を推測抽出する
+ *   - アンダースコア・ハイフン・スペース・括弧などで分割
+ *   - 数字のみのパートはスキップし、最初の意味ある部分（2文字以上、文字を含む）を採用
+ *   - 抽出できない場合はファイル名（拡張子除外）を最大30文字で返す
+ *   - 「不明」のような汎用フォールバックは使わない
+ *
+ * 例:
+ *   "MP20260316-992-MC000649642-01.pdf" → "MP20260316"
+ *   "TEP(143000336)_南草津皮フ科_御中_精算情報_20260228.pdf" → "TEP"
+ *   "payment_notification-156427442_2026-03-16_0100.pdf" → "payment"
+ */
+function extractVendorFromFileName(fileName: string): string {
+  const base = fileNameWithoutExt(fileName)
+  if (!base) return ""
+
+  // 区切り文字: アンダースコア・ハイフン・スペース・各種括弧で分割
+  const parts = base
+    .split(/[_\-\s()（）\[\]【】]+/u)
+    .map((p) => p.trim())
+    .filter(Boolean)
+
+  // 「意味ある」パート: 2文字以上で、純粋な数字でない（英字や日本語などを含む）
+  const meaningful = parts.find((p) => p.length >= 2 && !/^\d+$/.test(p))
+  if (meaningful) {
+    return sanitizeVendorName(meaningful)
+  }
+
+  // 全パートが数字のみだった場合は、最初のパート or ファイル名全体を最大30文字で返す
+  if (parts.length > 0) {
+    return sanitizeVendorName(parts[0])
+  }
+  return sanitizeVendorName(base)
+}
+
+/**
  * 売上記録用のDropboxパスを生成する
  *   /経理書類/売上/{YYYY年MM月}/{取引先}_売上記録_{YYYYMMDD}_{6桁}.{ext}
+ *
+ * 取引先名のフォールバック順:
+ *   1. 引数 vendorName
+ *   2. 元ファイル名から推測抽出（アンダースコア・ハイフン区切りの最初の意味ある部分）
+ *   3. ファイル名全体（拡張子除外、最大30文字）
+ *   ※「不明」は使わない
  */
 function buildSalesDropboxPath(
   vendorName: string | null | undefined,
   date: Date,
   originalFileName: string
 ): string {
-  const vendor = sanitizeVendorName(vendorName)
+  // 取引先名のフォールバック解決
+  let vendor = sanitizeVendorName(vendorName)
+  if (!vendor) vendor = extractVendorFromFileName(originalFileName)
+  if (!vendor) vendor = sanitizeVendorName(fileNameWithoutExt(originalFileName))
+  // それでも空ならファイル名のbasename由来のラベル（拡張子なしでも空の極端なケース）
+  if (!vendor) vendor = "売上書類"
+
   const y = date.getFullYear()
   const m = String(date.getMonth() + 1).padStart(2, "0")
   const d = String(date.getDate()).padStart(2, "0")
@@ -356,8 +403,15 @@ export async function POST(request: NextRequest) {
 
     console.log(`[売上登録] document_staff_id: ${documentStaffId}`)
 
-    // AI解析失敗時のフォールバック取引先名（ファイル名から拡張子を除いた部分）
-    const vendorForRecord = finalVendorName || fileNameWithoutExt(filename) || "不明"
+    // 取引先名のフォールバック順:
+    //   1. ユーザー編集 or AI解析結果
+    //   2. ファイル名から意味あるパートを抽出
+    //   3. ファイル名全体（拡張子除外、最大30文字）
+    //   ※「不明」は使わない
+    let vendorForRecord = sanitizeVendorName(finalVendorName)
+    if (!vendorForRecord) vendorForRecord = extractVendorFromFileName(filename)
+    if (!vendorForRecord) vendorForRecord = sanitizeVendorName(fileNameWithoutExt(filename))
+    if (!vendorForRecord) vendorForRecord = "売上書類"
 
     // --- ファイルハッシュ ---
     const fileBuffer = Buffer.from(base64Data, "base64")
