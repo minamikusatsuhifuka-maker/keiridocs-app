@@ -18,6 +18,9 @@ const SUPPORTED_MIME_TYPES = [
   "application/pdf",
 ] as const
 
+/** Vercel Functionタイムアウト対策: 売上登録は最大300秒まで許容 */
+export const maxDuration = 300
+
 /** ファイル名から拡張子を推定したMIMEタイプを返す */
 function guessMimeTypeFromFileName(fileName: string): string | null {
   const ext = fileName.split(".").pop()?.toLowerCase()
@@ -46,6 +49,13 @@ function sanitizeVendorName(vendorName: string | null | undefined): string {
   return v
 }
 
+/** ファイル名から拡張子を除いた部分を取り出す（取引先のフォールバック用） */
+function fileNameWithoutExt(fileName: string): string {
+  const dotIndex = fileName.lastIndexOf(".")
+  const base = dotIndex > 0 ? fileName.substring(0, dotIndex) : fileName
+  return base.trim()
+}
+
 /**
  * 売上記録用のDropboxパスを生成する
  *   /経理書類/売上/{YYYY年MM月}/{取引先}_売上記録_{YYYYMMDD}_{6桁}.{ext}
@@ -69,10 +79,57 @@ function buildSalesDropboxPath(
   return `/経理書類/売上/${yearMonthFolder}/${fileName}`
 }
 
+/** AI解析失敗時のフォールバック結果 */
+const EMPTY_OCR_RESULT: OcrResult = {
+  vendor_name: "",
+  amount: null,
+  issue_date: null,
+  due_date: null,
+  description: null,
+  type: "売上記録",
+  confidence: 0,
+  tax_category: null,
+  account_title: null,
+  items: [],
+}
+
+/** 渡された任意のオブジェクトを安全にOcrResult形に整形する */
+function coerceOcrResult(input: unknown): OcrResult {
+  if (!input || typeof input !== "object") return EMPTY_OCR_RESULT
+  const o = input as Record<string, unknown>
+  const items = Array.isArray(o.items)
+    ? o.items.map((item) => {
+        const it = (item ?? {}) as Record<string, unknown>
+        return {
+          item_name: typeof it.item_name === "string" ? it.item_name : "",
+          quantity: typeof it.quantity === "number" ? it.quantity : 1,
+          unit_price: typeof it.unit_price === "number" ? it.unit_price : 0,
+          amount: typeof it.amount === "number" ? it.amount : 0,
+          category: typeof it.category === "string" ? it.category : "",
+          tax_rate: typeof it.tax_rate === "string" ? it.tax_rate : "",
+        }
+      })
+    : []
+  return {
+    vendor_name: typeof o.vendor_name === "string" ? o.vendor_name : "",
+    amount: typeof o.amount === "number" ? o.amount : null,
+    issue_date: typeof o.issue_date === "string" ? o.issue_date : null,
+    due_date: typeof o.due_date === "string" ? o.due_date : null,
+    description: typeof o.description === "string" ? o.description : null,
+    type: typeof o.type === "string" ? o.type : "売上記録",
+    confidence: typeof o.confidence === "number" ? o.confidence : 0,
+    tax_category: typeof o.tax_category === "string" ? o.tax_category : null,
+    account_title: typeof o.account_title === "string" ? o.account_title : null,
+    items,
+  }
+}
+
 /**
  * 売上登録 API
- * - GET: ファイルを受け取りGemini AIで売上情報を解析（プレビュー用）
- * - POST: ファイルを受け取り、AI解析→Dropbox保存→DB登録（種別="売上記録"）まで一気通貫で行う
+ * - mode="analyze": Gemini AIで売上情報を解析（プレビュー用）
+ * - mode="register": Dropbox保存→DB登録（種別="売上記録"）
+ *   - フロントから ocr_result が渡されればそれを使い、AI再解析はスキップ（Gemini RPM節約）
+ *   - 渡されない場合のみAI解析を実行。AI解析が失敗してもDropbox/DB登録は続行する
  */
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
@@ -87,14 +144,13 @@ export async function POST(request: NextRequest) {
       file: unknown
       filename: unknown
       contentType: unknown
-      // プレビュー時にユーザーが編集した値（指定があれば優先）
       vendor_name?: unknown
       amount?: unknown
       issue_date?: unknown
       description?: unknown
-      // モード: "analyze"=AI解析のみ / "register"=登録（デフォルト）
       mode?: unknown
       registrant_id?: unknown
+      ocr_result?: unknown
     }
 
     const { file, filename, contentType } = body
@@ -131,37 +187,70 @@ export async function POST(request: NextRequest) {
     // サイズチェック（10MB上限）
     const sizeInBytes = (base64Data.length * 3) / 4
     if (sizeInBytes > 10 * 1024 * 1024) {
+      console.warn(`[売上登録] サイズ超過: ${filename} = ${(sizeInBytes / 1024 / 1024).toFixed(1)}MB`)
       return NextResponse.json(
-        { error: "ファイルサイズが10MBを超えています" },
+        { error: "ファイルサイズが10MBを超えています。PDFは圧縮するかページを分割してください" },
         { status: 400 }
       )
     }
 
-    // --- AI解析 ---
-    // settingsからGeminiモデル設定を取得
-    const { data: modelSetting } = await supabase
-      .from("settings")
-      .select("value")
-      .eq("user_id", user.id)
-      .eq("key", "gemini_model")
-      .maybeSingle()
+    console.log(`[売上登録] mode=${mode} filename=${filename} mimeType=${mimeType} size=${(sizeInBytes / 1024).toFixed(1)}KB`)
 
-    const modelId = (typeof modelSetting?.value === "string" ? modelSetting.value : null) || DEFAULT_GEMINI_MODEL
+    // --- AI解析（必要な場合のみ実行） ---
+    let ocrResult: OcrResult = EMPTY_OCR_RESULT
+    let aiAnalysisFailed = false
+    let aiErrorMessage: string | null = null
 
-    // 売上記録向けに「売上記録/領収書/請求書」を候補として渡す
-    const documentTypes = ["売上記録", "領収書", "請求書"]
-
-    const ocrResult: OcrResult & { model_used?: string } = await analyzeDocument(
-      base64Data,
-      mimeType,
-      { modelId, documentTypes }
+    // フロントから事前解析済みのOCR結果が渡されていればそれを使う（registerモード時の再解析を回避）
+    const providedOcr = mode === "register" ? coerceOcrResult(body.ocr_result) : null
+    const hasProvidedOcr = providedOcr !== null && (
+      providedOcr.vendor_name ||
+      providedOcr.amount !== null ||
+      providedOcr.issue_date ||
+      providedOcr.description ||
+      providedOcr.items.length > 0
     )
+
+    if (hasProvidedOcr && providedOcr) {
+      ocrResult = providedOcr
+      console.log(`[売上登録] フロント提供のOCR結果を使用: ${filename}`)
+    } else {
+      // settingsからGeminiモデル設定を取得
+      const { data: modelSetting } = await supabase
+        .from("settings")
+        .select("value")
+        .eq("user_id", user.id)
+        .eq("key", "gemini_model")
+        .maybeSingle()
+
+      const modelId = (typeof modelSetting?.value === "string" ? modelSetting.value : null) || DEFAULT_GEMINI_MODEL
+      const documentTypes = ["売上記録", "領収書", "請求書"]
+
+      try {
+        const result = await analyzeDocument(base64Data, mimeType, { modelId, documentTypes })
+        ocrResult = result
+        if (result.confidence === 0 && !result.vendor_name && result.amount === null) {
+          // FALLBACK_RESULT が返された場合は実質失敗
+          aiAnalysisFailed = true
+          aiErrorMessage = "AI解析の結果が空でした"
+          console.warn(`[売上登録] AI解析結果が空: ${filename}`)
+        }
+      } catch (aiError) {
+        // analyzeDocumentは内部でtry-catchしているので通常ここには来ないが、保険として
+        aiAnalysisFailed = true
+        aiErrorMessage = aiError instanceof Error ? aiError.message : String(aiError)
+        ocrResult = EMPTY_OCR_RESULT
+        console.error(`[売上登録] AI解析で例外: ${filename}`, aiError)
+      }
+    }
 
     // モードが解析のみなら結果を返して終了
     if (mode === "analyze") {
       return NextResponse.json({
         data: ocrResult,
         filename,
+        ai_failed: aiAnalysisFailed,
+        ai_error: aiErrorMessage,
       })
     }
 
@@ -184,6 +273,9 @@ export async function POST(request: NextRequest) {
 
     const registrantId = typeof body.registrant_id === "string" ? body.registrant_id : null
 
+    // AI解析失敗時のフォールバック取引先名（ファイル名から拡張子を除いた部分）
+    const vendorForRecord = finalVendorName || fileNameWithoutExt(filename) || "不明"
+
     // --- ファイルハッシュ ---
     const fileBuffer = Buffer.from(base64Data, "base64")
     if (fileBuffer.length === 0) {
@@ -196,47 +288,70 @@ export async function POST(request: NextRequest) {
 
     // --- Dropbox保存 ---
     const dateObj = finalIssueDate ? new Date(finalIssueDate) : new Date()
-    // 不正な日付の場合は今日を使う
     const safeDate = isNaN(dateObj.getTime()) ? new Date() : dateObj
 
-    const dropboxPath = buildSalesDropboxPath(finalVendorName, safeDate, filename)
+    const dropboxPath = buildSalesDropboxPath(vendorForRecord, safeDate, filename)
 
-    // /経理書類/売上/{YYYY年MM月}/ フォルダを事前作成
-    const folderPath = dropboxPath.substring(0, dropboxPath.lastIndexOf("/"))
-    await ensureDropboxFolderExists(folderPath)
-
-    const resultPath = await uploadFile(dropboxPath, fileBuffer)
+    let resultPath: string
+    try {
+      const folderPath = dropboxPath.substring(0, dropboxPath.lastIndexOf("/"))
+      await ensureDropboxFolderExists(folderPath)
+      resultPath = await uploadFile(dropboxPath, fileBuffer)
+      console.log(`[売上登録] Dropbox保存成功: ${resultPath}`)
+    } catch (dropboxError) {
+      console.error(`[売上登録] Dropbox保存失敗: ${filename}`, dropboxError)
+      return NextResponse.json(
+        {
+          error: `Dropbox保存に失敗しました: ${dropboxError instanceof Error ? dropboxError.message : String(dropboxError)}`,
+        },
+        { status: 500 }
+      )
+    }
 
     // --- DB登録（種別="売上記録"固定） ---
+    const insertPayload = {
+      type: "売上記録",
+      vendor_name: vendorForRecord,
+      amount: typeof finalAmount === "number" && !isNaN(finalAmount) ? finalAmount : null,
+      issue_date: finalIssueDate || null,
+      due_date: null,
+      description: finalDescription || null,
+      input_method: "upload",
+      status: "未処理",
+      dropbox_path: resultPath,
+      ocr_raw: ocrResult as unknown as import("@/types/database").Json,
+      tax_category: ocrResult.tax_category || "未判定",
+      account_title: ocrResult.account_title || "",
+      file_hash: fileHash,
+      registrant_id: registrantId,
+      user_id: user.id,
+    }
+
     const { data: docData, error: docError } = await supabase
       .from("documents")
-      .insert({
-        type: "売上記録",
-        vendor_name: finalVendorName || "不明",
-        amount: typeof finalAmount === "number" && !isNaN(finalAmount) ? finalAmount : null,
-        issue_date: finalIssueDate || null,
-        due_date: null,
-        description: finalDescription || null,
-        input_method: "upload",
-        status: "未処理",
-        dropbox_path: resultPath,
-        ocr_raw: ocrResult as unknown as import("@/types/database").Json,
-        tax_category: ocrResult.tax_category || "未判定",
-        account_title: ocrResult.account_title || "",
-        file_hash: fileHash,
-        registrant_id: registrantId,
-        user_id: user.id,
-      })
+      .insert(insertPayload)
       .select()
       .single()
 
     if (docError) {
-      console.error("売上登録 DB挿入エラー:", docError)
+      console.error(`[売上登録] DB挿入エラー: ${filename}`, {
+        message: docError.message,
+        code: docError.code,
+        details: docError.details,
+        hint: docError.hint,
+        payload_keys: Object.keys(insertPayload),
+      })
       return NextResponse.json(
-        { error: "売上の登録に失敗しました" },
+        {
+          error: `DB登録に失敗しました: ${docError.message || "不明なエラー"}`,
+          details: docError.details,
+          dropbox_path: resultPath,
+        },
         { status: 500 }
       )
     }
+
+    console.log(`[売上登録] DB登録成功: ${filename} → id=${(docData as DocumentRow | null)?.id}`)
 
     // --- 明細行を保存（OCR結果のitemsがあれば） ---
     const docId = (docData as DocumentRow | null)?.id
@@ -258,8 +373,8 @@ export async function POST(request: NextRequest) {
         .insert(itemRows)
 
       if (itemError) {
-        console.error("売上登録 明細行保存エラー:", itemError)
-        // 明細失敗は無視
+        console.warn(`[売上登録] 明細行保存エラー: ${filename}`, itemError)
+        // 明細失敗は無視（書類本体は登録済み）
       }
     }
 
@@ -273,9 +388,11 @@ export async function POST(request: NextRequest) {
       dropbox_path: resultPath,
       year_month: yearMonthLabel,
       ocr_result: ocrResult,
+      ai_failed: aiAnalysisFailed,
+      ai_error: aiErrorMessage,
     })
   } catch (error) {
-    console.error("売上登録エラー:", error)
+    console.error("[売上登録] 想定外エラー:", error)
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : "売上の登録に失敗しました",

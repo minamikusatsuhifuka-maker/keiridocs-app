@@ -162,9 +162,13 @@ export function SalesRegisterModal({
     }))
     setItems(initial)
 
-    // AI解析を順次実行
+    // AI解析を順次実行（Geminiレート制限対策で1.2秒間隔を空ける）
     setIsAnalyzingAll(true)
     for (let i = 0; i < accepted.length; i++) {
+      // 2件目以降は前回呼び出しから一定間隔を空ける
+      if (i > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 1200))
+      }
       const result = await analyzeOne(accepted[i])
       setItems((prev) => {
         const next = [...prev]
@@ -233,6 +237,8 @@ export function SalesRegisterModal({
             issue_date: item.issue_date || null,
             description: item.description,
             registrant_id: registrantId,
+            // 事前解析済みのOCR結果を送ってサーバー側での再解析を回避（Gemini RPM節約）
+            ocr_result: item.ocr,
           }),
         })
 

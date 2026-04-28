@@ -162,24 +162,41 @@ export async function analyzeDocument(
 - スタッフ関連（食事補助等） → 福利厚生費
 - その他 → 雑費`
 
-  try {
-    const result = await model.generateContent([
-      prompt,
-      {
-        inlineData: {
-          data: base64Data,
-          mimeType,
+  // 429（レート制限）対策: 最大2回まで指数バックオフでリトライ
+  const maxRetries = 2
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await model.generateContent([
+        prompt,
+        {
+          inlineData: {
+            data: base64Data,
+            mimeType,
+          },
         },
-      },
-    ])
+      ])
 
-    const responseText = result.response.text()
-    const parsed = parseOcrResponse(responseText)
-    return { ...parsed, model_used: modelId }
-  } catch (error) {
-    console.error("Gemini API エラー:", error)
-    return { ...FALLBACK_RESULT, model_used: modelId }
+      const responseText = result.response.text()
+      const parsed = parseOcrResponse(responseText)
+      return { ...parsed, model_used: modelId }
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error)
+      const is429 = errMsg.includes("429") || errMsg.toLowerCase().includes("too many requests") || errMsg.toLowerCase().includes("resource exhausted")
+
+      // 429エラーで、リトライ余地があれば指数バックオフ（5秒・10秒）
+      if (is429 && attempt < maxRetries) {
+        const waitMs = 5000 * Math.pow(2, attempt)
+        console.warn(`Gemini API 429エラー、${waitMs}ms後にリトライ (${attempt + 1}/${maxRetries})`)
+        await new Promise((resolve) => setTimeout(resolve, waitMs))
+        continue
+      }
+
+      console.error("Gemini API エラー:", error)
+      return { ...FALLBACK_RESULT, model_used: modelId }
+    }
   }
+
+  return { ...FALLBACK_RESULT, model_used: modelId }
 }
 
 /** 自動仕分けルールの型 */
