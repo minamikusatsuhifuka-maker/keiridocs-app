@@ -18,8 +18,34 @@ const SUPPORTED_MIME_TYPES = [
   "application/pdf",
 ] as const
 
-/** Vercel Functionタイムアウト: 売上登録は60秒まで（仕様要求） */
-export const maxDuration = 60
+/** Vercel Functionタイムアウト: 売上登録は最大300秒（リトライバックオフを許容するため） */
+export const maxDuration = 300
+
+/** ファイルごとのAI解析タイムアウト（ミリ秒）。30秒で打ち切ってフォールバック値を使う */
+const AI_ANALYSIS_TIMEOUT_MS = 30000
+
+/** ファイルサイズ上限: 20MB */
+const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024
+
+/**
+ * Promiseを指定ミリ秒でタイムアウトさせるヘルパー
+ * タイムアウト時は fallback を返す（reject しない）
+ */
+async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  const timeoutPromise = new Promise<T>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[売上登録] ${label} タイムアウト (${ms}ms)`)
+      resolve(fallback)
+    }, ms)
+  })
+  try {
+    const result = await Promise.race([promise, timeoutPromise])
+    return result
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
 
 /** ファイル名から拡張子を推定したMIMEタイプを返す */
 function guessMimeTypeFromFileName(fileName: string): string | null {
@@ -184,15 +210,15 @@ export async function POST(request: NextRequest) {
       base64Data = base64Data.substring(commaIndex + 1)
     }
 
-    // サイズチェック（10MB超は処理スキップ。エラーではなくskipped扱いで返す）
+    // サイズチェック（20MB超は処理スキップ。エラーではなくskipped扱いで返す）
     const sizeInBytes = (base64Data.length * 3) / 4
-    if (sizeInBytes > 10 * 1024 * 1024) {
+    if (sizeInBytes > MAX_FILE_SIZE_BYTES) {
       const sizeMB = (sizeInBytes / 1024 / 1024).toFixed(1)
       console.warn(`[売上登録] サイズ超過のためスキップ: ${filename} = ${sizeMB}MB`)
       return NextResponse.json({
         skipped: true,
         filename,
-        reason: `ファイルサイズが10MBを超えています（${sizeMB}MB）。PDFは圧縮またはページ分割してください`,
+        reason: `ファイルサイズが20MBを超えています（${sizeMB}MB）。PDFは圧縮またはページ分割してください`,
       })
     }
 
@@ -229,12 +255,18 @@ export async function POST(request: NextRequest) {
       const documentTypes = ["売上記録", "領収書", "請求書"]
 
       try {
-        const result = await analyzeDocument(base64Data, mimeType, { modelId, documentTypes })
+        // ファイルごとのAI解析タイムアウト30秒（リトライ含む）
+        const result = await withTimeout(
+          analyzeDocument(base64Data, mimeType, { modelId, documentTypes }),
+          AI_ANALYSIS_TIMEOUT_MS,
+          { ...EMPTY_OCR_RESULT, model_used: modelId } as OcrResult & { model_used?: string },
+          `AI解析(${filename})`
+        )
         ocrResult = result
         if (result.confidence === 0 && !result.vendor_name && result.amount === null) {
           // FALLBACK_RESULT が返された場合は実質失敗
           aiAnalysisFailed = true
-          aiErrorMessage = "AI解析の結果が空でした"
+          aiErrorMessage = "AI解析の結果が空でした（タイムアウトまたはレート制限）"
           console.warn(`[売上登録] AI解析結果が空: ${filename}`)
         }
       } catch (aiError) {

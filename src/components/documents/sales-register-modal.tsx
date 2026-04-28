@@ -84,6 +84,9 @@ export function SalesRegisterModal({
   const [files, setFiles] = useState<UploadedFile[]>([])
   const [items, setItems] = useState<SalesPreviewItem[]>([])
   const [isAnalyzingAll, setIsAnalyzingAll] = useState(false)
+  const [analyzeProgress, setAnalyzeProgress] = useState(0)
+  const [analyzeTotal, setAnalyzeTotal] = useState(0)
+  const [analyzeMessage, setAnalyzeMessage] = useState("")
   const [isRegistering, setIsRegistering] = useState(false)
   const [registerProgress, setRegisterProgress] = useState(0)
   const [registerTotal, setRegisterTotal] = useState(0)
@@ -162,13 +165,33 @@ export function SalesRegisterModal({
     }))
     setItems(initial)
 
-    // AI解析を順次実行（Geminiレート制限対策で1.2秒間隔を空ける）
+    // AI解析: 2秒間隔で順次実行。10件以上の場合は5件ずつバッチ処理しバッチ間で3秒待機
     setIsAnalyzingAll(true)
+    setAnalyzeTotal(accepted.length)
+    setAnalyzeProgress(0)
+    setAnalyzeMessage("")
+
+    const BATCH_SIZE = 5
+    const BATCH_INTERVAL_MS = 3000
+    const PER_FILE_INTERVAL_MS = 2000
+    const useBatch = accepted.length >= 10
+
     for (let i = 0; i < accepted.length; i++) {
-      // 2件目以降は前回呼び出しから一定間隔を空ける
-      if (i > 0) {
-        await new Promise((resolve) => setTimeout(resolve, 1200))
+      // バッチ境界（5件ごと）に追加で3秒待機
+      if (useBatch && i > 0 && i % BATCH_SIZE === 0) {
+        const batchNum = Math.floor(i / BATCH_SIZE) + 1
+        const totalBatches = Math.ceil(accepted.length / BATCH_SIZE)
+        setAnalyzeMessage(`バッチ${batchNum}/${totalBatches}の処理を準備中（3秒待機）...`)
+        await new Promise((resolve) => setTimeout(resolve, BATCH_INTERVAL_MS))
+        setAnalyzeMessage("")
       }
+
+      // 2件目以降は2秒間隔を空ける
+      if (i > 0) {
+        await new Promise((resolve) => setTimeout(resolve, PER_FILE_INTERVAL_MS))
+      }
+
+      setAnalyzeProgress(i + 1)
       const result = await analyzeOne(accepted[i])
       setItems((prev) => {
         const next = [...prev]
@@ -179,6 +202,7 @@ export function SalesRegisterModal({
       })
     }
     setIsAnalyzingAll(false)
+    setAnalyzeMessage("")
   }, [analyzeOne])
 
   /** プレビュー項目のフィールドを更新 */
@@ -313,6 +337,9 @@ export function SalesRegisterModal({
     setFiles([])
     setItems([])
     setIsAnalyzingAll(false)
+    setAnalyzeProgress(0)
+    setAnalyzeTotal(0)
+    setAnalyzeMessage("")
     setIsRegistering(false)
     setRegisterProgress(0)
     setRegisterTotal(0)
@@ -429,14 +456,24 @@ export function SalesRegisterModal({
           <div className="space-y-4">
             {/* ファイルアップロード（プレビュー前のみ表示） */}
             {items.length === 0 && (
-              <FileDropzone files={files} onFilesChange={handleFilesChange} />
+              <FileDropzone files={files} onFilesChange={handleFilesChange} maxSizeMB={20} />
             )}
 
-            {/* AI解析中 / 登録中の進捗 */}
+            {/* AI解析中の進捗 */}
             {isAnalyzingAll && (
-              <div className="flex items-center gap-2 rounded-md border border-[#E0CEB8] bg-[#FAF7F0] px-3 py-2 text-sm dark:border-[#A0703A]/30 dark:bg-[#A0703A]/10">
-                <Loader2 className="size-4 animate-spin text-[#A0703A]" />
-                <span>AI解析中...</span>
+              <div className="space-y-2 rounded-md border border-[#E0CEB8] bg-[#FAF7F0] px-3 py-2 dark:border-[#A0703A]/30 dark:bg-[#A0703A]/10">
+                <div className="flex items-center gap-2 text-sm">
+                  <Loader2 className="size-4 animate-spin text-[#A0703A]" />
+                  <span>
+                    AI解析中... {analyzeProgress}/{analyzeTotal}件
+                  </span>
+                </div>
+                {analyzeTotal > 0 && (
+                  <Progress value={(analyzeProgress / analyzeTotal) * 100} className="h-2" />
+                )}
+                {analyzeMessage && (
+                  <p className="text-xs text-muted-foreground">{analyzeMessage}</p>
+                )}
               </div>
             )}
 

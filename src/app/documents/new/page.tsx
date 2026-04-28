@@ -339,7 +339,22 @@ export default function NewDocumentPage() {
 
     const results: AutoResult[] = []
 
+    // Geminiレート制限対策: 順次処理。10件以上は5件バッチで3秒待機、それ以外は2秒間隔
+    const BATCH_SIZE = 5
+    const BATCH_INTERVAL_MS = 3000
+    const PER_FILE_INTERVAL_MS = 2000
+    const useBatch = files.length >= 10
+
     for (let i = 0; i < files.length; i++) {
+      // バッチ境界（5件ごと）に追加で3秒待機
+      if (useBatch && i > 0 && i % BATCH_SIZE === 0) {
+        await new Promise((resolve) => setTimeout(resolve, BATCH_INTERVAL_MS))
+      }
+      // 2件目以降は2秒間隔を空ける
+      if (i > 0) {
+        await new Promise((resolve) => setTimeout(resolve, PER_FILE_INTERVAL_MS))
+      }
+
       const file = files[i]
       setAutoProgress(i + 1)
       setAutoCurrentFile(file.name)

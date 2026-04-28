@@ -15,6 +15,8 @@ interface UploadedFile {
 interface FileDropzoneProps {
   onFilesChange: (files: UploadedFile[]) => void
   files: UploadedFile[]
+  /** ファイルサイズ上限（MB）。デフォルト10MB */
+  maxSizeMB?: number
 }
 
 const ACCEPTED_TYPES = [
@@ -33,7 +35,7 @@ const ACCEPTED_TYPES = [
 // accept属性に指定する拡張子リスト
 const ACCEPT_EXTENSIONS = ".jpg,.jpeg,.png,.heic,.webp,.pdf,.docx,.xlsx,.xls,.csv"
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
+const DEFAULT_MAX_FILE_SIZE_MB = 10
 
 /** 拡張子からMIMEタイプを補正する（ブラウザがMIMEを正しく判定しない場合用） */
 function normalizeMimeType(file: File): string {
@@ -93,10 +95,12 @@ function FileIcon({ mimeType, name }: { mimeType: string; name: string }) {
 }
 
 // ファイルドロップゾーン
-export function FileDropzone({ onFilesChange, files }: FileDropzoneProps) {
+export function FileDropzone({ onFilesChange, files, maxSizeMB }: FileDropzoneProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [isDragOver, setIsDragOver] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const limitMB = maxSizeMB ?? DEFAULT_MAX_FILE_SIZE_MB
+  const limitBytes = limitMB * 1024 * 1024
 
   // ファイルをBase64に変換
   const processFile = useCallback(
@@ -107,8 +111,8 @@ export function FileDropzone({ onFilesChange, files }: FileDropzoneProps) {
           reject(new Error(`非対応の形式です: ${file.name}`))
           return
         }
-        if (file.size > MAX_FILE_SIZE) {
-          reject(new Error(`ファイルサイズが10MBを超えています: ${file.name}`))
+        if (file.size > limitBytes) {
+          reject(new Error(`ファイルサイズが${limitMB}MBを超えています: ${file.name}`))
           return
         }
 
@@ -213,7 +217,7 @@ export function FileDropzone({ onFilesChange, files }: FileDropzoneProps) {
             ファイルをドラッグ&ドロップ
           </p>
           <p className="text-xs text-muted-foreground">
-            または クリックして選択（最大10MB）
+            または クリックして選択（最大{limitMB}MB）
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             JPG, PNG, HEIC, WebP, PDF, Word, Excel, CSV
