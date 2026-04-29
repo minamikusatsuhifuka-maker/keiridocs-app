@@ -66,6 +66,7 @@ export default function AccountantPage() {
   const [result, setResult] = useState<AccountantResponse["data"] | null>(null)
 
   // 月計表アップロード用 state
+  const [isDragOver, setIsDragOver] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadResult, setUploadResult] = useState<{
     yearMonthLabel: string
@@ -127,10 +128,14 @@ export default function AccountantPage() {
     setSelectedTypes([])
   }
 
-  // 月計表アップロード処理
-  async function handleMonthlyUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
+  // 月計表アップロード処理（ファイルオブジェクトを直接受け取る共通関数）
+  async function processMonthlyFile(file: File) {
     if (!file) return
+    const ext = file.name.split(".").pop()?.toLowerCase()
+    if (!["xlsx", "xls"].includes(ext ?? "")) {
+      toast.error("Excel(.xlsx / .xls)のみ対応しています")
+      return
+    }
 
     setIsUploading(true)
     setUploadResult(null)
@@ -178,8 +183,37 @@ export default function AccountantPage() {
       toast.error(error instanceof Error ? error.message : "アップロードに失敗しました")
     } finally {
       setIsUploading(false)
-      e.target.value = ""
     }
+  }
+
+  // クリック選択
+  async function handleMonthlyUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    await processMonthlyFile(file)
+    e.target.value = ""
+  }
+
+  // ドラッグ&ドロップ
+  function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(true)
+  }
+
+  function handleDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+  }
+
+  async function handleDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (!file) return
+    await processMonthlyFile(file)
   }
 
   // フォルダ作成実行
@@ -396,11 +430,32 @@ export default function AccountantPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <label className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-[#E0CEB8] bg-[#FAF7F0] px-6 py-8 transition hover:bg-[#F5EFE6]">
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={[
+              "flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed px-6 py-8 transition",
+              isDragOver
+                ? "border-[#A0703A] bg-[#F5EFE6] scale-[1.01]"
+                : "border-[#E0CEB8] bg-[#FAF7F0]",
+              isUploading ? "opacity-60 cursor-not-allowed" : "cursor-pointer hover:bg-[#F5EFE6]",
+            ].join(" ")}
+            onClick={() => {
+              if (!isUploading) document.getElementById("monthly-upload-input")?.click()
+            }}
+          >
             {isUploading ? (
               <>
                 <Loader2 className="size-8 animate-spin text-[#A0703A]" />
                 <span className="text-sm text-[#8B5E2F]">解析中...</span>
+              </>
+            ) : isDragOver ? (
+              <>
+                <Upload className="size-8 text-[#A0703A]" />
+                <span className="text-sm font-medium text-[#A0703A]">
+                  ここでドロップ！
+                </span>
               </>
             ) : (
               <>
@@ -412,13 +467,14 @@ export default function AccountantPage() {
               </>
             )}
             <input
+              id="monthly-upload-input"
               type="file"
               accept=".xlsx,.xls"
               className="hidden"
               disabled={isUploading}
               onChange={handleMonthlyUpload}
             />
-          </label>
+          </div>
 
           {/* アップロード結果 */}
           {uploadResult && (
