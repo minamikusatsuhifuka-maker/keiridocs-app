@@ -136,6 +136,11 @@ export default function AccountantPage() {
       toast.error("Excel(.xlsx / .xls)のみ対応しています")
       return
     }
+    // 50MB超はフロントで弾く
+    if (file.size > 50 * 1024 * 1024) {
+      toast.error("ファイルサイズが50MBを超えています")
+      return
+    }
 
     setIsUploading(true)
     setUploadResult(null)

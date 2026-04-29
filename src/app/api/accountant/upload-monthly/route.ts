@@ -6,6 +6,15 @@ import * as XLSX from "xlsx"
 
 export const maxDuration = 120
 
+// Next.js のリクエストボディサイズ制限を解除（デフォルト4MB → 無制限）
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: "50mb",
+    },
+  },
+}
+
 /** 抽出対象シート名（順番通りに処理） */
 const TARGET_SHEETS = ["Sheet1", "保険"] as const
 
