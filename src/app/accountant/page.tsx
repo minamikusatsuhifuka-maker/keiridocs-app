@@ -128,15 +128,14 @@ export default function AccountantPage() {
     setSelectedTypes([])
   }
 
-  // 月計表アップロード処理（ファイルオブジェクトを直接受け取る共通関数）
+  // 月計表アップロード処理（クライアント側でxlsx解析→CSV化してAPIに送信）
   async function processMonthlyFile(file: File) {
     if (!file) return
     const ext = file.name.split(".").pop()?.toLowerCase()
     if (!["xlsx", "xls"].includes(ext ?? "")) {
-      toast.error("Excel(.xlsx / .xls)のみ対応しています")
+      toast.error("Excel（.xlsx / .xls）のみ対応しています")
       return
     }
-    // 50MB超はフロントで弾く
     if (file.size > 50 * 1024 * 1024) {
       toast.error("ファイルサイズが50MBを超えています")
       return
@@ -146,17 +145,82 @@ export default function AccountantPage() {
     setUploadResult(null)
 
     try {
-      const reader = new FileReader()
-      const base64 = await new Promise<string>((resolve, reject) => {
-        reader.onload = () => resolve(reader.result as string)
-        reader.onerror = reject
-        reader.readAsDataURL(file)
-      })
+      // ① ブラウザ側で xlsx を ArrayBuffer として読み込む
+      const arrayBuffer = await file.arrayBuffer()
+      const XLSX = await import("xlsx")
+      const workbook = XLSX.read(arrayBuffer, { type: "array", cellDates: false })
 
+      // ② 年月をセルから検出
+      const TARGET_SHEETS = ["Sheet1", "保険"]
+      const firstSheet = workbook.SheetNames[0]
+      const ws0 = workbook.Sheets[firstSheet]
+      let year = new Date().getFullYear()
+      let month = new Date().getMonth() + 1
+
+      if (ws0) {
+        outer: for (let r = 0; r <= 9; r++) {
+          for (let c = 0; c <= 5; c++) {
+            const cell = ws0[XLSX.utils.encode_cell({ r, c })]
+            if (!cell) continue
+            const text = String(cell.w ?? cell.v ?? "")
+            const m = text.match(/(20\d{2})[年\/\-](\d{1,2})[月]?/)
+            if (m) {
+              const y = Number(m[1]); const mo = Number(m[2])
+              if (y >= 2020 && y <= 2100 && mo >= 1 && mo <= 12) {
+                year = y; month = mo; break outer
+              }
+            }
+            // Excel日付シリアル値
+            if (cell.t === "n" && typeof cell.v === "number" && cell.v > 40000) {
+              try {
+                const parsed = XLSX.SSF.parse_date_code(cell.v as number)
+                if (parsed && parsed.y >= 2020) { year = parsed.y; month = parsed.m; break outer }
+              } catch { /* ignore */ }
+            }
+          }
+        }
+      }
+
+      const monthStr = String(month).padStart(2, "0")
+      const yearMonthLabel = `${year}年${monthStr}月`
+
+      // ③ 各シートを1〜30行目のCSVに変換
+      const csvSheets: Array<{ sheet: string; csv: string }> = []
+      for (const sheetName of TARGET_SHEETS) {
+        const ws = workbook.Sheets[sheetName]
+        if (!ws) { csvSheets.push({ sheet: sheetName, csv: "" }); continue }
+
+        const ref = ws["!ref"]
+        if (!ref) { csvSheets.push({ sheet: sheetName, csv: "" }); continue }
+        const range = XLSX.utils.decode_range(ref)
+        const endRow = Math.min(range.e.r, 29) // 0-indexed 30行目
+
+        const rows: string[][] = []
+        for (let r = 0; r <= endRow; r++) {
+          const row: string[] = []
+          for (let c = range.s.c; c <= range.e.c; c++) {
+            const cell = ws[XLSX.utils.encode_cell({ r, c })]
+            const raw = cell ? String(cell.v ?? "") : ""
+            const escaped = raw.includes(",") || raw.includes('"') || raw.includes("\n")
+              ? `"${raw.replace(/"/g, '""')}"` : raw
+            row.push(escaped)
+          }
+          rows.push(row)
+        }
+        csvSheets.push({ sheet: sheetName, csv: rows.map(r => r.join(",")).join("\n") })
+      }
+
+      // ④ APIにCSV文字列のみ送信（Excelファイル本体は送らない）
       const res = await fetch("/api/accountant/upload-monthly", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ file: base64, filename: file.name }),
+        body: JSON.stringify({
+          year,
+          month,
+          yearMonthLabel,
+          csvSheets,
+          filename: file.name,
+        }),
       })
 
       const json = await res.json() as {
@@ -176,14 +240,14 @@ export default function AccountantPage() {
       if (json.error) throw new Error(json.error)
 
       setUploadResult({
-        yearMonthLabel: json.yearMonthLabel ?? "",
-        yearMonthSource: json.yearMonthSource ?? "",
+        yearMonthLabel: json.yearMonthLabel ?? yearMonthLabel,
+        yearMonthSource: json.yearMonthSource ?? "セル自動検出",
         taxFolderPath: json.taxFolderPath ?? "",
         results: json.results ?? [],
       })
 
       const savedCount = (json.results ?? []).filter((r) => r.status === "saved").length
-      toast.success(`✅ ${json.yearMonthLabel} の月計表CSV(${savedCount}件)を税理士フォルダに保存しました`)
+      toast.success(`✅ ${yearMonthLabel} の月計表CSV（${savedCount}件）を税理士フォルダに保存しました`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "アップロードに失敗しました")
     } finally {
