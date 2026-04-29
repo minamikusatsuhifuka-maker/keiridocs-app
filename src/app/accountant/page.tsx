@@ -7,7 +7,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Briefcase, CheckSquare, FolderOutput, Loader2, Square } from "lucide-react"
+import { Briefcase, CheckSquare, FileSpreadsheet, FolderOutput, Loader2, Square, Upload } from "lucide-react"
 import { toast } from "sonner"
 
 // デフォルトの対象書類種別
@@ -65,6 +65,21 @@ export default function AccountantPage() {
   const [progressMessage, setProgressMessage] = useState("")
   const [result, setResult] = useState<AccountantResponse["data"] | null>(null)
 
+  // 月計表アップロード用 state
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadResult, setUploadResult] = useState<{
+    yearMonthLabel: string
+    yearMonthSource: string
+    taxFolderPath: string
+    results: Array<{
+      sheet: string
+      csvFileName: string
+      rows: number
+      status: "saved" | "skipped" | "error"
+      message?: string
+    }>
+  } | null>(null)
+
   const monthOptions = generateMonthOptions()
 
   // 初期値: 前月
@@ -110,6 +125,61 @@ export default function AccountantPage() {
   // 全解除
   function deselectAll() {
     setSelectedTypes([])
+  }
+
+  // 月計表アップロード処理
+  async function handleMonthlyUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setIsUploading(true)
+    setUploadResult(null)
+
+    try {
+      const reader = new FileReader()
+      const base64 = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = reject
+        reader.readAsDataURL(file)
+      })
+
+      const res = await fetch("/api/accountant/upload-monthly", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file: base64, filename: file.name }),
+      })
+
+      const json = await res.json() as {
+        yearMonthLabel?: string
+        yearMonthSource?: string
+        taxFolderPath?: string
+        results?: Array<{
+          sheet: string
+          csvFileName: string
+          rows: number
+          status: "saved" | "skipped" | "error"
+          message?: string
+        }>
+        error?: string
+      }
+
+      if (json.error) throw new Error(json.error)
+
+      setUploadResult({
+        yearMonthLabel: json.yearMonthLabel ?? "",
+        yearMonthSource: json.yearMonthSource ?? "",
+        taxFolderPath: json.taxFolderPath ?? "",
+        results: json.results ?? [],
+      })
+
+      const savedCount = (json.results ?? []).filter((r) => r.status === "saved").length
+      toast.success(`✅ ${json.yearMonthLabel} の月計表CSV(${savedCount}件)を税理士フォルダに保存しました`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "アップロードに失敗しました")
+    } finally {
+      setIsUploading(false)
+      e.target.value = ""
+    }
   }
 
   // フォルダ作成実行
@@ -312,6 +382,80 @@ export default function AccountantPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* 月計表アップロードセクション */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <FileSpreadsheet className="size-5 text-primary" />
+            月計表アップロード
+          </CardTitle>
+          <CardDescription>
+            Excel(.xlsx / .xls)をアップロードすると、Sheet1・保険タブの1〜30行目を
+            CSVに変換して税理士提出フォルダに自動保存します。対象年月はセルから自動検出します。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <label className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-[#E0CEB8] bg-[#FAF7F0] px-6 py-8 transition hover:bg-[#F5EFE6]">
+            {isUploading ? (
+              <>
+                <Loader2 className="size-8 animate-spin text-[#A0703A]" />
+                <span className="text-sm text-[#8B5E2F]">解析中...</span>
+              </>
+            ) : (
+              <>
+                <Upload className="size-8 text-[#A0703A]" />
+                <span className="text-sm font-medium text-[#8B5E2F]">
+                  クリックまたはドロップしてアップロード
+                </span>
+                <span className="text-xs text-[#A0703A]/70">.xlsx / .xls のみ対応</span>
+              </>
+            )}
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              className="hidden"
+              disabled={isUploading}
+              onChange={handleMonthlyUpload}
+            />
+          </label>
+
+          {/* アップロード結果 */}
+          {uploadResult && (
+            <div className="rounded-lg border border-[#E0CEB8] bg-white/60 p-4 space-y-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-semibold text-[#8B5E2F]">
+                  📅 {uploadResult.yearMonthLabel} として処理
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  検出元: {uploadResult.yearMonthSource}
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                保存先: {uploadResult.taxFolderPath}
+              </p>
+              <div className="space-y-2">
+                {uploadResult.results.map((r) => (
+                  <div key={r.sheet} className="flex items-center justify-between text-sm rounded-md bg-[#FAF7F0] px-3 py-2">
+                    <span className="font-medium text-[#6B4226]">
+                      📄 {r.csvFileName || `月計表_${r.sheet}`}
+                    </span>
+                    {r.status === "saved" && (
+                      <span className="text-emerald-600 text-xs font-medium">✅ 保存完了({r.rows}行)</span>
+                    )}
+                    {r.status === "skipped" && (
+                      <span className="text-amber-600 text-xs">⚠ {r.message}</span>
+                    )}
+                    {r.status === "error" && (
+                      <span className="text-red-600 text-xs">❌ {r.message}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }
