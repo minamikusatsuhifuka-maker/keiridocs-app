@@ -381,6 +381,25 @@ export async function POST(request: NextRequest) {
     }
     const fileHash = createHash("sha256").update(fileBuffer).digest("hex")
 
+    // --- 重複チェック（同一ファイルハッシュがDBに存在する場合はスキップ） ---
+    const { data: existingDoc } = await supabase
+      .from("documents")
+      .select("id, dropbox_path, vendor_name, issue_date")
+      .eq("file_hash", fileHash)
+      .eq("type", "売上記録")
+      .maybeSingle()
+
+    if (existingDoc) {
+      console.log(`[売上登録] 重複検知のためスキップ: ${filename} → 既存id=${existingDoc.id}`)
+      return NextResponse.json({
+        skipped: true,
+        filename,
+        reason: `同じファイルがすでに登録済みです（取引先: ${existingDoc.vendor_name}、日付: ${existingDoc.issue_date ?? "不明"}）`,
+        existing_id: existingDoc.id,
+        dropbox_path: existingDoc.dropbox_path,
+      })
+    }
+
     // --- Dropbox保存 ---
     const dateObj = finalIssueDate ? new Date(finalIssueDate) : new Date()
     const safeDate = isNaN(dateObj.getTime()) ? new Date() : dateObj
