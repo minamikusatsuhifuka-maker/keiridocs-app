@@ -10,9 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
 import { Progress } from "@/components/ui/progress"
 import { FileDropzone } from "@/components/documents/file-dropzone"
 import {
@@ -21,10 +19,8 @@ import {
   CheckCircle2,
   AlertTriangle,
   XCircle,
-  Calendar,
-  Building2,
-  JapaneseYen,
-  FileText,
+  Clock,
+  Trash2,
 } from "lucide-react"
 import { toast } from "sonner"
 import type { OcrResult } from "@/lib/gemini"
@@ -66,6 +62,80 @@ interface SalesRegisterModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onRegistered?: () => void
+}
+
+/** ステータスバッジ（Dusk Goldテーマ） */
+function StatusBadge({ item }: { item: SalesPreviewItem }) {
+  // 解析中
+  if (item.isAnalyzing) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+        <Loader2 className="size-3 animate-spin" />
+        解析中
+      </span>
+    )
+  }
+  // 登録済み（成功）
+  if (item.status === "registered") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-[#A0703A]/15 px-2 py-0.5 text-xs font-medium text-[#A0703A]">
+        <CheckCircle2 className="size-3" />
+        登録済
+      </span>
+    )
+  }
+  // スキップ（10MB超など）
+  if (item.status === "skipped") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+        title={item.registerError ?? ""}
+      >
+        <AlertTriangle className="size-3" />
+        スキップ
+      </span>
+    )
+  }
+  // 登録エラー
+  if (item.status === "register_error") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400"
+        title={item.registerError ?? ""}
+      >
+        <XCircle className="size-3" />
+        エラー
+      </span>
+    )
+  }
+  // AI解析失敗（編集して登録可）
+  if (item.error) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+        title={item.error}
+      >
+        <AlertTriangle className="size-3" />
+        解析失敗
+      </span>
+    )
+  }
+  // 解析成功（preview状態）
+  if (item.ocr) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+        <CheckCircle2 className="size-3" />
+        成功
+      </span>
+    )
+  }
+  // 未解析（フォールバック）
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+      <Clock className="size-3" />
+      未解析
+    </span>
+  )
 }
 
 /**
@@ -361,7 +431,7 @@ export function SalesRegisterModal({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="flex max-h-[90vh] min-h-[80vh] w-[95vw] max-w-6xl flex-col overflow-hidden p-0">
+      <DialogContent className="flex max-h-[95vh] w-[95vw] max-w-7xl flex-col overflow-hidden p-0">
         <DialogHeader className="shrink-0 border-b px-6 py-4">
           <DialogTitle className="flex items-center gap-2">
             <TrendingUp className="size-5 text-[#B8956A]" />
@@ -456,187 +526,122 @@ export function SalesRegisterModal({
               <FileDropzone files={files} onFilesChange={handleFilesChange} maxSizeMB={20} />
             )}
 
-            {/* AI解析中の進捗 */}
-            {isAnalyzingAll && (
-              <div className="space-y-2 rounded-md border border-[#E0CEB8] bg-[#FAF7F0] px-3 py-2 dark:border-[#A0703A]/30 dark:bg-[#A0703A]/10">
-                <div className="flex items-center gap-2 text-sm">
-                  <Loader2 className="size-4 animate-spin text-[#A0703A]" />
-                  <span>
-                    AI解析中... {analyzeProgress}/{analyzeTotal}件
-                  </span>
-                </div>
-                {analyzeTotal > 0 && (
-                  <Progress value={(analyzeProgress / analyzeTotal) * 100} className="h-2" />
-                )}
-                {analyzeMessage && (
-                  <p className="text-xs text-muted-foreground">{analyzeMessage}</p>
+            {/* AI解析中・登録中の進捗（テーブル上部1行） */}
+            {(isAnalyzingAll || (isRegistering && registerTotal > 0)) && (
+              <div className="flex items-center gap-3 rounded-md border border-[#E0CEB8] bg-[#FAF7F0] px-3 py-2 text-sm dark:border-[#A0703A]/30 dark:bg-[#A0703A]/10">
+                <Loader2 className="size-4 shrink-0 animate-spin text-[#A0703A]" />
+                <span className="shrink-0 font-medium text-[#8B5E2F] dark:text-[#D4A860]">
+                  {isAnalyzingAll
+                    ? `解析中 ${analyzeProgress}/${analyzeTotal}件`
+                    : `登録中 ${registerProgress}/${registerTotal}件`}
+                </span>
+                <Progress
+                  value={
+                    isAnalyzingAll && analyzeTotal > 0
+                      ? (analyzeProgress / analyzeTotal) * 100
+                      : registerTotal > 0
+                        ? (registerProgress / registerTotal) * 100
+                        : 0
+                  }
+                  className="h-2 flex-1"
+                />
+                {isAnalyzingAll && analyzeMessage && (
+                  <span className="shrink-0 text-xs text-muted-foreground">{analyzeMessage}</span>
                 )}
               </div>
             )}
 
-            {isRegistering && registerTotal > 0 && (
-              <div className="space-y-2 rounded-md border border-[#E0CEB8] bg-[#FAF7F0] px-3 py-2 dark:border-[#A0703A]/30 dark:bg-[#A0703A]/10">
-                <div className="flex items-center gap-2 text-sm">
-                  <Loader2 className="size-4 animate-spin text-[#A0703A]" />
-                  <span>{registerProgress}/{registerTotal} 件登録中...</span>
-                </div>
-                <Progress value={(registerProgress / registerTotal) * 100} className="h-2" />
-              </div>
-            )}
-
-            {/* プレビュー一覧 */}
+            {/* プレビュー: テーブル形式で1ファイル=2行以内に表示 */}
             {items.length > 0 && (
-              <div className="space-y-3">
-                <p className="text-sm font-medium">
-                  AI解析結果（確認・編集して登録してください）
-                </p>
-                {items.map((item, idx) => (
-                  <div
-                    key={idx}
-                    className={`rounded-lg border p-3 ${
-                      item.status === "registered"
-                        ? "border-[#A0703A]/30 bg-[#FAF7F0] dark:border-[#A0703A]/30 dark:bg-[#A0703A]/10"
-                        : item.status === "skipped"
-                          ? "border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/20"
-                          : item.status === "register_error" || item.error
-                            ? "border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/20"
-                            : "border-border bg-card"
-                    }`}
-                  >
-                    <div className="flex items-start gap-3">
-                      {/* プレビュー画像/アイコン */}
-                      <div className="shrink-0">
-                        {item.file.preview ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={item.file.preview}
-                            alt={item.file.name}
-                            className="size-16 rounded border object-cover"
-                          />
-                        ) : (
-                          <div className="flex size-16 items-center justify-center rounded border bg-muted">
-                            <FileText className="size-6 text-red-600" />
-                          </div>
-                        )}
+              <div className="overflow-hidden rounded-lg border border-[#E0CEB8] dark:border-[#A0703A]/30">
+                {/* テーブルヘッダー */}
+                <div className="grid grid-cols-[40px_minmax(160px,1.4fr)_minmax(140px,1.3fr)_110px_140px_minmax(180px,2fr)_100px_36px] gap-2 border-b bg-[#FAF7F0] px-3 py-2 text-xs font-semibold text-[#8B5E2F] dark:bg-[#A0703A]/10 dark:text-[#D4A860]">
+                  <div>#</div>
+                  <div>ファイル名</div>
+                  <div>取引先</div>
+                  <div>金額</div>
+                  <div>売上日</div>
+                  <div>内容</div>
+                  <div>状態</div>
+                  <div></div>
+                </div>
+
+                {/* データ行 */}
+                {items.map((item, idx) => {
+                  const editable = item.status !== "registered" && item.status !== "skipped"
+                  const rowBg =
+                    item.status === "registered"
+                      ? "bg-[#FAF7F0]/60 dark:bg-[#A0703A]/5"
+                      : item.status === "skipped"
+                        ? "bg-amber-50 dark:bg-amber-950/20"
+                        : item.status === "register_error"
+                          ? "bg-red-50 dark:bg-red-950/20"
+                          : "bg-white dark:bg-card"
+                  return (
+                    <div
+                      key={idx}
+                      className={`grid grid-cols-[40px_minmax(160px,1.4fr)_minmax(140px,1.3fr)_110px_140px_minmax(180px,2fr)_100px_36px] items-center gap-2 border-b px-3 py-1.5 text-sm last:border-b-0 ${rowBg}`}
+                    >
+                      <div className="text-xs text-muted-foreground">{idx + 1}</div>
+                      <div className="truncate" title={item.file.name}>
+                        {item.file.name}
                       </div>
-
-                      {/* ファイル情報 + 編集フィールド */}
-                      <div className="flex-1 min-w-0 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="truncate text-sm font-medium">{item.file.name}</p>
-                          {item.status === "registered" ? (
-                            <span className="flex shrink-0 items-center gap-1 rounded-full bg-[#A0703A]/15 px-2 py-0.5 text-xs font-medium text-[#A0703A]">
-                              <CheckCircle2 className="size-3" />
-                              登録済み
-                            </span>
-                          ) : item.status === "skipped" ? (
-                            <span className="flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
-                              <AlertTriangle className="size-3" />
-                              スキップ
-                            </span>
-                          ) : item.status === "register_error" ? (
-                            <span className="flex shrink-0 items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400">
-                              <XCircle className="size-3" />
-                              エラー
-                            </span>
-                          ) : item.isAnalyzing ? (
-                            <span className="flex shrink-0 items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
-                              <Loader2 className="size-3 animate-spin" />
-                              解析中
-                            </span>
-                          ) : item.error ? (
-                            <span className="flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
-                              <AlertTriangle className="size-3" />
-                              解析失敗
-                            </span>
-                          ) : null}
-                        </div>
-
-                        {item.error && (
-                          <p className="text-xs text-amber-700 dark:text-amber-400">
-                            {item.error}（手動入力で登録できます）
-                          </p>
-                        )}
-
-                        {item.registerError && (
-                          <p className="text-xs text-red-700 dark:text-red-400">
-                            {item.registerError}
-                          </p>
-                        )}
-
-                        {/* 編集フォーム（登録済み・スキップ以外） */}
-                        {item.status !== "registered" && item.status !== "skipped" && (
-                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                            <div className="space-y-1">
-                              <Label className="flex items-center gap-1 text-xs">
-                                <Building2 className="size-3" />
-                                取引先
-                              </Label>
-                              <Input
-                                value={item.vendor_name}
-                                onChange={(e) => updateField(idx, "vendor_name", e.target.value)}
-                                placeholder="取引先名"
-                                disabled={item.isAnalyzing || isRegistering}
-                                className="h-8 text-sm"
-                              />
-                            </div>
-                            <div className="space-y-1">
-                              <Label className="flex items-center gap-1 text-xs">
-                                <JapaneseYen className="size-3" />
-                                金額
-                              </Label>
-                              <Input
-                                type="number"
-                                value={item.amount}
-                                onChange={(e) => updateField(idx, "amount", e.target.value)}
-                                placeholder="0"
-                                disabled={item.isAnalyzing || isRegistering}
-                                className="h-8 text-sm"
-                              />
-                            </div>
-                            <div className="space-y-1">
-                              <Label className="flex items-center gap-1 text-xs">
-                                <Calendar className="size-3" />
-                                売上日
-                              </Label>
-                              <Input
-                                type="date"
-                                value={item.issue_date}
-                                onChange={(e) => updateField(idx, "issue_date", e.target.value)}
-                                disabled={item.isAnalyzing || isRegistering}
-                                className="h-8 text-sm"
-                              />
-                            </div>
-                            <div className="space-y-1 sm:col-span-2">
-                              <Label className="text-xs">内容</Label>
-                              <Textarea
-                                value={item.description}
-                                onChange={(e) => updateField(idx, "description", e.target.value)}
-                                placeholder="売上の内容（任意）"
-                                disabled={item.isAnalyzing || isRegistering}
-                                rows={2}
-                                className="text-sm"
-                              />
-                            </div>
-                          </div>
-                        )}
-
-                        {item.status !== "registered" && !isRegistering && !item.isAnalyzing && (
-                          <div className="flex justify-end">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => removeItem(idx)}
-                              className="h-7 text-xs text-muted-foreground"
-                            >
-                              削除
-                            </Button>
-                          </div>
+                      <div>
+                        <Input
+                          value={item.vendor_name}
+                          onChange={(e) => updateField(idx, "vendor_name", e.target.value)}
+                          placeholder="取引先"
+                          disabled={!editable || item.isAnalyzing || isRegistering}
+                          className="h-8 px-2 py-1 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <Input
+                          type="number"
+                          value={item.amount}
+                          onChange={(e) => updateField(idx, "amount", e.target.value)}
+                          placeholder="0"
+                          disabled={!editable || item.isAnalyzing || isRegistering}
+                          className="h-8 px-2 py-1 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <Input
+                          type="date"
+                          value={item.issue_date}
+                          onChange={(e) => updateField(idx, "issue_date", e.target.value)}
+                          disabled={!editable || item.isAnalyzing || isRegistering}
+                          className="h-8 px-2 py-1 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <Input
+                          value={item.description}
+                          onChange={(e) => updateField(idx, "description", e.target.value)}
+                          placeholder="内容（任意）"
+                          disabled={!editable || item.isAnalyzing || isRegistering}
+                          className="h-8 px-2 py-1 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <StatusBadge item={item} />
+                      </div>
+                      <div>
+                        {editable && !isRegistering && !item.isAnalyzing && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => removeItem(idx)}
+                            className="size-7 text-muted-foreground hover:text-red-600"
+                            title="削除"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </Button>
                         )}
                       </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
 
