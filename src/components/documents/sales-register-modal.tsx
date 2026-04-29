@@ -431,7 +431,7 @@ export function SalesRegisterModal({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="flex max-h-[95vh] w-[95vw] max-w-7xl flex-col overflow-hidden p-0">
+      <DialogContent className="flex max-h-[95vh] w-[95vw] max-w-7xl flex-col overflow-hidden p-0 sm:!max-w-[95vw]">
         <DialogHeader className="shrink-0 border-b px-6 py-4">
           <DialogTitle className="flex items-center gap-2">
             <TrendingUp className="size-5 text-[#B8956A]" />
