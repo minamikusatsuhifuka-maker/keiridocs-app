@@ -193,7 +193,7 @@ export default function AccountantPage() {
         const ref = ws["!ref"]
         if (!ref) { csvSheets.push({ sheet: sheetName, csv: "" }); continue }
         const range = XLSX.utils.decode_range(ref)
-        const endRow = Math.min(range.e.r, 29) // 0-indexed 30行目
+        const endRow = Math.min(range.e.r, 27) // 0-indexed 28行目
 
         const rows: string[][] = []
         for (let r = 0; r <= endRow; r++) {
