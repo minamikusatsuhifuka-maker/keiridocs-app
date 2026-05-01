@@ -186,6 +186,12 @@ export default function AccountantPage() {
 
       // ③ 各シートを1〜30行目のCSVに変換
       const csvSheets: Array<{ sheet: string; csv: string }> = []
+      // シートごとの抽出上限行数（1-indexed）
+      const SHEET_MAX_ROWS: Record<string, number> = {
+        "Sheet1": 20,
+        "保険": 28,
+      }
+
       for (const sheetName of TARGET_SHEETS) {
         const ws = workbook.Sheets[sheetName]
         if (!ws) { csvSheets.push({ sheet: sheetName, csv: "" }); continue }
@@ -193,7 +199,8 @@ export default function AccountantPage() {
         const ref = ws["!ref"]
         if (!ref) { csvSheets.push({ sheet: sheetName, csv: "" }); continue }
         const range = XLSX.utils.decode_range(ref)
-        const endRow = Math.min(range.e.r, 27) // 0-indexed 28行目
+        const maxRows = SHEET_MAX_ROWS[sheetName] ?? 28
+        const endRow = Math.min(range.e.r, maxRows - 1) // 0-indexed
 
         const rows: string[][] = []
         for (let r = 0; r <= endRow; r++) {
