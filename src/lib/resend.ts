@@ -288,3 +288,71 @@ export async function sendUnapprovedMailNotify(
     return { success: false, error: message }
   }
 }
+
+// ====================================================
+// 返金アラートメール
+// ====================================================
+
+export interface RefundAlertItem {
+  patient_name: string | null
+  amount: number | null
+  cancel_date: string | null
+  refund_date: string | null
+  service_name: string | null
+  staff_name: string | null
+  dropbox_path: string | null
+}
+
+/** 返金アラートメールのHTML */
+function buildRefundAlertHtml(item: RefundAlertItem): string {
+  const rows = [
+    ["患者名・顧客名", item.patient_name ?? "-"],
+    ["返金金額", item.amount !== null ? `¥${item.amount.toLocaleString()}` : "-"],
+    ["解約日", item.cancel_date ?? "-"],
+    ["返金日", item.refund_date ?? "-"],
+    ["契約内容・サービス名", item.service_name ?? "-"],
+    ["担当者名", item.staff_name ?? "-"],
+    ["Dropbox保存先", item.dropbox_path ?? "-"],
+  ]
+    .map(
+      ([label, value]) => `
+<tr>
+  <td style="padding:10px 16px;border-bottom:1px solid #e4e4e7;background-color:#f4f4f5;font-weight:600;width:40%;font-size:14px;">${label}</td>
+  <td style="padding:10px 16px;border-bottom:1px solid #e4e4e7;font-size:14px;">${value}</td>
+</tr>`
+    )
+    .join("")
+
+  const body = `
+<h2 style="margin:0 0 8px;font-size:16px;color:#dc2626;">⚠️ 解約返金が登録されました</h2>
+<p style="margin:0 0 20px;font-size:14px;color:#71717a;">継続的役務契約の解約に伴う返金情報が登録されました。内容をご確認ください。</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e4e4e7;border-radius:4px;border-collapse:collapse;">
+${rows}
+</table>
+<p style="margin:20px 0 0;font-size:13px;color:#a1a1aa;">資料はDropboxの返金フォルダに保存されています。</p>`
+
+  return body
+}
+
+/** 返金アラートメールを送信 */
+export async function sendRefundAlert(
+  to: string[],
+  item: RefundAlertItem
+): Promise<{ success: boolean; error?: string }> {
+  if (!resend) return { success: false, error: "RESEND_API_KEY が設定されていません" }
+
+  const html = wrapHtml("解約返金アラート", buildRefundAlertHtml(item))
+
+  try {
+    await resend.emails.send({
+      from: FROM_EMAIL,
+      to,
+      subject: `【経理書類管理】解約返金登録のお知らせ（${item.patient_name ?? "不明"}・${item.amount !== null ? `¥${item.amount.toLocaleString()}` : "金額不明"}）`,
+      html,
+    })
+    return { success: true }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "メール送信に失敗しました"
+    return { success: false, error: message }
+  }
+}

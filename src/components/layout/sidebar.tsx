@@ -23,6 +23,7 @@ import {
   IdCard,
   LineChart,
   Wallet,
+  RotateCcw,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -44,6 +45,7 @@ const navItems = [
   { href: "/accountant", label: "税理士提出", icon: Briefcase },
   { href: "/staff-receipts", label: "スタッフ領収書", icon: Receipt },
   { href: "/petty-cash", label: "小口現金", icon: Wallet },
+  { href: "/refund", label: "返金管理", icon: RotateCcw },
   { href: "/business-cards", label: "名刺管理", icon: IdCard },
   { href: "/manuals", label: "マニュアル管理", icon: BookOpen },
   { href: "/mail", label: "メール確認", icon: Mail },
@@ -100,6 +102,7 @@ function isActive(href: string, pathname: string) {
   if (href === "/staff-receipts") return pathname === "/staff-receipts"
   if (href === "/staff-receipts/admin") return pathname === "/staff-receipts/admin"
   if (href === "/petty-cash") return pathname === "/petty-cash"
+  if (href === "/refund") return pathname === "/refund" || pathname.startsWith("/refund/")
   if (href === "/line-staff") return pathname === "/line-staff"
   return pathname.startsWith(href)
 }

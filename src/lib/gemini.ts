@@ -80,6 +80,8 @@ interface AnalyzeOptions {
   modelId?: string
   /** 判定に使用する書類種別リスト */
   documentTypes?: string[]
+  /** 追加プロンプト指示（書類種別ごとに優先抽出項目を伝えるなど） */
+  extraHint?: string
 }
 
 /**
@@ -110,7 +112,12 @@ export async function analyzeDocument(
     ? options.documentTypes.join("/")
     : "請求書/領収書/契約書"
 
-  const prompt = `この画像は経理書類（${typeList}など）です。以下の情報をJSON形式で抽出してください。
+  // 追加ヒント（呼び出し元から渡される書類別の優先抽出指示など）
+  const extraHintBlock = options?.extraHint?.trim()
+    ? `\n\n【追加指示】\n${options.extraHint.trim()}\n`
+    : ""
+
+  const prompt = `この画像は経理書類（${typeList}など）です。以下の情報をJSON形式で抽出してください。${extraHintBlock}
 
 必ず以下のJSON形式のみで回答してください。余計なテキストは含めないでください。
 

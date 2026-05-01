@@ -741,6 +741,60 @@ export interface Database {
         }
         Relationships: []
       }
+      refund_records: {
+        Row: {
+          id: string
+          user_id: string
+          patient_name: string | null
+          amount: number | null
+          cancel_date: string | null
+          refund_date: string | null
+          service_name: string | null
+          staff_name: string | null
+          description: string | null
+          dropbox_path: string | null
+          file_hash: string | null
+          ocr_raw: Json | null
+          status: string
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          patient_name?: string | null
+          amount?: number | null
+          cancel_date?: string | null
+          refund_date?: string | null
+          service_name?: string | null
+          staff_name?: string | null
+          description?: string | null
+          dropbox_path?: string | null
+          file_hash?: string | null
+          ocr_raw?: Json | null
+          status?: string
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          patient_name?: string | null
+          amount?: number | null
+          cancel_date?: string | null
+          refund_date?: string | null
+          service_name?: string | null
+          staff_name?: string | null
+          description?: string | null
+          dropbox_path?: string | null
+          file_hash?: string | null
+          ocr_raw?: Json | null
+          status?: string
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: Record<string, never>
     Functions: Record<string, never>
