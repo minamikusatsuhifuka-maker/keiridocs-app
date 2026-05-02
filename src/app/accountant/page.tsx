@@ -7,7 +7,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Briefcase, CheckSquare, FileSpreadsheet, FolderOutput, Loader2, Square, Upload } from "lucide-react"
+import { Briefcase, Building2, CheckSquare, FileSpreadsheet, FolderOutput, Loader2, Square, Upload } from "lucide-react"
 import { toast } from "sonner"
 
 // デフォルトの対象書類種別
@@ -68,6 +68,18 @@ export default function AccountantPage() {
   // 月計表アップロード用 state
   const [isDragOver, setIsDragOver] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
+
+  // 融資関連書類アップロード用 state
+  const [isLoanUploading, setIsLoanUploading] = useState(false)
+  const [isLoanDragOver, setIsLoanDragOver] = useState(false)
+  const [loanResults, setLoanResults] = useState<Array<{
+    fileName: string
+    dropboxPath: string
+    vendor: string | null
+    date: string | null
+    status: "saved" | "error"
+    message?: string
+  }>>([])
   const [uploadResult, setUploadResult] = useState<{
     yearMonthLabel: string
     yearMonthSource: string
@@ -290,6 +302,73 @@ export default function AccountantPage() {
     const file = e.dataTransfer.files?.[0]
     if (!file) return
     await processMonthlyFile(file)
+  }
+
+  // 融資関連書類アップロード処理
+  async function processLoanFile(file: File) {
+    const ext = file.name.split(".").pop()?.toLowerCase()
+    if (!["pdf", "jpg", "jpeg", "png", "heic", "webp"].includes(ext ?? "")) {
+      toast.error("PDF・JPG・PNGのみ対応しています")
+      return
+    }
+    setIsLoanUploading(true)
+    try {
+      const reader = new FileReader()
+      const base64 = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = reject
+        reader.readAsDataURL(file)
+      })
+      const res = await fetch("/api/accountant/upload-loan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file: base64, filename: file.name, contentType: file.type }),
+      })
+      const json = await res.json() as {
+        fileName?: string
+        dropboxPath?: string
+        ocrSummary?: { vendor: string | null; date: string | null; description: string | null }
+        error?: string
+      }
+      if (json.error) throw new Error(json.error)
+      setLoanResults((prev) => [{
+        fileName: json.fileName ?? file.name,
+        dropboxPath: json.dropboxPath ?? "",
+        vendor: json.ocrSummary?.vendor ?? null,
+        date: json.ocrSummary?.date ?? null,
+        status: "saved",
+      }, ...prev])
+      toast.success(`✅ 融資書類を保存しました: ${json.fileName}`)
+    } catch (error) {
+      setLoanResults((prev) => [{
+        fileName: file.name,
+        dropboxPath: "",
+        vendor: null,
+        date: null,
+        status: "error",
+        message: error instanceof Error ? error.message : "保存失敗",
+      }, ...prev])
+      toast.error(error instanceof Error ? error.message : "アップロードに失敗しました")
+    } finally {
+      setIsLoanUploading(false)
+    }
+  }
+
+  function handleLoanDragOver(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault(); e.stopPropagation(); setIsLoanDragOver(true)
+  }
+  function handleLoanDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault(); e.stopPropagation(); setIsLoanDragOver(false)
+  }
+  async function handleLoanDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault(); e.stopPropagation(); setIsLoanDragOver(false)
+    const files = Array.from(e.dataTransfer.files)
+    for (const file of files) await processLoanFile(file)
+  }
+  async function handleLoanFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? [])
+    for (const file of files) await processLoanFile(file)
+    e.target.value = ""
   }
 
   // フォルダ作成実行
@@ -584,6 +663,99 @@ export default function AccountantPage() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 融資関連書類アップロードセクション */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Building2 className="size-5 text-primary" />
+            融資関連書類アップロード
+          </CardTitle>
+          <CardDescription>
+            銀行・ファイナンス会社からの融資関連書類（PDF・JPG・PNG）をドロップすると、
+            AIがタイトルを自動生成して Dropbox の「融資関連」フォルダに保存します。
+            複数ファイルを一括ドロップできます。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* ドロップゾーン */}
+          <div
+            onDragOver={handleLoanDragOver}
+            onDragLeave={handleLoanDragLeave}
+            onDrop={handleLoanDrop}
+            onClick={() => !isLoanUploading && document.getElementById("loan-upload-input")?.click()}
+            className={[
+              "flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed px-6 py-8 transition",
+              isLoanDragOver
+                ? "border-[#A0703A] bg-[#F5EFE6] scale-[1.01]"
+                : "border-[#E0CEB8] bg-[#FAF7F0]",
+              isLoanUploading ? "opacity-60 cursor-not-allowed" : "cursor-pointer hover:bg-[#F5EFE6]",
+            ].join(" ")}
+          >
+            {isLoanUploading ? (
+              <>
+                <Loader2 className="size-8 animate-spin text-[#A0703A]" />
+                <span className="text-sm text-[#8B5E2F]">AI解析・保存中...</span>
+              </>
+            ) : isLoanDragOver ? (
+              <>
+                <Upload className="size-8 text-[#A0703A]" />
+                <span className="text-sm font-medium text-[#A0703A]">ここでドロップ！</span>
+              </>
+            ) : (
+              <>
+                <Building2 className="size-8 text-[#A0703A]" />
+                <span className="text-sm font-medium text-[#8B5E2F]">
+                  クリックまたはドロップして融資関連書類をアップロード
+                </span>
+                <span className="text-xs text-[#A0703A]/70">
+                  PDF・JPG・PNG対応 / 複数ファイル一括OK
+                </span>
+              </>
+            )}
+            <input
+              id="loan-upload-input"
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png,.heic,.webp"
+              className="hidden"
+              multiple
+              disabled={isLoanUploading}
+              onChange={handleLoanFileChange}
+            />
+          </div>
+
+          {/* 保存結果リスト */}
+          {loanResults.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-[#8B5E2F]">
+                📁 保存先: /経理書類/融資関連/
+              </p>
+              {loanResults.map((r, i) => (
+                <div
+                  key={i}
+                  className="flex items-start justify-between rounded-md bg-[#FAF7F0] px-3 py-2 text-sm"
+                >
+                  <div className="space-y-0.5">
+                    <p className="font-medium text-[#6B4226]">📄 {r.fileName}</p>
+                    {r.vendor && (
+                      <p className="text-xs text-muted-foreground">金融機関: {r.vendor}</p>
+                    )}
+                    {r.date && (
+                      <p className="text-xs text-muted-foreground">日付: {r.date}</p>
+                    )}
+                    {r.status === "error" && (
+                      <p className="text-xs text-red-600">❌ {r.message}</p>
+                    )}
+                  </div>
+                  {r.status === "saved" && (
+                    <span className="text-emerald-600 text-xs font-medium shrink-0 ml-2">✅ 保存完了</span>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </CardContent>
