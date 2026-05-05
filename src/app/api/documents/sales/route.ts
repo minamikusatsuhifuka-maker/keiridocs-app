@@ -300,10 +300,27 @@ export async function POST(request: NextRequest) {
       const modelId = (typeof modelSetting?.value === "string" ? modelSetting.value : null) || DEFAULT_GEMINI_MODEL
       const documentTypes = ["売上記録", "領収書", "請求書"]
 
+      // 売上登録専用の解析オプション（振込元・振込日・振込金額を必ず抽出）
+      const salesAnalysisOpts = {
+        modelId,
+        documentTypes,
+        extraHint: `
+この書類は売上・振込に関する書類です。以下の情報を最優先で正確に抽出してください：
+- vendor_name: 振込元の会社名・法人名（個人名でなく法人名を優先）
+- amount: 振込金額のトータル合計（税込み総額）。明細の個別金額ではなく合計額
+- issue_date: 振込日または売上日（YYYY-MM-DD形式）
+- transfer_from: 振込元会社名（vendor_nameと同じ値でよい）
+- transfer_date: 振込日（YYYY-MM-DD形式、issue_dateと同じ値でよい）
+- transfer_total: 振込金額トータル（amountと同じ値でよい）
+- description: 取引内容・サービス名の説明
+金額が複数ある場合は最も大きい合計金額を採用してください。
+`,
+      }
+
       try {
         // ファイルごとのAI解析タイムアウト30秒（リトライ含む）
         const result = await withTimeout(
-          analyzeDocument(base64Data, mimeType, { modelId, documentTypes }),
+          analyzeDocument(base64Data, mimeType, salesAnalysisOpts),
           AI_ANALYSIS_TIMEOUT_MS,
           { ...EMPTY_OCR_RESULT, model_used: modelId } as OcrResult & { model_used?: string },
           `AI解析(${filename})`
