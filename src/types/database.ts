@@ -712,6 +712,14 @@ export interface Database {
           dropbox_path: string | null
           registered_by: string | null
           created_at: string
+          // 023_petty_cash_unified.sql で追加
+          category: string | null
+          subcategory: string | null
+          receipt_urls: Json | null
+          note: string | null
+          created_by: string | null
+          transaction_date: string | null
+          balance_after: number | null
         }
         Insert: {
           id?: string
@@ -725,6 +733,13 @@ export interface Database {
           dropbox_path?: string | null
           registered_by?: string | null
           created_at?: string
+          category?: string | null
+          subcategory?: string | null
+          receipt_urls?: Json | null
+          note?: string | null
+          created_by?: string | null
+          transaction_date?: string | null
+          balance_after?: number | null
         }
         Update: {
           id?: string
@@ -738,6 +753,13 @@ export interface Database {
           dropbox_path?: string | null
           registered_by?: string | null
           created_at?: string
+          category?: string | null
+          subcategory?: string | null
+          receipt_urls?: Json | null
+          note?: string | null
+          created_by?: string | null
+          transaction_date?: string | null
+          balance_after?: number | null
         }
         Relationships: []
       }

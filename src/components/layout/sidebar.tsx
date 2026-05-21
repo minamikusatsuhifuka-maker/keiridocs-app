@@ -17,7 +17,6 @@ import {
   Table2,
   ScanLine,
   Loader2,
-  Receipt,
   ClipboardList,
   BookOpen,
   IdCard,
@@ -43,7 +42,6 @@ const navItems = [
   { href: "/spreadsheet", label: "スプレッドシート", icon: Table2 },
   { href: "/downloads", label: "自動取得", icon: Download },
   { href: "/accountant", label: "税理士提出", icon: Briefcase },
-  { href: "/staff-receipts", label: "スタッフ領収書", icon: Receipt },
   { href: "/petty-cash", label: "小口現金", icon: Wallet },
   { href: "/refund", label: "返金管理", icon: RotateCcw },
   { href: "/business-cards", label: "名刺管理", icon: IdCard },
@@ -99,7 +97,6 @@ function isActive(href: string, pathname: string) {
   if (href === "/analytics/ai-report") return pathname === "/analytics/ai-report"
   if (href === "/analytics") return pathname === "/analytics"
   if (href === "/reports") return pathname === "/reports" || pathname.startsWith("/reports/")
-  if (href === "/staff-receipts") return pathname === "/staff-receipts"
   if (href === "/staff-receipts/admin") return pathname === "/staff-receipts/admin"
   if (href === "/petty-cash") return pathname === "/petty-cash"
   if (href === "/refund") return pathname === "/refund" || pathname.startsWith("/refund/")

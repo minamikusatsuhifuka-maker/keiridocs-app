@@ -317,6 +317,16 @@ export default function StaffReceiptsAdminPage() {
 
   return (
     <div className="space-y-6">
+      {/* 参照のみバナー */}
+      <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+        <p className="font-bold">📁 過去データ参照用ページ</p>
+        <p className="mt-1">
+          新規のスタッフ領収書アップロード機能は
+          <Link href="/petty-cash" className="underline mx-1 font-bold">小口現金管理</Link>
+          の「スタッフ返金」に統合されました。このページは過去データの閲覧・Excelエクスポート専用です。
+        </p>
+      </div>
+
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">スタッフ領収書管理</h1>
         <div className="flex gap-2">
