@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   Dialog,
   DialogContent,
@@ -11,6 +11,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Upload } from "lucide-react"
 
 interface Staff {
   id: string
@@ -51,6 +52,57 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
   const [files, setFiles] = useState<File[]>([])
   const [analyzed, setAnalyzed] = useState<AnalyzedItem[] | null>(null)
   const [analyzedTotal, setAnalyzedTotal] = useState(0)
+  const [isDragOver, setIsDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // PDF / JPG / PNG を許可
+  const acceptedTypeRegex = /^(application\/pdf|image\/(jpeg|jpg|png))$/i
+
+  const addFiles = (incoming: File[]) => {
+    const accepted = incoming.filter((f) => acceptedTypeRegex.test(f.type))
+    setFiles((prev) => {
+      const merged = [...prev]
+      for (const f of accepted) {
+        const dup = merged.some((m) => m.name === f.name && m.size === f.size)
+        if (!dup) merged.push(f)
+      }
+      return merged
+    })
+    setAnalyzed(null)
+  }
+
+  const removeFile = (index: number) => {
+    setFiles((prev) => prev.filter((_, i) => i !== index))
+    setAnalyzed(null)
+  }
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+    addFiles(Array.from(e.dataTransfer.files))
+  }
+
+  const onDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(true)
+  }
+
+  const onDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+  }
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  const fileIcon = (file: File) => {
+    if (file.type === "application/pdf") return "📄"
+    if (file.type.startsWith("image/")) return "🖼️"
+    return "📎"
+  }
 
   useEffect(() => {
     if (!open) return
@@ -73,6 +125,7 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
     setFiles([])
     setAnalyzed(null)
     setAnalyzedTotal(0)
+    setIsDragOver(false)
     setError("")
   }
 
@@ -246,19 +299,80 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
             </>
           ) : (
             <>
-              <div className="space-y-1">
+              <div className="space-y-2">
                 <Label>領収書ファイル（複数可・PDF/JPG/PNG）</Label>
-                <Input
-                  type="file"
-                  multiple
-                  accept="application/pdf,image/*"
-                  onChange={(e) => {
-                    setFiles(Array.from(e.target.files ?? []))
-                    setAnalyzed(null)
-                  }}
-                />
+
+                {/* D&Dゾーン */}
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  onDrop={onDrop}
+                  onDragOver={onDragOver}
+                  onDragLeave={onDragLeave}
+                  className={[
+                    "flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-6 py-8 transition cursor-pointer",
+                    isDragOver
+                      ? "border-[#A0703A] bg-[#F5EFE6] scale-[1.01]"
+                      : "border-[#E0CEB8] bg-[#FAF7F0] hover:bg-[#F5EFE6]",
+                  ].join(" ")}
+                >
+                  <Upload className="size-8 text-[#A0703A]" />
+                  {isDragOver ? (
+                    <span className="text-sm font-medium text-[#A0703A]">ここでドロップ！</span>
+                  ) : (
+                    <>
+                      <span className="text-sm font-medium text-[#8B5E2F]">
+                        クリックまたはドロップして領収書をアップロード
+                      </span>
+                      <span className="text-xs text-[#A0703A]/70">
+                        PDF・JPG・PNG対応 / 複数ファイル一括OK
+                      </span>
+                    </>
+                  )}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept="application/pdf,image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      addFiles(Array.from(e.target.files ?? []))
+                      e.target.value = ""
+                    }}
+                  />
+                </div>
+
+                {/* 選択済みファイル一覧 */}
                 {files.length > 0 && (
-                  <p className="text-xs text-gray-500 mt-1">{files.length}件選択中</p>
+                  <div className="space-y-1">
+                    <p className="text-xs text-gray-600">{files.length} 件選択中</p>
+                    <ul className="border rounded divide-y bg-white max-h-48 overflow-y-auto">
+                      {files.map((f, i) => (
+                        <li
+                          key={`${f.name}-${f.size}-${i}`}
+                          className="flex items-center justify-between px-3 py-2 text-sm"
+                        >
+                          <span className="flex items-center gap-2 truncate">
+                            <span>{fileIcon(f)}</span>
+                            <span className="truncate">{f.name}</span>
+                            <span className="text-xs text-gray-500 shrink-0">
+                              ({formatSize(f.size)})
+                            </span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              removeFile(i)
+                            }}
+                            className="ml-2 text-gray-400 hover:text-red-500 text-lg leading-none shrink-0"
+                            aria-label="削除"
+                          >
+                            ×
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 )}
               </div>
 
