@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { uploadFile } from "@/lib/dropbox"
-import { analyzeDocument } from "@/lib/gemini"
+import { analyzeDocument, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
 import type { Database } from "@/types/database"
 import type { Json } from "@/types/database"
 import crypto from "crypto"
@@ -418,7 +418,7 @@ async function handleManualQuery(
 
     const { GoogleGenerativeAI } = await import("@google/generative-ai")
     const genAI = new GoogleGenerativeAI(apiKey)
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" })
+    const model = genAI.getGenerativeModel({ model: DEFAULT_GEMINI_MODEL })
 
     // マニュアルが0件の場合は一般知識でフォールバック
     if (manuals.length === 0) {

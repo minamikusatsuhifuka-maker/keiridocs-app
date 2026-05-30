@@ -117,7 +117,7 @@ async function generateManualContent(
   categoryName: string,
   topic: string
 ): Promise<string> {
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" })
+  const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-3.5-flash" })
 
   const prompt = `あなたは皮膚科・美容皮膚科クリニックのマニュアル作成担当者です。
 以下のトピックについて、実用的なマニュアル内容を作成してください。

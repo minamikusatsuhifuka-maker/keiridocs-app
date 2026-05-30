@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
 import { GoogleGenerativeAI } from "@google/generative-ai"
 import type { Database, Json } from "@/types/database"
 
@@ -82,7 +83,7 @@ ${JSON.stringify(report.weekly_breakdown, null, 2)}
 
     const genAI = new GoogleGenerativeAI(apiKey)
     const model = genAI.getGenerativeModel({
-      model: "gemini-2.0-flash",
+      model: DEFAULT_GEMINI_MODEL,
       generationConfig: {
         responseMimeType: "application/json",
         temperature: 0.7,

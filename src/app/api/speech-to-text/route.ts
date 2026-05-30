@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
 import { GoogleGenerativeAI } from "@google/generative-ai"
 
 export const maxDuration = 30
@@ -45,7 +46,7 @@ export async function POST(request: NextRequest) {
 
     // Gemini AIで書き起こし
     const genAI = new GoogleGenerativeAI(apiKey)
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" })
+    const model = genAI.getGenerativeModel({ model: DEFAULT_GEMINI_MODEL })
 
     const result = await model.generateContent([
       {
