@@ -878,10 +878,14 @@ export default function DocumentsPage() {
         </div>
       </div>
 
-      {/* 一括操作アクションバー（選択時のみ表示） */}
+      {/* 一括操作アクションバー（選択時のみ表示）
+          仕様: N件選択中 | 選択を解除 | [ステータス変更 ▾] | 🔄選択項目を再解析 | 選択した書類を削除(赤) */}
       {selectedDocIds.size > 0 && (
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-muted/50 px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/50 px-4 py-2.5">
           <span className="text-sm font-medium">{selectedDocIds.size}件選択中</span>
+
+          <span className="text-muted-foreground/40 select-none">|</span>
+
           <Button
             variant="ghost"
             size="sm"
@@ -891,28 +895,32 @@ export default function DocumentsPage() {
             選択を解除
           </Button>
 
-          {/* ステータス一括変更 */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-sm text-muted-foreground">
+          <span className="text-muted-foreground/40 select-none">|</span>
+
+          {/* ステータス一括変更（ドロップダウン）— 仕様: [ステータス変更 ▾(未処理/処理済み/アーカイブ)] */}
+          <Select
+            value=""
+            onValueChange={(v) => handleBulkStatusChange(v as DocumentStatus)}
+            disabled={isBulkStatusUpdating || isBulkDeleting || isReanalyzing}
+          >
+            <SelectTrigger className="h-8 w-[180px] btn-float bg-background" aria-label="ステータス一括変更">
               {isBulkStatusUpdating ? (
-                <Loader2 className="inline size-3.5 animate-spin" />
+                <span className="flex items-center gap-1.5 text-sm">
+                  <Loader2 className="size-3.5 animate-spin" />
+                  ステータス変更中…
+                </span>
               ) : (
-                "ステータス変更:"
+                <SelectValue placeholder="📋 ステータス変更" />
               )}
-            </span>
-            {(["未処理", "処理済み", "アーカイブ"] as DocumentStatus[]).map((s) => (
-              <Button
-                key={s}
-                variant="outline"
-                size="sm"
-                className="btn-float"
-                disabled={isBulkStatusUpdating || isBulkDeleting || isReanalyzing}
-                onClick={() => handleBulkStatusChange(s)}
-              >
-                {s}にする
-              </Button>
-            ))}
-          </div>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="未処理">未処理にする</SelectItem>
+              <SelectItem value="処理済み">処理済みにする</SelectItem>
+              <SelectItem value="アーカイブ">アーカイブにする</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <span className="text-muted-foreground/40 select-none">|</span>
 
           {/* 一括再解析 */}
           <div className="tooltip-wrapper">
@@ -937,6 +945,8 @@ export default function DocumentsPage() {
             </Button>
             <span className="tooltip-text">選択した書類をDropboxから取得し直してAIで金額・取引先を抽出し直します</span>
           </div>
+
+          <span className="text-muted-foreground/40 select-none">|</span>
 
           <div className="tooltip-wrapper">
             <Button
