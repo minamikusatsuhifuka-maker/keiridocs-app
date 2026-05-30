@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { GoogleGenerativeAI } from "@google/generative-ai"
+import { DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
 import type { Database } from "@/types/database"
 
 export const maxDuration = 60

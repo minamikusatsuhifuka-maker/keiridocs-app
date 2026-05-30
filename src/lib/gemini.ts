@@ -1,13 +1,12 @@
 // Gemini API ラッパー
 import { GoogleGenerativeAI } from "@google/generative-ai"
 
-/** デフォルトのGeminiモデル */
-export const DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+/** デフォルトのGeminiモデル（環境変数 GEMINI_MODEL で一括変更可能。未設定時は gemini-3.5-flash） */
+export const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash"
 
 /** 選択可能なGeminiモデル一覧 */
 export const GEMINI_MODELS = [
-  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash", description: "高速・低コスト・日常OCR向け（デフォルト）" },
-  { id: "gemini-2.5-pro-preview-05-06", label: "Gemini 2.5 Pro", description: "高精度・複雑書類向け" },
+  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", description: "高速・高精度・マルチモーダル対応（デフォルト）" },
 ] as const
 
 /** 税区分の選択肢 */
