@@ -24,16 +24,17 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { StatusBadge } from "@/components/documents/status-badge"
-import { ArrowLeft, Loader2, Pencil, Trash2, Save, X } from "lucide-react"
+import { ArrowLeft, Loader2, Pencil, Trash2, Save, X, RefreshCw } from "lucide-react"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
+import { TAX_CATEGORIES, ACCOUNT_TITLES } from "@/lib/gemini"
 import { toast } from "sonner"
 
 type Document = Database["public"]["Tables"]["documents"]["Row"]
 
 const statuses: DocumentStatus[] = ["未処理", "処理済み", "アーカイブ"]
 
-const typeOptions = ["請求書", "領収書", "契約書"]
+const typeOptions = ["請求書", "領収書", "契約書", "売上記録"]
 
 /** 金額をカンマ区切りでフォーマット */
 function formatAmount(amount: number | null): string {
@@ -67,6 +68,7 @@ export default function DocumentDetailPage() {
   const [isEditing, setIsEditing] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [isReanalyzing, setIsReanalyzing] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
 
   // 編集フォーム
@@ -77,6 +79,8 @@ export default function DocumentDetailPage() {
   const [editDueDate, setEditDueDate] = useState("")
   const [editDescription, setEditDescription] = useState("")
   const [editStatus, setEditStatus] = useState<DocumentStatus>("未処理")
+  const [editTaxCategory, setEditTaxCategory] = useState("")
+  const [editAccountTitle, setEditAccountTitle] = useState("")
 
   // データ取得
   const fetchDocument = useCallback(async () => {
@@ -107,6 +111,8 @@ export default function DocumentDetailPage() {
     setEditDueDate(doc.due_date ?? "")
     setEditDescription(doc.description ?? "")
     setEditStatus(doc.status as DocumentStatus)
+    setEditTaxCategory(doc.tax_category ?? "")
+    setEditAccountTitle(doc.account_title ?? "")
     setIsEditing(true)
   }
 
@@ -123,6 +129,8 @@ export default function DocumentDetailPage() {
         due_date: editDueDate || null,
         description: editDescription || null,
         status: editStatus,
+        tax_category: editTaxCategory,
+        account_title: editAccountTitle,
       }
 
       const res = await fetch(`/api/documents?id=${id}`, {
@@ -145,6 +153,36 @@ export default function DocumentDetailPage() {
       toast.error(message)
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  // 再解析（この1件をDropboxから取得し直してAI再解析→結果を反映）
+  async function handleReanalyze() {
+    if (!doc) return
+    setIsReanalyzing(true)
+    try {
+      const res = await fetch(`/api/documents/${id}/reanalyze`, { method: "POST" })
+      const json = await res.json().catch(() => ({})) as { data?: Document; error?: string }
+      if (!res.ok) {
+        throw new Error(json.error || "再解析に失敗しました")
+      }
+      if (json.data) {
+        setDoc(json.data)
+        // 編集中ならフォームにも反映
+        if (isEditing) {
+          setEditVendor(json.data.vendor_name)
+          setEditAmount(json.data.amount !== null ? String(json.data.amount) : "")
+          setEditIssueDate(json.data.issue_date ?? "")
+          setEditDescription(json.data.description ?? "")
+          setEditTaxCategory(json.data.tax_category ?? "")
+          setEditAccountTitle(json.data.account_title ?? "")
+        }
+      }
+      toast.success("再解析しました。抽出結果を反映しました")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "再解析に失敗しました")
+    } finally {
+      setIsReanalyzing(false)
     }
   }
 
@@ -216,6 +254,21 @@ export default function DocumentDetailPage() {
             </>
           ) : (
             <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleReanalyze}
+                disabled={isReanalyzing || !doc.dropbox_path}
+                className="btn-float"
+                title={doc.dropbox_path ? "DropboxのファイルをAIで再解析します" : "Dropboxパスがないため再解析できません"}
+              >
+                {isReanalyzing ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="size-4" />
+                )}
+                {isReanalyzing ? "再解析中..." : "再解析"}
+              </Button>
               <Button variant="outline" size="sm" onClick={startEditing} className="btn-float">
                 <Pencil className="size-4" />
                 編集
@@ -302,6 +355,32 @@ export default function DocumentDetailPage() {
                 <Label>支払期日</Label>
                 <Input type="date" value={editDueDate} onChange={(e) => setEditDueDate(e.target.value)} />
               </div>
+              <div className="space-y-2">
+                <Label>税区分</Label>
+                <Select value={editTaxCategory} onValueChange={setEditTaxCategory}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="税区分を選択" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TAX_CATEGORIES.map((t) => (
+                      <SelectItem key={t} value={t}>{t}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>勘定科目</Label>
+                <Select value={editAccountTitle} onValueChange={setEditAccountTitle}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="勘定科目を選択" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ACCOUNT_TITLES.map((a) => (
+                      <SelectItem key={a} value={a}>{a}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="space-y-2 sm:col-span-2">
                 <Label>摘要</Label>
                 <Input value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
@@ -324,6 +403,14 @@ export default function DocumentDetailPage() {
               <div>
                 <dt className="text-sm text-muted-foreground">支払期日</dt>
                 <dd className="font-medium">{formatDate(doc.due_date)}</dd>
+              </div>
+              <div>
+                <dt className="text-sm text-muted-foreground">税区分</dt>
+                <dd className="font-medium">{doc.tax_category || "-"}</dd>
+              </div>
+              <div>
+                <dt className="text-sm text-muted-foreground">勘定科目</dt>
+                <dd className="font-medium">{doc.account_title || "-"}</dd>
               </div>
               <div>
                 <dt className="text-sm text-muted-foreground">摘要</dt>

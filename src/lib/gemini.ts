@@ -9,6 +9,27 @@ export const GEMINI_MODELS = [
   { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", description: "高速・高精度・マルチモーダル対応（デフォルト）" },
 ] as const
 
+/** 売上・振込書類の解析で判定に使う書類種別リスト */
+export const SALES_ANALYSIS_DOCUMENT_TYPES = ["売上記録", "領収書", "請求書"] as const
+
+/**
+ * 売上・振込書類向けの追加抽出指示（extraHint）。
+ * 新規売上登録（sales/route.ts）と再解析（reanalyze）で同一のものを使う。
+ */
+export const SALES_ANALYSIS_EXTRA_HINT = `
+この書類は売上・振込に関する書類です。以下の情報を最優先で正確に抽出してください：
+- vendor_name: 振込元の会社名・法人名（個人名でなく法人名を優先）
+- amount: 振込金額のトータル合計（税込み総額）。明細の個別金額ではなく合計額
+- issue_date: 振込日または売上日（YYYY-MM-DD形式）
+- transfer_from: 振込元会社名（vendor_nameと同じ値でよい）
+- transfer_date: 振込日（YYYY-MM-DD形式、issue_dateと同じ値でよい）
+- transfer_total: 振込金額トータル（amountと同じ値でよい）
+- description: 取引内容・サービス名の説明
+金額が複数ある場合は最も大きい合計金額を採用してください。
+金額はカンマ・通貨記号（¥/￥/$）・「円」を除いた半角数字のみで返すこと（例: 1200）。
+PDFが複数ページの場合は全ページを確認し、振込金額の合計（トータル）を返すこと。
+`
+
 /** 税区分の選択肢 */
 export const TAX_CATEGORIES = [
   "課税10%",
@@ -429,6 +450,26 @@ export async function analyzeBusinessCard(
 }
 
 /**
+ * 金額を数値に正規化する。
+ * - number ならそのまま（NaNはnull）
+ * - string なら カンマ・通貨記号（¥/￥/$）・「円」・空白 を除去して数値化
+ * - 数値化できない場合は null
+ *
+ * Geminiが金額を "1,200" / "¥1,200" / "1200円" のような文字列で返しても
+ * null落ち（→0登録）にならないようにする。
+ */
+export function normalizeAmount(raw: unknown): number | null {
+  if (typeof raw === "number") return isNaN(raw) ? null : raw
+  if (typeof raw === "string") {
+    const cleaned = raw.replace(/[,，¥￥$＄円\s]/g, "")
+    if (cleaned === "") return null
+    const n = Number(cleaned)
+    return isNaN(n) ? null : n
+  }
+  return null
+}
+
+/**
  * Geminiの応答テキストからJSONをパースする
  * 失敗時はフォールバック値を返す
  */
@@ -451,8 +492,8 @@ function parseOcrResponse(responseText: string): OcrResult {
           items.push({
             item_name: typeof i.item_name === "string" ? i.item_name : "",
             quantity: typeof i.quantity === "number" ? i.quantity : 1,
-            unit_price: typeof i.unit_price === "number" ? i.unit_price : 0,
-            amount: typeof i.amount === "number" ? i.amount : 0,
+            unit_price: normalizeAmount(i.unit_price) ?? 0,
+            amount: normalizeAmount(i.amount) ?? 0,
             category: typeof i.category === "string" ? i.category : "その他",
             tax_rate: typeof i.tax_rate === "string" ? i.tax_rate : "未判定",
           })
@@ -462,7 +503,7 @@ function parseOcrResponse(responseText: string): OcrResult {
 
     return {
       vendor_name: typeof parsed.vendor_name === "string" ? parsed.vendor_name : "",
-      amount: typeof parsed.amount === "number" ? parsed.amount : null,
+      amount: normalizeAmount(parsed.amount),
       issue_date: typeof parsed.issue_date === "string" ? parsed.issue_date : null,
       due_date: typeof parsed.due_date === "string" ? parsed.due_date : null,
       description: typeof parsed.description === "string" ? parsed.description : null,

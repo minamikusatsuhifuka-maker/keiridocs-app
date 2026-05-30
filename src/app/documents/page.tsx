@@ -249,6 +249,48 @@ export default function DocumentsPage() {
     }
   }
 
+  // 一括再解析（選択した書類をDropboxから取得し直してAI再解析）
+  const [showReanalyzeConfirm, setShowReanalyzeConfirm] = useState(false)
+  const [isReanalyzing, setIsReanalyzing] = useState(false)
+  const [reanalyzeProgress, setReanalyzeProgress] = useState(0)
+  const [reanalyzeTotal, setReanalyzeTotal] = useState(0)
+
+  // 選択中の書類を1件ずつ再解析（ライブ進捗表示のため個別APIを逐次呼び出し）
+  async function handleBulkReanalyze() {
+    if (selectedDocIds.size === 0) return
+    const ids = Array.from(selectedDocIds)
+    setShowReanalyzeConfirm(false)
+    setIsReanalyzing(true)
+    setReanalyzeTotal(ids.length)
+    setReanalyzeProgress(0)
+
+    let successCount = 0
+    let failCount = 0
+    for (let i = 0; i < ids.length; i++) {
+      setReanalyzeProgress(i + 1)
+      try {
+        const res = await fetch(`/api/documents/${ids[i]}/reanalyze`, { method: "POST" })
+        if (res.ok) successCount++
+        else failCount++
+      } catch {
+        failCount++
+      }
+      // Geminiレート制限回避のため最後以外はウェイトを挟む
+      if (i < ids.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 700))
+      }
+    }
+
+    setIsReanalyzing(false)
+    if (successCount > 0) {
+      toast.success(`${ids.length}件中${successCount}件を更新しました${failCount > 0 ? `（${failCount}件失敗）` : ""}`)
+    } else {
+      toast.error(`再解析に失敗しました（${failCount}件）`)
+    }
+    setSelectedDocIds(new Set())
+    fetchDocuments()
+  }
+
   // 重複チェック
   const [isDuplicateChecking, setIsDuplicateChecking] = useState(false)
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([])
@@ -844,7 +886,7 @@ export default function DocumentsPage() {
             variant="ghost"
             size="sm"
             onClick={() => setSelectedDocIds(new Set())}
-            disabled={isBulkStatusUpdating || isBulkDeleting}
+            disabled={isBulkStatusUpdating || isBulkDeleting || isReanalyzing}
           >
             選択を解除
           </Button>
@@ -864,7 +906,7 @@ export default function DocumentsPage() {
                 variant="outline"
                 size="sm"
                 className="btn-float"
-                disabled={isBulkStatusUpdating || isBulkDeleting}
+                disabled={isBulkStatusUpdating || isBulkDeleting || isReanalyzing}
                 onClick={() => handleBulkStatusChange(s)}
               >
                 {s}にする
@@ -872,12 +914,36 @@ export default function DocumentsPage() {
             ))}
           </div>
 
+          {/* 一括再解析 */}
+          <div className="tooltip-wrapper">
+            <Button
+              variant="outline"
+              size="sm"
+              className="btn-float"
+              disabled={isBulkStatusUpdating || isBulkDeleting || isReanalyzing}
+              onClick={() => setShowReanalyzeConfirm(true)}
+            >
+              {isReanalyzing ? (
+                <>
+                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                  再解析中 {reanalyzeProgress}/{reanalyzeTotal}件
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="mr-1.5 size-3.5" />
+                  選択項目を再解析
+                </>
+              )}
+            </Button>
+            <span className="tooltip-text">選択した書類をDropboxから取得し直してAIで金額・取引先を抽出し直します</span>
+          </div>
+
           <div className="tooltip-wrapper">
             <Button
               variant="destructive"
               size="sm"
               onClick={() => setShowBulkDeleteConfirm(true)}
-              disabled={isBulkStatusUpdating || isBulkDeleting}
+              disabled={isBulkStatusUpdating || isBulkDeleting || isReanalyzing}
               className="btn-float-danger"
             >
               <Trash2 className="mr-1.5 size-3.5" />
@@ -1034,6 +1100,37 @@ export default function DocumentsPage() {
             >
               <Trash2 className="mr-2 size-4" />
               選択した書類を削除 ({selectedForDeletion.size}件)
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 一括再解析の確認ダイアログ */}
+      <Dialog open={showReanalyzeConfirm} onOpenChange={setShowReanalyzeConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RefreshCw className="size-5 text-[#A0703A]" />
+              選択項目を再解析
+            </DialogTitle>
+            <DialogDescription>
+              {selectedDocIds.size}件を再解析します。DropboxのファイルをAI（現行モデル）で読み直し、金額・取引先・発行日などを抽出し直して上書きします。よろしいですか？
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setShowReanalyzeConfirm(false)}>
+              キャンセル
+            </Button>
+            <Button
+              onClick={handleBulkReanalyze}
+              style={{
+                background: "linear-gradient(135deg, #C8922A, #B8782A)",
+                color: "#fff",
+                boxShadow: "0 4px 12px rgba(180,120,40,0.35)",
+              }}
+            >
+              <RefreshCw className="mr-2 size-4" />
+              再解析する
             </Button>
           </DialogFooter>
         </DialogContent>

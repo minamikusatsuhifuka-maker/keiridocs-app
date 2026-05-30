@@ -19,7 +19,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { StatusBadge } from "@/components/documents/status-badge"
-import { ArrowUpDown, Calendar, Check, ChevronDown, Eye, Loader2 } from "lucide-react"
+import { AlertTriangle, ArrowUpDown, Calendar, Check, ChevronDown, Eye, Loader2 } from "lucide-react"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
 import { toast } from "sonner"
@@ -246,7 +246,19 @@ export function DocumentTable({
             )}
             <TableCell>{doc.type}</TableCell>
             <TableCell className="max-w-[200px] truncate">{doc.vendor_name}</TableCell>
-            <TableCell className="text-right">{formatAmount(doc.amount)}</TableCell>
+            <TableCell className="text-right">
+              {doc.amount === null || doc.amount === 0 ? (
+                <span
+                  className="inline-flex items-center justify-end gap-1 font-medium text-red-600 dark:text-red-400"
+                  title="金額が未抽出です。再解析または手動修正してください"
+                >
+                  <AlertTriangle className="size-3.5" />
+                  {formatAmount(doc.amount)}
+                </span>
+              ) : (
+                formatAmount(doc.amount)
+              )}
+            </TableCell>
             <TableCell>{formatDate(doc.created_at)}</TableCell>
             <TableCell className="text-sm">{doc.registrant?.name ?? "—"}</TableCell>
             <TableCell>{formatDate(doc.issue_date)}</TableCell>
