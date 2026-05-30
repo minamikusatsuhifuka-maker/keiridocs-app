@@ -7,6 +7,9 @@ import type { Database } from "@/types/database"
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"]
 type DocumentUpdate = Database["public"]["Tables"]["documents"]["Update"]
 
+/** 一括ステータス変更で許可する値（単一更新のドロップダウンと同一） */
+const BULK_ALLOWED_STATUSES = ["未処理", "処理済み", "アーカイブ"] as const
+
 // 書類一覧取得 / 単一取得
 export async function GET(request: NextRequest) {
   const supabase = await createClient()
@@ -289,6 +292,91 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "編集権限がありません" }, { status: 403 })
   }
 
+  // リクエストボディを先に読む（単一更新・一括更新で共用）
+  let body: Record<string, unknown>
+  try {
+    body = await request.json() as Record<string, unknown>
+  } catch {
+    return NextResponse.json({ error: "リクエストボディが不正です" }, { status: 400 })
+  }
+
+  // --- 一括ステータス変更: { ids: string[], status } が渡された場合 ---
+  if (Array.isArray(body.ids)) {
+    const ids = body.ids.filter((v): v is string => typeof v === "string")
+    const newStatus = typeof body.status === "string" ? body.status : ""
+
+    if (ids.length === 0) {
+      return NextResponse.json({ error: "対象の書類IDがありません" }, { status: 400 })
+    }
+    if (!BULK_ALLOWED_STATUSES.includes(newStatus as (typeof BULK_ALLOWED_STATUSES)[number])) {
+      return NextResponse.json({ error: "不正なステータスです" }, { status: 400 })
+    }
+
+    try {
+      // 対象書類を取得（adminは全件、staffは自分の書類のみ）。Dropbox移動判定とスコープ確認に使う
+      let listQuery = supabase
+        .from("documents")
+        .select("id, status, type, issue_date, created_at, dropbox_path")
+        .in("id", ids)
+      if (auth.role !== "admin") {
+        listQuery = listQuery.eq("user_id", user.id)
+      }
+      const { data: targets, error: listError } = await listQuery
+      if (listError) {
+        console.error("一括ステータス変更: 対象取得エラー:", listError)
+        return NextResponse.json({ error: "対象書類の取得に失敗しました" }, { status: 500 })
+      }
+
+      const rows = (targets ?? []) as Pick<
+        DocumentRow,
+        "id" | "status" | "type" | "issue_date" | "created_at" | "dropbox_path"
+      >[]
+      const scopedIds = rows.map((r) => r.id)
+      if (scopedIds.length === 0) {
+        return NextResponse.json({ updated: 0, moved: 0 })
+      }
+
+      // ステータスをまとめて更新（権限スコープ内のidのみ）
+      let updateQuery = supabase
+        .from("documents")
+        .update({ status: newStatus })
+        .in("id", scopedIds)
+      if (auth.role !== "admin") {
+        updateQuery = updateQuery.eq("user_id", user.id)
+      }
+      const { error: updateError } = await updateQuery
+      if (updateError) {
+        console.error("一括ステータス変更: 更新エラー:", updateError)
+        return NextResponse.json({ error: "ステータスの一括更新に失敗しました" }, { status: 500 })
+      }
+
+      // ステータスが変わった書類はDropboxフォルダも移動（単一更新と同じロジック・best effort）
+      let movedCount = 0
+      for (const row of rows) {
+        if (row.status === newStatus || !row.dropbox_path) continue
+        try {
+          const fileName = row.dropbox_path.split("/").pop() ?? ""
+          const dateStr = row.issue_date ?? row.created_at
+          const newPath = getDocumentPath(row.type, fileName, new Date(dateStr), newStatus)
+          if (newPath !== row.dropbox_path) {
+            const movedPath = await moveFile(row.dropbox_path, newPath)
+            await supabase.from("documents").update({ dropbox_path: movedPath }).eq("id", row.id)
+            movedCount++
+          }
+        } catch (moveError) {
+          // ファイル移動が失敗してもDB更新は維持する
+          console.error(`一括ステータス変更: Dropbox移動失敗 (id=${row.id}):`, moveError)
+        }
+      }
+
+      return NextResponse.json({ updated: scopedIds.length, moved: movedCount })
+    } catch (error) {
+      console.error("一括ステータス変更エラー:", error)
+      return NextResponse.json({ error: "ステータスの一括更新に失敗しました" }, { status: 500 })
+    }
+  }
+
+  // --- 単一更新（従来どおり id 必須） ---
   const { searchParams } = new URL(request.url)
   const id = searchParams.get("id")
   if (!id) {
@@ -296,8 +384,6 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
-    const body = await request.json() as Record<string, unknown>
-
     // 既存の書類を取得（adminは全件、staffは自分の書類のみ）
     let fetchQuery = supabase
       .from("documents")

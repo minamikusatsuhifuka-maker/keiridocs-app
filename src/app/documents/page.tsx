@@ -216,10 +216,38 @@ export default function DocumentsPage() {
     setPage(0)
   }
 
-  // 一覧チェックボックス選択（一括削除用）
+  // 一覧チェックボックス選択（一括削除・一括ステータス変更で共用）
   const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set())
   const [isBulkDeleting, setIsBulkDeleting] = useState(false)
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false)
+
+  // 一括ステータス変更
+  const [isBulkStatusUpdating, setIsBulkStatusUpdating] = useState(false)
+
+  // 選択中の書類のステータスを一括変更（未処理/処理済み/アーカイブ）
+  async function handleBulkStatusChange(newStatus: DocumentStatus) {
+    if (selectedDocIds.size === 0) return
+    setIsBulkStatusUpdating(true)
+    try {
+      const ids = Array.from(selectedDocIds)
+      const res = await fetch("/api/documents", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, status: newStatus }),
+      })
+      const json = await res.json().catch(() => ({})) as { updated?: number; error?: string }
+      if (!res.ok) {
+        throw new Error(json.error || "ステータスの一括変更に失敗しました")
+      }
+      toast.success(`${json.updated ?? ids.length}件を「${newStatus}」にしました`)
+      setSelectedDocIds(new Set())
+      fetchDocuments()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "ステータスの一括変更に失敗しました")
+    } finally {
+      setIsBulkStatusUpdating(false)
+    }
+  }
 
   // 重複チェック
   const [isDuplicateChecking, setIsDuplicateChecking] = useState(false)
@@ -808,22 +836,48 @@ export default function DocumentsPage() {
         </div>
       </div>
 
-      {/* 一括削除アクションバー */}
+      {/* 一括操作アクションバー（選択時のみ表示） */}
       {selectedDocIds.size > 0 && (
-        <div className="flex items-center gap-3 rounded-lg border bg-muted/50 px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-muted/50 px-4 py-2.5">
           <span className="text-sm font-medium">{selectedDocIds.size}件選択中</span>
           <Button
             variant="ghost"
             size="sm"
             onClick={() => setSelectedDocIds(new Set())}
+            disabled={isBulkStatusUpdating || isBulkDeleting}
           >
             選択を解除
           </Button>
+
+          {/* ステータス一括変更 */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-sm text-muted-foreground">
+              {isBulkStatusUpdating ? (
+                <Loader2 className="inline size-3.5 animate-spin" />
+              ) : (
+                "ステータス変更:"
+              )}
+            </span>
+            {(["未処理", "処理済み", "アーカイブ"] as DocumentStatus[]).map((s) => (
+              <Button
+                key={s}
+                variant="outline"
+                size="sm"
+                className="btn-float"
+                disabled={isBulkStatusUpdating || isBulkDeleting}
+                onClick={() => handleBulkStatusChange(s)}
+              >
+                {s}にする
+              </Button>
+            ))}
+          </div>
+
           <div className="tooltip-wrapper">
             <Button
               variant="destructive"
               size="sm"
               onClick={() => setShowBulkDeleteConfirm(true)}
+              disabled={isBulkStatusUpdating || isBulkDeleting}
               className="btn-float-danger"
             >
               <Trash2 className="mr-1.5 size-3.5" />
