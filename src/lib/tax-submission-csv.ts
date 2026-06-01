@@ -12,6 +12,11 @@ interface BuildOpts {
   userId: string
   year: number
   month: number
+  // 集計対象の範囲:
+  //   all     … 全書類（従来動作・後方互換）
+  //   expense … 経費書類のみ（売上サブフォルダ配下を除外）
+  //   sales   … 売上書類のみ（売上サブフォルダ配下のみ）
+  scope?: "all" | "expense" | "sales"
 }
 
 interface BuildResult {
@@ -19,6 +24,8 @@ interface BuildResult {
   csvWithBom: string
   csvBody: string
   folderPath: string
+  // CSVの実際の保存先フォルダ（売上CSVは売上サブフォルダ）
+  saveFolderPath: string
   rowCount: number
 }
 
@@ -47,8 +54,12 @@ function formatAmount(amount: number | null): string {
  */
 export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResult> {
   const { supabase, isAdmin, userId, year, month } = opts
+  const scope = opts.scope ?? "all"
   const monthStr = String(month).padStart(2, "0")
   const folderPath = `/経理書類/税理士提出/${year}年${monthStr}月`
+  // 売上書類は税理士提出/{月}/売上/ サブフォルダに配置される。
+  // DBに無いファイルでも確実に経費/売上を分離できるよう、パスで判定する。
+  const salesPrefix = `${folderPath}/売上/`
 
   // 税理士提出フォルダ内のファイル一覧
   let filesInTaxFolder: Array<{
@@ -63,11 +74,20 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     console.error("税理士フォルダ取得エラー:", err)
   }
 
-  // CSVファイル自身・月計表CSVは除外
+  // CSVファイル自身（提出書類一覧・売上提出一覧）・月計表CSVは除外
   filesInTaxFolder = filesInTaxFolder.filter((f) =>
     !/^提出書類一覧_.*\.csv$/.test(f.name) &&
+    !/^売上提出一覧_.*\.csv$/.test(f.name) &&
     !/^月計表_.*\.csv$/.test(f.name)
   )
+
+  // scope による絞り込み（売上サブフォルダ配下かどうかをパスで判定）
+  if (scope !== "all") {
+    filesInTaxFolder = filesInTaxFolder.filter((f) => {
+      const isSalesFile = f.path_display.startsWith(salesPrefix)
+      return scope === "sales" ? isSalesFile : !isSalesFile
+    })
+  }
 
   // DBからメタデータ取得
   let dbQuery = supabase
@@ -144,7 +164,8 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       transferFrom: meta?.transfer_from ?? "",
       transferDate: meta?.transfer_date ?? "",
       transferTotal: meta?.transfer_total ?? null,
-      isSales: meta?.type === "売上記録",
+      // DBに無いファイルでも売上判定できるよう、サブフォルダのパスも見る
+      isSales: file.path_display.startsWith(salesPrefix) || meta?.type === "売上記録",
     }
   })
 
@@ -161,8 +182,12 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   const grandTotal = allRows.reduce((sum, r) => sum + (r.amount ?? 0), 0)
   const grandCount = allRows.length
 
+  const summaryTitle = scope === "sales"
+    ? `【${year}年${monthStr}月 売上提出一覧 サマリー】`
+    : `【${year}年${monthStr}月 税理士提出書類 サマリー】`
+
   const summaryLines: string[][] = [
-    [`【${year}年${monthStr}月 税理士提出書類 サマリー】`, "", "", ""],
+    [summaryTitle, "", "", ""],
     ["種別", "件数", "合計金額", ""],
     ...Array.from(typeMap.entries()).map(([type, { count, total }]) => [
       type,
@@ -217,13 +242,18 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     .join("\r\n")
 
   const bom = "﻿"
-  const fileName = `提出書類一覧_${year}年${monthStr}月.csv`
+  // 売上CSVは専用ファイル名＋売上サブフォルダに保存
+  const fileName = scope === "sales"
+    ? `売上提出一覧_${year}年${monthStr}月.csv`
+    : `提出書類一覧_${year}年${monthStr}月.csv`
+  const saveFolderPath = scope === "sales" ? `${folderPath}/売上` : folderPath
 
   return {
     fileName,
     csvWithBom: bom + csvBody,
     csvBody,
     folderPath,
+    saveFolderPath,
     rowCount: allRows.length,
   }
 }

@@ -298,9 +298,13 @@ export async function POST(request: NextRequest) {
       .map((row) => row.map(escapeCsv).join(","))
       .join("\n")
 
-    // 提出書類一覧CSVを生成し、Dropboxの税理士提出フォルダに自動保存（既存は上書き）
+    // 提出書類一覧CSV（経費）と売上提出一覧CSV（売上）を分離生成し、
+    // それぞれDropboxにアップロードする（既存は上書き）
     let csvDropboxPath: string | null = null
+    let salesCsvDropboxPath: string | null = null
     let csvSaveError: string | null = null
+
+    // 経費CSV: 月フォルダ直下に保存（売上行は除外）
     try {
       const built = await buildTaxSubmissionCsv({
         supabase,
@@ -308,16 +312,45 @@ export async function POST(request: NextRequest) {
         userId: user.id,
         year: yearNum,
         month: monthNum,
+        scope: "expense",
       })
-      const targetCsvPath = `${taxFolderBase}/${built.fileName}`
+      const targetCsvPath = `${built.saveFolderPath}/${built.fileName}`
       const buffer = Buffer.from(built.csvWithBom, "utf-8")
       csvDropboxPath = await uploadFileOverwrite(targetCsvPath, buffer)
       console.log(
-        `DropboxにCSVを保存しました: ${csvDropboxPath} (${built.rowCount}件)`
+        `経費の提出書類一覧CSVを保存しました: ${csvDropboxPath} (${built.rowCount}件)`
       )
     } catch (csvError) {
       csvSaveError = csvError instanceof Error ? csvError.message : String(csvError)
       console.error("提出書類一覧CSV保存エラー:", csvError)
+    }
+
+    // 売上CSV: 売上サブフォルダ内に保存（売上が対象に含まれ、かつ売上書類が存在する場合のみ）
+    if (targetFolders.includes("売上")) {
+      try {
+        const builtSales = await buildTaxSubmissionCsv({
+          supabase,
+          isAdmin: auth.role === "admin",
+          userId: user.id,
+          year: yearNum,
+          month: monthNum,
+          scope: "sales",
+        })
+        // 売上資料が1件も無ければ売上CSVは作成しない
+        if (builtSales.rowCount > 0) {
+          const targetSalesCsvPath = `${builtSales.saveFolderPath}/${builtSales.fileName}`
+          const buffer = Buffer.from(builtSales.csvWithBom, "utf-8")
+          salesCsvDropboxPath = await uploadFileOverwrite(targetSalesCsvPath, buffer)
+          console.log(
+            `売上提出一覧CSVを保存しました: ${salesCsvDropboxPath} (${builtSales.rowCount}件)`
+          )
+        }
+      } catch (csvError) {
+        const msg = csvError instanceof Error ? csvError.message : String(csvError)
+        // 経費CSVのエラーと区別して併記する
+        csvSaveError = csvSaveError ? `${csvSaveError} / 売上CSV: ${msg}` : `売上CSV: ${msg}`
+        console.error("売上提出一覧CSV保存エラー:", csvError)
+      }
     }
 
     return NextResponse.json({
@@ -328,6 +361,7 @@ export async function POST(request: NextRequest) {
       details,
       csv: csvBody,
       csvDropboxPath,
+      salesCsvDropboxPath,
       csvSaveError,
     })
   } catch (error) {
