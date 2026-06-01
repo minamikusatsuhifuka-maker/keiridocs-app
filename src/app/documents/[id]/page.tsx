@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
@@ -24,7 +24,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { StatusBadge } from "@/components/documents/status-badge"
-import { ArrowLeft, Loader2, Pencil, Trash2, Save, X, RefreshCw } from "lucide-react"
+import { ArrowLeft, Loader2, Pencil, Trash2, Save, X, RefreshCw, AlertTriangle, Upload } from "lucide-react"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
 import { TAX_CATEGORIES, ACCOUNT_TITLES } from "@/lib/gemini"
@@ -71,6 +71,12 @@ export default function DocumentDetailPage() {
   const [isReanalyzing, setIsReanalyzing] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
 
+  // ファイル欠損チェック・再アップロード
+  const [fileMissing, setFileMissing] = useState<boolean | null>(null) // null=未確認
+  const [isReuploading, setIsReuploading] = useState(false)
+  const [isDragging, setIsDragging] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
   // 編集フォーム
   const [editType, setEditType] = useState("")
   const [editVendor, setEditVendor] = useState("")
@@ -100,6 +106,68 @@ export default function DocumentDetailPage() {
   useEffect(() => {
     fetchDocument()
   }, [fetchDocument])
+
+  // Dropbox実ファイルの存在確認（メタデータ確認のみ・軽量）
+  const checkFileExists = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/documents/${id}/reupload`)
+      if (!res.ok) return
+      const json = await res.json() as { exists?: boolean }
+      setFileMissing(json.exists === false)
+    } catch {
+      // 確認に失敗した場合はバナーを出さない（誤検知を避ける）
+    }
+  }, [id])
+
+  // 書類取得後にファイル存在を確認
+  useEffect(() => {
+    if (doc?.dropbox_path) {
+      checkFileExists()
+    } else if (doc) {
+      // Dropboxパスが無い書類はファイル欠損扱いにしない
+      setFileMissing(false)
+    }
+  }, [doc, checkFileExists])
+
+  // ファイルを選択 or ドロップして同じパスに再アップロード
+  async function handleReupload(file: File) {
+    if (!doc) return
+    // クライアント側の簡易バリデーション
+    const allowed = ["image/jpeg", "image/jpg", "image/png", "application/pdf"]
+    if (file.type && !allowed.includes(file.type)) {
+      toast.error("対応形式は JPG / PNG / PDF です")
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error("ファイルサイズが大きすぎます（最大10MB）")
+      return
+    }
+
+    setIsReuploading(true)
+    try {
+      const form = new FormData()
+      form.append("file", file)
+      const res = await fetch(`/api/documents/${id}/reupload`, {
+        method: "POST",
+        body: form,
+      })
+      const json = await res.json().catch(() => ({})) as { error?: string }
+      if (!res.ok) {
+        throw new Error(json.error || "再アップロードに失敗しました")
+      }
+      toast.success("ファイルを再アップロードしました。AIで再解析します…")
+      setFileMissing(false)
+      // アップロード後は自動で再解析して金額・取引先などを更新
+      await handleReanalyze()
+      // 念のため存在を再確認
+      checkFileExists()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "再アップロードに失敗しました")
+    } finally {
+      setIsReuploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ""
+    }
+  }
 
   // 編集モード開始時にフォームを初期化
   function startEditing() {
@@ -162,8 +230,12 @@ export default function DocumentDetailPage() {
     setIsReanalyzing(true)
     try {
       const res = await fetch(`/api/documents/${id}/reanalyze`, { method: "POST" })
-      const json = await res.json().catch(() => ({})) as { data?: Document; error?: string }
+      const json = await res.json().catch(() => ({})) as { data?: Document; error?: string; reason?: string }
       if (!res.ok) {
+        // ファイル欠損なら警告バナーを表示して再アップロードを促す
+        if (res.status === 404 && json.reason === "file_not_found") {
+          setFileMissing(true)
+        }
         throw new Error(json.error || "再解析に失敗しました")
       }
       if (json.data) {
@@ -301,6 +373,67 @@ export default function DocumentDetailPage() {
           )}
         </div>
       </div>
+
+      {/* ファイル欠損時の警告バナー＋再アップロード導線 */}
+      {fileMissing && (
+        <div
+          onDragOver={(e) => {
+            e.preventDefault()
+            setIsDragging(true)
+          }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault()
+            setIsDragging(false)
+            if (isReuploading) return
+            const f = e.dataTransfer.files?.[0]
+            if (f) handleReupload(f)
+          }}
+          className="rounded-xl border p-4 transition-colors"
+          style={{
+            borderColor: isDragging ? "var(--dusk-primary)" : "#E0B080",
+            background: isDragging ? "var(--dusk-primary-light)" : "rgba(245, 230, 200, 0.55)",
+          }}
+        >
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="size-5 shrink-0" style={{ color: "#A0703A" }} />
+            <div className="flex-1 space-y-3">
+              <div>
+                <p className="font-semibold" style={{ color: "var(--dusk-text-main)" }}>
+                  この書類のファイルがDropboxに見つかりません
+                </p>
+                <p className="text-sm" style={{ color: "var(--dusk-text-muted)" }}>
+                  削除・移動された可能性があります。原本を再アップロードしてください（同じ保存先に上書きします）。
+                  ここにファイルをドラッグ＆ドロップするか、ボタンから選択できます（PDF / JPG / PNG）。
+                </p>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) handleReupload(f)
+                }}
+              />
+              <Button
+                size="sm"
+                className="btn-float-primary"
+                disabled={isReuploading}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {isReuploading ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Upload className="size-4" />
+                )}
+                {isReuploading ? "アップロード中..." : "ファイルを再アップロード"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 書類情報 */}
       <Card>

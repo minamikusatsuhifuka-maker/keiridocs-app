@@ -63,6 +63,13 @@ export async function POST(
   )
 
   if (!result.success) {
+    // ファイル欠損は404＋区別可能なreasonで返す（再アップロード導線のため）
+    if (result.reason === "file_not_found") {
+      return NextResponse.json(
+        { error: result.error, reason: "file_not_found" },
+        { status: 404 }
+      )
+    }
     return NextResponse.json({ error: result.error || "再解析に失敗しました" }, { status: 500 })
   }
 

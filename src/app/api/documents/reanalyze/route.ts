@@ -85,7 +85,9 @@ export async function POST(request: NextRequest) {
   }
 
   const successCount = results.filter((r) => r.success).length
+  // ファイル欠損は通常の失敗と区別して内訳を返す（1件欠損でも全体は止めない）
+  const fileNotFoundCount = results.filter((r) => r.reason === "file_not_found").length
   const failCount = results.length - successCount
 
-  return NextResponse.json({ results, successCount, failCount })
+  return NextResponse.json({ results, successCount, failCount, fileNotFoundCount })
 }

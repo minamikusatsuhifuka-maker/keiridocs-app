@@ -3,6 +3,19 @@
 const DROPBOX_API = "https://api.dropboxapi.com/2"
 const DROPBOX_CONTENT = "https://content.dropboxapi.com/2"
 
+/**
+ * Dropboxに対象ファイルが存在しない（path/not_found / 409）ことを表す専用エラー。
+ * 呼び出し側でこの型を見て「ファイル欠損」を一般的なエラーと区別する。
+ */
+export class DropboxFileNotFoundError extends Error {
+  readonly path: string
+  constructor(path: string) {
+    super(`Dropboxにファイルが見つかりません: ${path}`)
+    this.name = "DropboxFileNotFoundError"
+    this.path = path
+  }
+}
+
 /* ---------- アクセストークン自動更新 ---------- */
 let cachedAccessToken: string | null = null
 let tokenExpiresAt: number = 0
@@ -245,6 +258,10 @@ export async function downloadFile(path: string): Promise<{ buffer: Buffer; mime
 
   if (!res.ok) {
     const text = await res.text()
+    // ファイル欠損（409 path/not_found）は専用エラーで区別する
+    if (res.status === 409 && text.includes("path/not_found")) {
+      throw new DropboxFileNotFoundError(path)
+    }
     throw new Error(`Dropbox download error: ${res.status} ${text}`)
   }
 

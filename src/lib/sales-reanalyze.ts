@@ -1,6 +1,6 @@
 // 売上書類の再解析ロジック（個別・一括APIで共用）
 import { createClient } from "@/lib/supabase/server"
-import { downloadFile } from "@/lib/dropbox"
+import { downloadFile, DropboxFileNotFoundError } from "@/lib/dropbox"
 import {
   analyzeDocument,
   DEFAULT_GEMINI_MODEL,
@@ -15,6 +15,9 @@ type DocumentRow = Database["public"]["Tables"]["documents"]["Row"]
 /** 再解析に必要な最小限のドキュメント情報 */
 export type ReanalyzeTargetDoc = Pick<DocumentRow, "id" | "dropbox_path" | "type">
 
+/** 再解析の失敗理由（ファイル欠損を他の失敗と区別する） */
+export type ReanalyzeFailReason = "file_not_found" | "empty" | "unsupported" | "error"
+
 /** 再解析の結果（一括APIのresults配列にも使う） */
 export interface ReanalyzeResult {
   id: string
@@ -22,6 +25,8 @@ export interface ReanalyzeResult {
   amount: number | null
   vendor_name: string | null
   error?: string
+  /** 失敗時の理由区分（成功時は undefined） */
+  reason?: ReanalyzeFailReason
 }
 
 /** ファイルパスの拡張子からMIMEタイプを推定する（Dropboxのcontent-typeが不正確な場合の保険） */
@@ -68,13 +73,13 @@ export async function reanalyzeDocument(
 ): Promise<ReanalyzeResult> {
   try {
     if (!doc.dropbox_path) {
-      return { id: doc.id, success: false, amount: null, vendor_name: null, error: "Dropboxパスがありません" }
+      return { id: doc.id, success: false, amount: null, vendor_name: null, error: "Dropboxパスがありません", reason: "error" }
     }
 
     // Dropboxからファイルを取得
     const { buffer, mimeType: dlMimeType } = await downloadFile(doc.dropbox_path)
     if (!buffer || buffer.length === 0) {
-      return { id: doc.id, success: false, amount: null, vendor_name: null, error: "ファイルが空です" }
+      return { id: doc.id, success: false, amount: null, vendor_name: null, error: "ファイルが空です", reason: "error" }
     }
 
     // MIMEタイプ確定（Dropboxのcontent-typeが解析不可ならパス拡張子から推定）
@@ -84,7 +89,7 @@ export async function reanalyzeDocument(
       if (guessed) mimeType = guessed
     }
     if (!ANALYZABLE_MIME_TYPES.includes(mimeType)) {
-      return { id: doc.id, success: false, amount: null, vendor_name: null, error: `非対応の形式です（${mimeType}）` }
+      return { id: doc.id, success: false, amount: null, vendor_name: null, error: `非対応の形式です（${mimeType}）`, reason: "unsupported" }
     }
 
     const base64Data = buffer.toString("base64")
@@ -99,7 +104,7 @@ export async function reanalyzeDocument(
     // 解析が実質失敗（空）なら更新しない
     const isEmpty = result.confidence === 0 && !result.vendor_name && result.amount === null
     if (isEmpty) {
-      return { id: doc.id, success: false, amount: null, vendor_name: null, error: "AI解析の結果が空でした" }
+      return { id: doc.id, success: false, amount: null, vendor_name: null, error: "AI解析の結果が空でした", reason: "empty" }
     }
 
     // 抽出できた値のみ上書き（既存の良いデータを壊さない）。ocr_rawは常に更新
@@ -129,12 +134,24 @@ export async function reanalyzeDocument(
       vendor_name: result.vendor_name || null,
     }
   } catch (error) {
+    // ファイル欠損は専用reasonで区別し、ユーザー向けの分かりやすいメッセージを返す
+    if (error instanceof DropboxFileNotFoundError) {
+      return {
+        id: doc.id,
+        success: false,
+        amount: null,
+        vendor_name: null,
+        error: "ファイルがDropboxに見つかりません。削除・移動された可能性があります。原本を再アップロードしてください。",
+        reason: "file_not_found",
+      }
+    }
     return {
       id: doc.id,
       success: false,
       amount: null,
       vendor_name: null,
       error: error instanceof Error ? error.message : String(error),
+      reason: "error",
     }
   }
 }

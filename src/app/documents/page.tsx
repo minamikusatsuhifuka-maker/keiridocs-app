@@ -266,12 +266,19 @@ export default function DocumentsPage() {
 
     let successCount = 0
     let failCount = 0
+    let fileNotFoundCount = 0
     for (let i = 0; i < ids.length; i++) {
       setReanalyzeProgress(i + 1)
       try {
         const res = await fetch(`/api/documents/${ids[i]}/reanalyze`, { method: "POST" })
-        if (res.ok) successCount++
-        else failCount++
+        if (res.ok) {
+          successCount++
+        } else {
+          // ファイル欠損（404 + reason）は通常の失敗と区別する。1件欠損でも処理は止めない
+          const j = await res.json().catch(() => ({})) as { reason?: string }
+          if (res.status === 404 && j.reason === "file_not_found") fileNotFoundCount++
+          else failCount++
+        }
       } catch {
         failCount++
       }
@@ -282,8 +289,12 @@ export default function DocumentsPage() {
     }
 
     setIsReanalyzing(false)
+    // 「N件成功 / M件ファイル欠損 / K件失敗」の内訳を表示
+    const breakdown = `${successCount}件成功${fileNotFoundCount > 0 ? ` / ${fileNotFoundCount}件ファイル欠損` : ""}${failCount > 0 ? ` / ${failCount}件失敗` : ""}`
     if (successCount > 0) {
-      toast.success(`${ids.length}件中${successCount}件を更新しました${failCount > 0 ? `（${failCount}件失敗）` : ""}`)
+      toast.success(`${ids.length}件中 ${breakdown}`)
+    } else if (fileNotFoundCount > 0) {
+      toast.warning(`再解析できませんでした（${breakdown}）。欠損ファイルは詳細画面から再アップロードできます`)
     } else {
       toast.error(`再解析に失敗しました（${failCount}件）`)
     }
