@@ -7,7 +7,6 @@ import {
   FilePlus,
   FileText,
   Mail,
-  Settings,
   LogOut,
   BarChart3,
   Sparkles,
@@ -47,8 +46,7 @@ const navItems = [
   { href: "/business-cards", label: "名刺管理", icon: IdCard },
   { href: "/manuals", label: "マニュアル管理", icon: BookOpen },
   { href: "/mail", label: "メール確認", icon: Mail },
-  { href: "/settings", label: "設定", icon: Settings },
-  { href: "/line-staff", label: "LINEスタッフ管理", icon: Users },
+  // 「設定」「LINEスタッフ管理」は /mkadmin（管理画面）に集約したためサイドバーから除外
 ]
 
 // admin専用ナビ項目
