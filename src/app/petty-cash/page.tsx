@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect, useMemo, useRef } from "react"
+import { useState, useEffect, useMemo, useRef, Suspense } from "react"
+import { useSearchParams, useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -117,7 +118,10 @@ const categoryBadgeClass = (c: string | null | undefined, type: string): string 
   return "bg-red-100 text-red-700 hover:bg-red-100"
 }
 
-export default function PettyCashPage() {
+function PettyCashPageInner() {
+  const searchParams = useSearchParams()
+  const router = useRouter()
+
   const [balance, setBalance] = useState(0)
   const [transactions, setTransactions] = useState<PettyCashTransaction[]>([])
   const [staffMembers, setStaffMembers] = useState<StaffMember[]>([])
@@ -196,6 +200,16 @@ export default function PettyCashPage() {
     fetchData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedYear, selectedMonth])
+
+  // 書類登録ページのリンク（?action=staff-refund）からの自動起動
+  useEffect(() => {
+    if (searchParams.get("action") === "staff-refund") {
+      setShowStaffDialog(true)
+      // クエリを消して履歴をきれいにする（リロード時の再オープン防止）
+      router.replace("/petty-cash")
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
 
   // スタッフ名マップ
   const staffNameById = useMemo(() => {
@@ -727,6 +741,15 @@ export default function PettyCashPage() {
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+// useSearchParams は Suspense 境界が必要なため、ラップして公開する
+export default function PettyCashPage() {
+  return (
+    <Suspense fallback={null}>
+      <PettyCashPageInner />
+    </Suspense>
   )
 }
 

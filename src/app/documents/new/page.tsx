@@ -1312,7 +1312,7 @@ export default function NewDocumentPage() {
       <div className="pt-2 text-center">
         <button
           type="button"
-          onClick={() => router.push("/petty-cash")}
+          onClick={() => router.push("/petty-cash?action=staff-refund")}
           className="text-sm no-underline hover:underline transition-colors"
           style={{ color: "#9A8070" }}
         >

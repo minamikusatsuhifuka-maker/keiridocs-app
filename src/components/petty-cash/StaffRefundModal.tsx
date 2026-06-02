@@ -45,7 +45,8 @@ const SETTLEMENT_OPTIONS: { value: SettlementMethod; label: string; hint: string
 
 export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
   const today = new Date().toISOString().slice(0, 10)
-  const [tab, setTab] = useState<Tab>("manual")
+  // デフォルトは資料アップロード（AI解析）タブ
+  const [tab, setTab] = useState<Tab>("upload")
   const [staffList, setStaffList] = useState<Staff[]>([])
   const [staffId, setStaffId] = useState("")
   const [date, setDate] = useState(today)
@@ -126,7 +127,7 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
   }, [open])
 
   const reset = () => {
-    setTab("manual")
+    setTab("upload")
     setStaffId("")
     setAmount("")
     setNote("")
