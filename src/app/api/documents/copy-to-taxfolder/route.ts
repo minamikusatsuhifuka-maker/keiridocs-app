@@ -234,6 +234,10 @@ export async function POST(request: NextRequest) {
     )
 
     for (const folderName of targetFolders) {
+      // スタッフ領収書はDB(petty_cash_transactions)起点で 領収書/{スタッフ名}/ に整理してコピーするため、
+      // ここの汎用フラットコピーからは除外する（下の専用パスで処理）
+      if (folderName === "スタッフ領収書") continue
+
       const folderPath = `/経理書類/${folderName}`
       let files: Array<{ name: string; path_display: string; size: number; client_modified: string }> = []
       try {
@@ -281,6 +285,88 @@ export async function POST(request: NextRequest) {
         })
         processedPaths.add(file.path_display)
         await sleep(60)
+      }
+    }
+
+    /* --- pass 3: スタッフ領収書（小口現金）を 領収書/{スタッフ名}/ にコピー --- */
+    // petty_cash_transactions の staff_refund 領収書を、精算方法によらず対象月分すべてコピー
+    if (targetFolders.includes("スタッフ領収書")) {
+      try {
+        const { data: staffTxRaw, error: staffTxError } = await supabase
+          .from("petty_cash_transactions")
+          .select("id, amount, staff_member_id, receipt_urls, transaction_date, created_at")
+          .eq("category", "staff_refund")
+          .not("receipt_urls", "is", null)
+
+        if (staffTxError) {
+          console.error("スタッフ領収書取得エラー:", staffTxError)
+        } else {
+          // スタッフ名マップ
+          const { data: staffRaw } = await supabase
+            .from("staff_members")
+            .select("id, name")
+          const staffNameMap = new Map<string, string>()
+          for (const s of (staffRaw ?? []) as { id: string; name: string }[]) {
+            staffNameMap.set(s.id, s.name)
+          }
+
+          // 既に作成したスタッフ用サブフォルダを記録（重複ensure回避）
+          const ensuredStaffFolders = new Set<string>()
+
+          for (const tx of staffTxRaw ?? []) {
+            // 対象月判定（transaction_date 優先、無ければ created_at）
+            const basis =
+              (typeof tx.transaction_date === "string" && tx.transaction_date) ||
+              (typeof tx.created_at === "string" ? tx.created_at.slice(0, 10) : "")
+            if (!basis) continue
+            if (basis < dateFrom || basis >= dateToExclusive) continue
+
+            const urls = Array.isArray(tx.receipt_urls)
+              ? (tx.receipt_urls as unknown[]).filter(
+                  (u): u is string => typeof u === "string" && u.length > 0
+                )
+              : []
+            if (urls.length === 0) continue
+
+            const staffName =
+              (tx.staff_member_id && staffNameMap.get(tx.staff_member_id)) || "不明なスタッフ"
+            const staffFolder = `${taxFolderBase}/領収書/${staffName}`
+
+            // スタッフ用サブフォルダを作成
+            if (!ensuredStaffFolders.has(staffFolder)) {
+              try {
+                await ensureDropboxFolderExists(staffFolder)
+              } catch (folderError) {
+                console.error(`税理士提出 領収書フォルダ作成エラー (${staffFolder}):`, folderError)
+              }
+              ensuredStaffFolders.add(staffFolder)
+            }
+
+            for (const fromPath of urls) {
+              const fileName = fromPath.split("/").pop() ?? ""
+              if (!fileName) continue
+              const toPath = `${staffFolder}/${fileName}`
+              const result = await copyOne(fromPath, toPath)
+              if (result.status === "copied") copied++
+              else if (result.status === "skipped") skipped++
+              else failed++
+
+              details.push({
+                file_name: fileName,
+                type: "スタッフ領収書",
+                vendor_name: staffName,
+                amount: typeof tx.amount === "number" ? tx.amount : null,
+                date: basis,
+                source: "db",
+                status: result.status,
+                message: result.message,
+              })
+              await sleep(60)
+            }
+          }
+        }
+      } catch (staffErr) {
+        console.error("スタッフ領収書コピーパスエラー:", staffErr)
       }
     }
 

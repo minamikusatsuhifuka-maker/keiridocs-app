@@ -35,6 +35,13 @@ import {
 import { toast } from "sonner"
 import { PatientResponseModal } from "@/components/petty-cash/PatientResponseModal"
 import { StaffRefundModal } from "@/components/petty-cash/StaffRefundModal"
+import { PayrollRefundPanel } from "@/components/petty-cash/PayrollRefundPanel"
+
+// 残高に影響しない精算方法（給与返金・保管のみ）
+const NON_CASH_SETTLEMENTS = new Set(["payroll", "storage_only"])
+// 残高計算でこの取引が現金を動かさないか判定
+const isNonCashTx = (tx: { settlement_method?: string | null }): boolean =>
+  tx.settlement_method != null && NON_CASH_SETTLEMENTS.has(tx.settlement_method)
 
 interface PettyCashTransaction {
   id: string
@@ -52,6 +59,9 @@ interface PettyCashTransaction {
   transaction_date?: string | null
   balance_after?: number | null
   receipt_urls?: string[] | null
+  // 024マイグレーションで追加
+  settlement_method?: string | null
+  payroll_refund_status?: string | null
 }
 
 interface StaffMember {
@@ -87,6 +97,18 @@ const subLabel = (s: string | null | undefined): string =>
     ? "その他"
     : ""
 
+// 精算方法のサブラベル（給与返金は返金状態も併記）
+const settlementLabel = (
+  method: string | null | undefined,
+  payrollStatus: string | null | undefined
+): string => {
+  if (method === "payroll") {
+    return payrollStatus === "done" ? "給与返金（返金済み）" : "給与返金（返金待ち）"
+  }
+  if (method === "storage_only") return "保管のみ"
+  return ""
+}
+
 const categoryBadgeClass = (c: string | null | undefined, type: string): string => {
   if (c === "patient_response") return "bg-sky-100 text-sky-700 hover:bg-sky-100"
   if (c === "staff_refund") return "bg-pink-100 text-pink-700 hover:bg-pink-100"
@@ -110,6 +132,9 @@ export default function PettyCashPage() {
   const [showStaffDialog, setShowStaffDialog] = useState(false)
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  // 給与返金パネルの再取得トリガー
+  const [payrollReloadKey, setPayrollReloadKey] = useState(0)
 
   // 入金フォーム
   const [addAmount, setAddAmount] = useState("")
@@ -185,10 +210,11 @@ export default function PettyCashPage() {
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     )
 
-    // 月初残高を逆算
+    // 月初残高を逆算（給与返金・保管のみは現金が動かないので残高計算から除外）
     let runningBalance = balance
     for (let i = sorted.length - 1; i >= 0; i--) {
       const tx = sorted[i]
+      if (isNonCashTx(tx)) continue
       if (tx.type === "入金" || tx.type === "返金") {
         runningBalance -= tx.amount
       } else {
@@ -198,10 +224,12 @@ export default function PettyCashPage() {
 
     const result: (PettyCashTransaction & { runningBalance: number })[] = []
     for (const tx of sorted) {
-      if (tx.type === "入金" || tx.type === "返金") {
-        runningBalance += tx.amount
-      } else {
-        runningBalance -= tx.amount
+      if (!isNonCashTx(tx)) {
+        if (tx.type === "入金" || tx.type === "返金") {
+          runningBalance += tx.amount
+        } else {
+          runningBalance -= tx.amount
+        }
       }
       result.push({ ...tx, runningBalance })
     }
@@ -367,6 +395,12 @@ export default function PettyCashPage() {
         </CardContent>
       </Card>
 
+      {/* 給与返金待ちの集計 */}
+      <PayrollRefundPanel
+        reloadKey={payrollReloadKey}
+        onChanged={fetchData}
+      />
+
       {/* 月フィルター */}
       <Card>
         <CardHeader>
@@ -442,6 +476,8 @@ export default function PettyCashPage() {
                       ? new Date(tx.transaction_date).toLocaleDateString("ja-JP")
                       : new Date(tx.created_at).toLocaleDateString("ja-JP")
                     const sub = subLabel(tx.subcategory)
+                    const settleSub = settlementLabel(tx.settlement_method, tx.payroll_refund_status)
+                    const nonCash = isNonCashTx(tx)
                     const staffName = tx.staff_member_id
                       ? staffNameById.get(tx.staff_member_id) ?? "—"
                       : "—"
@@ -458,13 +494,21 @@ export default function PettyCashPage() {
                           {sub && (
                             <div className="text-xs text-muted-foreground mt-0.5">{sub}</div>
                           )}
+                          {settleSub && (
+                            <div className="text-xs text-amber-600 mt-0.5">{settleSub}</div>
+                          )}
                         </td>
                         <td className="px-4 py-3">{tx.note || tx.description || "—"}</td>
                         <td className="px-4 py-3">{staffName}</td>
                         <td className="px-4 py-3 text-right tabular-nums font-medium">
-                          <span className={tx.type === "出金" ? "text-red-600" : "text-emerald-600"}>
-                            {tx.type === "出金" ? "-" : "+"}¥{tx.amount.toLocaleString()}
-                          </span>
+                          {nonCash ? (
+                            // 給与返金・保管のみは現金が動かないため残高に影響しない表示
+                            <span className="text-muted-foreground">¥{tx.amount.toLocaleString()}</span>
+                          ) : (
+                            <span className={tx.type === "出金" ? "text-red-600" : "text-emerald-600"}>
+                              {tx.type === "出金" ? "-" : "+"}¥{tx.amount.toLocaleString()}
+                            </span>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-right tabular-nums">
                           <span className={tx.runningBalance < 0 ? "text-red-600 font-bold" : ""}>
@@ -539,7 +583,11 @@ export default function PettyCashPage() {
       <StaffRefundModal
         open={showStaffDialog}
         onOpenChange={setShowStaffDialog}
-        onSuccess={fetchData}
+        onSuccess={() => {
+          fetchData()
+          // 給与返金で登録された場合に集計パネルを更新
+          setPayrollReloadKey((k) => k + 1)
+        }}
       />
 
       {/* インポートダイアログ */}

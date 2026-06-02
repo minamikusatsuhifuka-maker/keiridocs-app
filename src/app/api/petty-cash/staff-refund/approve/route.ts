@@ -43,6 +43,12 @@ export async function POST(req: NextRequest) {
     const note = (formData.get("note") as string) ?? ""
     const transactionDate =
       (formData.get("transaction_date") as string) || new Date().toISOString().slice(0, 10)
+    // 精算方法（未指定は後方互換で小口返金扱い）
+    const rawSettlement = formData.get("settlement_method") as string | null
+    const settlementMethod =
+      rawSettlement === "payroll" || rawSettlement === "storage_only"
+        ? rawSettlement
+        : "petty_cash"
 
     if (!staffMemberId) {
       return NextResponse.json({ error: "スタッフが選択されていません" }, { status: 400 })
@@ -104,7 +110,9 @@ export async function POST(req: NextRequest) {
     if (settingsError) throw settingsError
     const settings = settingsRaw as unknown as { id: string; balance: number }
     const currentBalance = settings.balance ?? 0
-    const newBalance = currentBalance - totalAmount
+    // 小口返金のみ残高を減算。給与返金・保管のみは残高を動かさない
+    const deductsBalance = settlementMethod === "petty_cash"
+    const newBalance = deductsBalance ? currentBalance - totalAmount : currentBalance
 
     const { data: tx, error: txErr } = await serviceClient
       .from("petty_cash_transactions")
@@ -120,16 +128,22 @@ export async function POST(req: NextRequest) {
         created_by: registeredBy,
         transaction_date: transactionDate,
         balance_after: newBalance,
+        settlement_method: settlementMethod,
+        // 給与返金のみ返金待ちステータスを付与
+        payroll_refund_status: settlementMethod === "payroll" ? "pending" : null,
       })
       .select()
       .single()
     if (txErr) throw txErr
 
-    const { error: updateError } = await serviceClient
-      .from("petty_cash_settings")
-      .update({ balance: newBalance, updated_at: new Date().toISOString() })
-      .eq("id", settings.id)
-    if (updateError) throw updateError
+    // 残高を動かすのは小口返金のときだけ
+    if (deductsBalance) {
+      const { error: updateError } = await serviceClient
+        .from("petty_cash_settings")
+        .update({ balance: newBalance, updated_at: new Date().toISOString() })
+        .eq("id", settings.id)
+      if (updateError) throw updateError
+    }
 
     return NextResponse.json({
       success: true,

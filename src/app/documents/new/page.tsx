@@ -1307,6 +1307,18 @@ export default function NewDocumentPage() {
           売上書類の登録はこちら →
         </button>
       </div>
+
+      {/* スタッフ領収書の登録（小口現金）への控えめなテキストリンク */}
+      <div className="pt-2 text-center">
+        <button
+          type="button"
+          onClick={() => router.push("/petty-cash")}
+          className="text-sm no-underline hover:underline transition-colors"
+          style={{ color: "#9A8070" }}
+        >
+          スタッフ領収書の登録はこちら →
+        </button>
+      </div>
     </div>
   )
 }

@@ -720,6 +720,10 @@ export interface Database {
           created_by: string | null
           transaction_date: string | null
           balance_after: number | null
+          // 024_staff_refund_settlement.sql で追加
+          settlement_method: string | null
+          payroll_refund_status: string | null
+          payroll_refunded_at: string | null
         }
         Insert: {
           id?: string
@@ -740,6 +744,9 @@ export interface Database {
           created_by?: string | null
           transaction_date?: string | null
           balance_after?: number | null
+          settlement_method?: string | null
+          payroll_refund_status?: string | null
+          payroll_refunded_at?: string | null
         }
         Update: {
           id?: string
@@ -760,6 +767,9 @@ export interface Database {
           created_by?: string | null
           transaction_date?: string | null
           balance_after?: number | null
+          settlement_method?: string | null
+          payroll_refund_status?: string | null
+          payroll_refunded_at?: string | null
         }
         Relationships: []
       }

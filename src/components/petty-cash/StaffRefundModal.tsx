@@ -34,6 +34,14 @@ interface Props {
 }
 
 type Tab = "manual" | "upload"
+type SettlementMethod = "petty_cash" | "payroll" | "storage_only"
+
+// 精算方法の表示ラベル
+const SETTLEMENT_OPTIONS: { value: SettlementMethod; label: string; hint: string }[] = [
+  { value: "petty_cash", label: "小口現金から返金", hint: "小口残高から差し引きます（少額向け）" },
+  { value: "payroll", label: "給与で返金", hint: "次回給与に上乗せ。小口残高は減りません（大金向け）" },
+  { value: "storage_only", label: "保管のみ", hint: "返金せず領収書の保管だけ。残高は動きません" },
+]
 
 export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
   const today = new Date().toISOString().slice(0, 10)
@@ -41,6 +49,7 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
   const [staffList, setStaffList] = useState<Staff[]>([])
   const [staffId, setStaffId] = useState("")
   const [date, setDate] = useState(today)
+  const [settlement, setSettlement] = useState<SettlementMethod>("petty_cash")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
 
@@ -122,6 +131,7 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
     setAmount("")
     setNote("")
     setDate(today)
+    setSettlement("petty_cash")
     setFiles([])
     setAnalyzed(null)
     setAnalyzedTotal(0)
@@ -151,6 +161,7 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
           amount: amt,
           note,
           transaction_date: date,
+          settlement_method: settlement,
         }),
       })
       const data = await res.json()
@@ -215,6 +226,7 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
           .join(" / ")
       )
       fd.append("transaction_date", date)
+      fd.append("settlement_method", settlement)
 
       const res = await fetch("/api/petty-cash/staff-refund/approve", {
         method: "POST",
@@ -275,6 +287,25 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
               <Label>日付</Label>
               <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
             </div>
+          </div>
+
+          {/* 精算方法（手入力・アップロード共通） */}
+          <div className="space-y-1">
+            <Label>精算方法</Label>
+            <select
+              className="w-full border rounded px-2 py-1.5 text-sm"
+              value={settlement}
+              onChange={(e) => setSettlement(e.target.value as SettlementMethod)}
+            >
+              {SETTLEMENT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500">
+              {SETTLEMENT_OPTIONS.find((o) => o.value === settlement)?.hint}
+            </p>
           </div>
 
           {tab === "manual" ? (
@@ -422,7 +453,12 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
                   <p className="text-xs text-gray-600">
                     内容に問題がなければ「承認」を押すと、領収書はDropboxの
                     <code className="mx-1">スタッフ領収書/{"{スタッフ名}"}/{"{YYYY年MM月}"}/</code>
-                    に保存され、合計金額が小口残高から差し引かれます。
+                    に保存されます。
+                    {settlement === "petty_cash"
+                      ? "合計金額が小口残高から差し引かれます。"
+                      : settlement === "payroll"
+                      ? "給与で返金するため小口残高は変動しません（給与返金待ちに計上）。"
+                      : "保管のみのため小口残高は変動しません。"}
                   </p>
                 </div>
               )}
@@ -443,7 +479,11 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
           ) : (
             analyzed && (
               <Button onClick={approve} disabled={loading}>
-                {loading ? "保存中…" : `承認（¥${analyzedTotal.toLocaleString()} を差引）`}
+                {loading
+                  ? "保存中…"
+                  : settlement === "petty_cash"
+                  ? `承認（¥${analyzedTotal.toLocaleString()} を差引）`
+                  : `承認（¥${analyzedTotal.toLocaleString()}）`}
               </Button>
             )
           )}

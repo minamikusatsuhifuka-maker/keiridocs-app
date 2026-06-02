@@ -29,8 +29,14 @@ export async function POST(req: NextRequest) {
       amount: number
       note?: string
       transaction_date?: string
+      settlement_method?: string
     }
     const { staff_member_id, amount, note, transaction_date } = body
+    // 精算方法（未指定は後方互換で小口返金扱い）
+    const settlementMethod =
+      body.settlement_method === "payroll" || body.settlement_method === "storage_only"
+        ? body.settlement_method
+        : "petty_cash"
 
     if (!staff_member_id) {
       return NextResponse.json({ error: "スタッフを選択してください" }, { status: 400 })
@@ -60,7 +66,9 @@ export async function POST(req: NextRequest) {
     if (settingsError) throw settingsError
     const settings = settingsRaw as unknown as { id: string; balance: number }
     const currentBalance = settings.balance ?? 0
-    const newBalance = currentBalance - amount
+    // 小口返金のみ残高を減算。給与返金・保管のみは残高を動かさない
+    const deductsBalance = settlementMethod === "petty_cash"
+    const newBalance = deductsBalance ? currentBalance - amount : currentBalance
 
     const txDate = transaction_date || new Date().toISOString().slice(0, 10)
     const noteText = note?.trim() || "スタッフ返金"
@@ -78,16 +86,22 @@ export async function POST(req: NextRequest) {
         created_by: registeredBy,
         transaction_date: txDate,
         balance_after: newBalance,
+        settlement_method: settlementMethod,
+        // 給与返金のみ返金待ちステータスを付与
+        payroll_refund_status: settlementMethod === "payroll" ? "pending" : null,
       })
       .select()
       .single()
     if (insertError) throw insertError
 
-    const { error: updateError } = await serviceClient
-      .from("petty_cash_settings")
-      .update({ balance: newBalance, updated_at: new Date().toISOString() })
-      .eq("id", settings.id)
-    if (updateError) throw updateError
+    // 残高を動かすのは小口返金のときだけ
+    if (deductsBalance) {
+      const { error: updateError } = await serviceClient
+        .from("petty_cash_settings")
+        .update({ balance: newBalance, updated_at: new Date().toISOString() })
+        .eq("id", settings.id)
+      if (updateError) throw updateError
+    }
 
     return NextResponse.json({ success: true, transaction: tx, balance: newBalance })
   } catch (e: unknown) {
