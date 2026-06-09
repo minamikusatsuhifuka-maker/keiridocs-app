@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getDocumentPath, moveFile, deleteFile } from "@/lib/dropbox"
 import { getCurrentUserRole } from "@/lib/auth"
-import type { Database } from "@/types/database"
+import { normalizePaymentMethod, normalizeBankInfo } from "@/lib/gemini"
+import type { Database, Json } from "@/types/database"
 
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"]
 type DocumentUpdate = Database["public"]["Tables"]["documents"]["Update"]
@@ -86,6 +87,16 @@ export async function GET(request: NextRequest) {
     query = query.neq("type", excludeType)
   }
 
+  // 「要振込」フィルタ：振込が必要なもの（bank_transfer / unknown / NULL）に絞る
+  // （自動引落し auto_debit・カード払い credit_card は除外）
+  if (searchParams.get("require_transfer") === "1") {
+    query = query.or("payment_method.in.(bank_transfer,unknown),payment_method.is.null")
+  }
+  // 未払いのみ（支払い済み以外）
+  if (searchParams.get("unpaid") === "1") {
+    query = query.neq("payment_status", "支払い済み")
+  }
+
   // テキスト検索（取引先名・摘要）
   if (searchQuery) {
     query = query.or(`vendor_name.ilike.%${searchQuery}%,description.ilike.%${searchQuery}%`)
@@ -136,6 +147,16 @@ export async function POST(request: NextRequest) {
     }
 
     const { type, vendor_name, amount, issue_date, due_date, description, input_method, dropbox_path, ocr_raw, tax_category, account_title, file_hash, items } = body
+
+    // 支払方法・振込先はAI解析結果（ocr_raw）から取り出す。
+    // bodyで明示指定があればそれを優先（再解析や手動修正の余地を残す）。
+    const ocrRawObj = (ocr_raw && typeof ocr_raw === "object" ? ocr_raw : {}) as Record<string, unknown>
+    const paymentMethod = normalizePaymentMethod(
+      (body as Record<string, unknown>).payment_method ?? ocrRawObj.payment_method
+    )
+    const bankInfo = normalizeBankInfo(
+      (body as Record<string, unknown>).bank_info ?? ocrRawObj.bank_info
+    )
 
     // 必須フィールドのバリデーション
     if (typeof type !== "string" || typeof vendor_name !== "string") {
@@ -226,6 +247,8 @@ export async function POST(request: NextRequest) {
         ocr_raw: (ocr_raw ?? null) as import("@/types/database").Json | null,
         tax_category: typeof tax_category === "string" ? tax_category : "未判定",
         account_title: typeof account_title === "string" ? account_title : "",
+        payment_method: paymentMethod,
+        bank_info: bankInfo as Json | null,
         file_hash: fileHashStr || "",
         user_id: user.id,
       })

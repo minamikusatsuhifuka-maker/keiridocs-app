@@ -12,6 +12,7 @@ import {
   Download,
   Briefcase,
   Receipt,
+  Wallet,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -19,6 +20,7 @@ const navItems = [
   { href: "/", label: "ホーム", icon: LayoutDashboard },
   { href: "/documents/new", label: "登録", icon: FilePlus },
   { href: "/documents", label: "書類", icon: FileText },
+  { href: "/payments", label: "支払", icon: Wallet },
   { href: "/analytics", label: "分析", icon: BarChart3 },
   { href: "/downloads", label: "自動取得", icon: Download },
   { href: "/accountant", label: "税理士", icon: Briefcase },

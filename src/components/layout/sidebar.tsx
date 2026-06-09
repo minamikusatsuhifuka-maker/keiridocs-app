@@ -35,6 +35,7 @@ const navItems = [
   { href: "/", label: "ダッシュボード", icon: LayoutDashboard },
   { href: "/documents/new", label: "書類登録", icon: FilePlus },
   { href: "/documents", label: "書類一覧", icon: FileText },
+  { href: "/payments", label: "支払管理", icon: Wallet },
   { href: "/analytics", label: "分析", icon: BarChart3 },
   { href: "/reports", label: "分析レポート", icon: LineChart },
   { href: "/analytics/ai-report", label: "AIレポート", icon: Sparkles },
@@ -96,6 +97,7 @@ function isActive(href: string, pathname: string) {
   if (href === "/analytics") return pathname === "/analytics"
   if (href === "/reports") return pathname === "/reports" || pathname.startsWith("/reports/")
   if (href === "/staff-receipts/admin") return pathname === "/staff-receipts/admin"
+  if (href === "/payments") return pathname === "/payments"
   if (href === "/petty-cash") return pathname === "/petty-cash"
   if (href === "/refund") return pathname === "/refund" || pathname.startsWith("/refund/")
   if (href === "/line-staff") return pathname === "/line-staff"

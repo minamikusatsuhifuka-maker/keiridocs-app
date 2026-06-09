@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { DocumentTable } from "@/components/documents/document-table"
-import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput } from "lucide-react"
+import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput, Wallet } from "lucide-react"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
@@ -124,6 +124,8 @@ export default function DocumentsPage() {
   const [statusFilter, setStatusFilter] = useState("all")
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo] = useState("")
+  // 要振込（未払い）フィルタ
+  const [transferUnpaidOnly, setTransferUnpaidOnly] = useState(false)
 
   // ソート
   const [sortField, setSortField] = useState<SortField>("created_at")
@@ -163,6 +165,12 @@ export default function DocumentsPage() {
       if (dateFrom) params.set("date_from", dateFrom)
       if (dateTo) params.set("date_to", dateTo)
 
+      // 要振込（未払い）：振込が必要 かつ 未払い に絞る
+      if (transferUnpaidOnly) {
+        params.set("require_transfer", "1")
+        params.set("unpaid", "1")
+      }
+
       const res = await fetch(`/api/documents?${params.toString()}`)
       if (!res.ok) throw new Error("データの取得に失敗しました")
       const json = await res.json() as { data: Document[]; count: number | null }
@@ -175,7 +183,7 @@ export default function DocumentsPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [search, typeFilter, statusFilter, dateFrom, dateTo, sortField, sortDirection, page, activeTab])
+  }, [search, typeFilter, statusFilter, dateFrom, dateTo, sortField, sortDirection, page, activeTab, transferUnpaidOnly])
 
   useEffect(() => {
     fetchDocuments()
@@ -213,6 +221,7 @@ export default function DocumentsPage() {
     setStatusFilter("all")
     setDateFrom("")
     setDateTo("")
+    setTransferUnpaidOnly(false)
     setPage(0)
   }
 
@@ -721,7 +730,7 @@ export default function DocumentsPage() {
     }
   }
 
-  const hasFilters = search || typeFilter !== "all" || statusFilter !== "all" || dateFrom || dateTo
+  const hasFilters = search || typeFilter !== "all" || statusFilter !== "all" || dateFrom || dateTo || transferUnpaidOnly
 
   // タブ切り替えハンドラ（ページネーション・選択もリセット）
   function handleTabChange(tab: "expense" | "sales") {
@@ -858,6 +867,24 @@ export default function DocumentsPage() {
               className="w-[150px]"
             />
           </div>
+
+          {/* 要振込（未払い）フィルタ — 経費タブのみ */}
+          {activeTab === "expense" && (
+            <Button
+              variant={transferUnpaidOnly ? "default" : "outline"}
+              size="sm"
+              onClick={() => { setTransferUnpaidOnly((v) => !v); setPage(0) }}
+              className="btn-float"
+              style={transferUnpaidOnly ? {
+                background: "linear-gradient(135deg, #C8922A, #B8782A)",
+                color: "#fff",
+                boxShadow: "0 4px 12px rgba(180,120,40,0.35)",
+              } : undefined}
+            >
+              <Wallet className="size-3.5" />
+              要振込（未払い）
+            </Button>
+          )}
 
           {hasFilters && (
             <Button variant="ghost" size="sm" onClick={handleReset}>

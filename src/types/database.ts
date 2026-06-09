@@ -33,6 +33,8 @@ export interface Database {
           registrant_id: string | null
           document_staff_id: string | null
           payment_status: string
+          payment_method: string | null
+          bank_info: Json | null
           user_id: string
           created_at: string
           updated_at: string
@@ -57,6 +59,8 @@ export interface Database {
           registrant_id?: string | null
           document_staff_id?: string | null
           payment_status?: string
+          payment_method?: string | null
+          bank_info?: Json | null
           user_id: string
           created_at?: string
           updated_at?: string
@@ -81,6 +85,8 @@ export interface Database {
           registrant_id?: string | null
           document_staff_id?: string | null
           payment_status?: string
+          payment_method?: string | null
+          bank_info?: Json | null
           user_id?: string
           created_at?: string
           updated_at?: string

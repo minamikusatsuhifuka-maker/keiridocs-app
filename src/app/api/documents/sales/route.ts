@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createHash } from "crypto"
 import { uploadFile, ensureDropboxFolderExists } from "@/lib/dropbox"
-import { analyzeDocument, DEFAULT_GEMINI_MODEL, SALES_ANALYSIS_DOCUMENT_TYPES, SALES_ANALYSIS_EXTRA_HINT } from "@/lib/gemini"
+import { analyzeDocument, DEFAULT_GEMINI_MODEL, SALES_ANALYSIS_DOCUMENT_TYPES, SALES_ANALYSIS_EXTRA_HINT, normalizePaymentMethod, normalizeBankInfo } from "@/lib/gemini"
 import type { OcrResult } from "@/lib/gemini"
 import type { Database } from "@/types/database"
 
@@ -163,6 +163,8 @@ const EMPTY_OCR_RESULT: OcrResult = {
   confidence: 0,
   tax_category: null,
   account_title: null,
+  payment_method: "unknown",
+  bank_info: null,
   items: [],
 }
 
@@ -193,6 +195,8 @@ function coerceOcrResult(input: unknown): OcrResult {
     confidence: typeof o.confidence === "number" ? o.confidence : 0,
     tax_category: typeof o.tax_category === "string" ? o.tax_category : null,
     account_title: typeof o.account_title === "string" ? o.account_title : null,
+    payment_method: normalizePaymentMethod(o.payment_method),
+    bank_info: normalizeBankInfo(o.bank_info),
     items,
   }
 }

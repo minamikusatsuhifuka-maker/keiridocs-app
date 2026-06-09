@@ -117,6 +117,9 @@ export async function reanalyzeDocument(
     if (result.description) update.description = result.description
     if (result.tax_category) update.tax_category = result.tax_category
     if (result.account_title) update.account_title = result.account_title
+    // 支払方法・振込先は再解析で常に更新（不明→振込判定への更新を可能にする）
+    update.payment_method = result.payment_method || "unknown"
+    update.bank_info = (result.bank_info ?? null) as unknown as Json
 
     const { error: updateError } = await supabase
       .from("documents")

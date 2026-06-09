@@ -30,6 +30,29 @@ export const SALES_ANALYSIS_EXTRA_HINT = `
 PDFが複数ページの場合は全ページを確認し、振込金額の合計（トータル）を返すこと。
 `
 
+/** 支払方法・振込先のJSON項目（プロンプトのJSONテンプレートに差し込む） */
+const PAYMENT_JSON_FIELDS = `  "payment_method": "支払方法（bank_transfer=振込が必要/auto_debit=口座振替・自動引落し/credit_card=カード払い/unknown=判別不能）",
+  "bank_info": {
+    "bank_name": "銀行名（無ければ空文字）",
+    "branch_name": "支店名",
+    "account_type": "口座種別（普通/当座 など）",
+    "account_number": "口座番号",
+    "account_holder": "口座名義"
+  },`
+
+/** 支払方法・振込先の判定ルール（プロンプト末尾に差し込む） */
+const PAYMENT_EXTRACTION_RULES = `【支払方法（payment_method）の判定基準】
+- 「お振込先」「振込先」「振込口座」など、こちらが振り込む口座が記載されている → bank_transfer
+- 「口座振替」「自動引落し」「自動引落」「振替日」など、自動で引き落とされる旨の記載 → auto_debit
+- 「カード」「クレジット」「クレジットカード払い」などの記載 → credit_card
+- いずれも判別できない場合 → unknown
+- 迷う場合、振込先口座の記載があれば原則 bank_transfer とする
+
+【振込先情報（bank_info）の抽出ルール】
+- 振込先（銀行名・支店名・口座種別・口座番号・口座名義）が記載されていれば bank_info に抽出する
+- 振込先の記載が一切無ければ bank_info は null を返す
+- 各項目が部分的に欠ける場合、見つかった項目のみ埋め、無い項目は空文字にする`
+
 /** 税区分の選択肢 */
 export const TAX_CATEGORIES = [
   "課税10%",
@@ -56,6 +79,24 @@ export const ACCOUNT_TITLES = [
   "雑費",
 ] as const
 
+/** 支払方法の選択肢（bank_transfer/unknown は支払管理の対象、auto_debit/credit_card は除外） */
+export const PAYMENT_METHODS = ["bank_transfer", "auto_debit", "credit_card", "unknown"] as const
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number]
+
+/** 振込先情報の型（bank_info にJSONで保存） */
+export interface BankInfo {
+  /** 銀行名 */
+  bank_name: string
+  /** 支店名 */
+  branch_name: string
+  /** 口座種別（普通/当座 等） */
+  account_type: string
+  /** 口座番号 */
+  account_number: string
+  /** 口座名義 */
+  account_holder: string
+}
+
 /** 明細行の型 */
 export interface OcrItem {
   item_name: string
@@ -77,6 +118,10 @@ export interface OcrResult {
   confidence: number
   tax_category: string | null
   account_title: string | null
+  /** 支払方法（bank_transfer/auto_debit/credit_card/unknown） */
+  payment_method: PaymentMethod
+  /** 振込先情報（抽出できなければ null） */
+  bank_info: BankInfo | null
   items: OcrItem[]
 }
 
@@ -91,6 +136,8 @@ const FALLBACK_RESULT: OcrResult = {
   confidence: 0,
   tax_category: null,
   account_title: null,
+  payment_method: "unknown",
+  bank_info: null,
   items: [],
 }
 
@@ -151,6 +198,7 @@ export async function analyzeDocument(
   "confidence": 解析の確信度（0.0〜1.0）,
   "tax_category": "税区分（課税10%/課税8%（軽減）/非課税/免税/不課税/未判定のいずれか）",
   "account_title": "勘定科目（下記参照）",
+${PAYMENT_JSON_FIELDS}
   "items": [
     {
       "item_name": "品目名",
@@ -187,7 +235,9 @@ export async function analyzeDocument(
 - 設備修理 → 修繕費
 - 社会保険・損害保険 → 保険料
 - スタッフ関連（食事補助等） → 福利厚生費
-- その他 → 雑費`
+- その他 → 雑費
+
+${PAYMENT_EXTRACTION_RULES}`
 
   // 429（レート制限）対策: 最大4回まで指数バックオフでリトライ（5秒・10秒・20秒・40秒）
   const maxRetries = 4
@@ -299,6 +349,7 @@ export async function analyzeDocumentFromText(
   "confidence": 解析の確信度（0.0〜1.0）,
   "tax_category": "税区分（課税10%/課税8%（軽減）/非課税/免税/不課税/未判定のいずれか）",
   "account_title": "勘定科目（下記参照）",
+${PAYMENT_JSON_FIELDS}
   "items": [
     {
       "item_name": "品目名",
@@ -470,6 +521,38 @@ export function normalizeAmount(raw: unknown): number | null {
 }
 
 /**
+ * 支払方法を正規化する。許可された値以外・未指定は "unknown" にフォールバックする。
+ */
+export function normalizePaymentMethod(raw: unknown): PaymentMethod {
+  if (typeof raw === "string" && (PAYMENT_METHODS as readonly string[]).includes(raw)) {
+    return raw as PaymentMethod
+  }
+  return "unknown"
+}
+
+/**
+ * 振込先情報を正規化する。
+ * - オブジェクトなら各項目を文字列化（無い項目は空文字）
+ * - すべて空なら null（＝振込先記載なし）
+ * - それ以外（null・文字列など）は null
+ */
+export function normalizeBankInfo(raw: unknown): BankInfo | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
+  const o = raw as Record<string, unknown>
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : "")
+  const info: BankInfo = {
+    bank_name: str(o.bank_name),
+    branch_name: str(o.branch_name),
+    account_type: str(o.account_type),
+    account_number: str(o.account_number),
+    account_holder: str(o.account_holder),
+  }
+  // 全項目が空なら振込先記載なしとみなす
+  const hasAny = Object.values(info).some((v) => v !== "")
+  return hasAny ? info : null
+}
+
+/**
  * Geminiの応答テキストからJSONをパースする
  * 失敗時はフォールバック値を返す
  */
@@ -511,6 +594,8 @@ function parseOcrResponse(responseText: string): OcrResult {
       confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0,
       tax_category: typeof parsed.tax_category === "string" ? parsed.tax_category : null,
       account_title: typeof parsed.account_title === "string" ? parsed.account_title : null,
+      payment_method: normalizePaymentMethod(parsed.payment_method),
+      bank_info: normalizeBankInfo(parsed.bank_info),
       items,
     }
   } catch {

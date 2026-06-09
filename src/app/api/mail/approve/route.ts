@@ -105,6 +105,8 @@ export async function POST(request: NextRequest) {
               status: "未処理",
               dropbox_path: movedPath,
               ocr_raw: ocrResult ? (JSON.parse(JSON.stringify(ocrResult)) as Json) : null,
+              payment_method: ocrResult?.payment_method || "unknown",
+              bank_info: (ocrResult?.bank_info ?? null) as Json | null,
               user_id: user.id,
             })
 

@@ -468,6 +468,8 @@ async function processFile(
       ocr_raw: ocrResult as unknown as import("@/types/database").Json,
       tax_category: ocrResult.tax_category || "未判定",
       account_title: ocrResult.account_title || "",
+      payment_method: ocrResult.payment_method || "unknown",
+      bank_info: (ocrResult.bank_info ?? null) as unknown as import("@/types/database").Json,
       file_hash: fileHash,
       user_id: userId,
     })

@@ -1,11 +1,13 @@
 "use client"
 
 import { useState } from "react"
+import Link from "next/link"
 import {
   AlertCircle,
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Loader2,
   Wallet,
 } from "lucide-react"
@@ -133,13 +135,25 @@ export function DueAlerts({ documents }: DueAlertsProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle
-          className="flex items-center gap-2 text-base"
-          style={{ color: "#1A1A1A" }}
-        >
-          <AlertCircle className="size-5" style={{ color: "#DC2626" }} />
-          支払期日が近い書類 TOP5
-        </CardTitle>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle
+            className="flex items-center gap-2 text-base"
+            style={{ color: "#1A1A1A" }}
+          >
+            <AlertCircle className="size-5" style={{ color: "#DC2626" }} />
+            支払期日が近い書類 TOP5
+          </CardTitle>
+          {/* 要振込の支払管理ページへの導線 */}
+          <Link
+            href="/payments"
+            className="flex shrink-0 items-center gap-0.5 text-xs font-semibold hover:underline"
+            style={{ color: "#B8782A" }}
+          >
+            <Wallet className="size-3.5" />
+            支払管理へ
+            <ChevronRight className="size-3.5" />
+          </Link>
+        </div>
       </CardHeader>
       <CardContent>
         {sorted.length === 0 ? (
