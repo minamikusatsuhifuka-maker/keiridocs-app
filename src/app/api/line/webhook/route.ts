@@ -2,12 +2,20 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { uploadFile } from "@/lib/dropbox"
 import { analyzeDocument, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
+import {
+  settleStaffReceipt,
+  SETTLEMENT_LABELS,
+  type SettlementMethod,
+} from "@/lib/staff-refund-core"
 import type { Database } from "@/types/database"
 import type { Json } from "@/types/database"
 import crypto from "crypto"
 
 /** Vercel関数のタイムアウトを60秒に延長（Gemini + Dropbox処理に十分な時間を確保） */
 export const maxDuration = 60
+
+/** スタッフ立替の精算方法しきい値（円）。未満=小口/以上=給与。未設定なら10000円 */
+const PAYROLL_THRESHOLD = Number(process.env.STAFF_REFUND_PAYROLL_THRESHOLD) || 10000
 
 /* ---------- 型定義 ---------- */
 
@@ -25,6 +33,10 @@ interface LineEvent {
     contentProvider?: {
       type: string
     }
+  }
+  /** ボタンテンプレートのpostbackアクションで送られるデータ */
+  postback?: {
+    data: string
   }
 }
 
@@ -174,6 +186,89 @@ async function sendLineMessage(
   }
 }
 
+/** LINEのpostbackボタンアクション */
+interface PostbackAction {
+  type: "postback"
+  label: string
+  data: string
+  displayText?: string
+}
+
+/** 任意のmessageオブジェクト配列をreplyで送信（失敗時はfalse） */
+async function replyRaw(replyToken: string, messages: unknown[]): Promise<boolean> {
+  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN
+  if (!token) return false
+  try {
+    const res = await fetch("https://api.line.me/v2/bot/message/reply", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ replyToken, messages }),
+    })
+    if (!res.ok) {
+      console.error("LINE Reply(raw)送信失敗:", res.status, await res.text())
+      return false
+    }
+    return true
+  } catch (error) {
+    console.error("LINE Reply(raw)送信エラー:", error)
+    return false
+  }
+}
+
+/** 任意のmessageオブジェクト配列をpushで送信（失敗時はfalse） */
+async function pushRaw(userId: string, messages: unknown[]): Promise<boolean> {
+  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN
+  if (!token) return false
+  try {
+    const res = await fetch("https://api.line.me/v2/bot/message/push", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ to: userId, messages }),
+    })
+    if (!res.ok) {
+      console.error("LINE Push(raw)送信失敗:", res.status, await res.text())
+      return false
+    }
+    return true
+  } catch (error) {
+    console.error("LINE Push(raw)送信エラー:", error)
+    return false
+  }
+}
+
+/**
+ * ボタンテンプレート（最大4アクション）を送信する（reply→pushフォールバック付き）
+ * textは160文字以内に丸める（LINE仕様）
+ */
+async function sendLineButtons(
+  replyToken: string,
+  userId: string,
+  altText: string,
+  text: string,
+  actions: PostbackAction[]
+): Promise<void> {
+  const message = {
+    type: "template",
+    altText: altText.slice(0, 400),
+    template: {
+      type: "buttons",
+      text: text.slice(0, 160),
+      actions: actions.slice(0, 4),
+    },
+  }
+  const replied = await replyRaw(replyToken, [message])
+  if (!replied) {
+    console.log("Reply(buttons)失敗のためPushで再送:", userId)
+    await pushRaw(userId, [message])
+  }
+}
+
 /**
  * スタッフ領収書用のDropboxパスを生成する
  * /経理書類/スタッフ領収書/{スタッフ名}/{YYYY年MM月}/{ファイル名}
@@ -246,6 +341,12 @@ async function handleEvent(event: LineEvent): Promise<void> {
     console.log(`LINE_USER_ID: ${event.source.userId}`)
   }
 
+  // ボタンテンプレートの確定（精算方法の選択）
+  if (event.type === "postback") {
+    await handlePostback(event)
+    return
+  }
+
   if (event.type !== "message") return
 
   const messageType = event.message?.type
@@ -253,6 +354,63 @@ async function handleEvent(event: LineEvent): Promise<void> {
     await handleImageMessage(event)
   } else if (messageType === "text") {
     await handleTextMessage(event)
+  }
+}
+
+/** postbackデータ(action=settle&receipt_id=...&method=...)をパースして精算確定 */
+async function handlePostback(event: LineEvent): Promise<void> {
+  const { replyToken, source, postback } = event
+  if (!postback?.data) return
+
+  const params = new URLSearchParams(postback.data)
+  if (params.get("action") !== "settle") return
+
+  const receiptId = params.get("receipt_id")
+  const method = params.get("method") as SettlementMethod | null
+  if (!receiptId || !method || !(method in SETTLEMENT_LABELS)) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
+    return
+  }
+
+  try {
+    const result = await settleStaffReceipt({
+      staffReceiptId: receiptId,
+      settlementMethod: method,
+    })
+
+    switch (result.status) {
+      case "already":
+        await sendLineMessage(replyToken, source.userId, "ℹ️ この領収書はすでに登録済みです。")
+        return
+      case "not_found":
+        await sendLineMessage(replyToken, source.userId, "⚠️ 対象の領収書が見つかりませんでした。")
+        return
+      case "no_amount":
+        await sendLineMessage(replyToken, source.userId, "⚠️ 金額が読み取れていないため精算できません。経理にご相談ください。")
+        return
+      case "ok": {
+        const label = SETTLEMENT_LABELS[method]
+        const amountStr = formatAmount(result.amount ?? null)
+        await sendLineMessage(
+          replyToken,
+          source.userId,
+          `✅ ${label}で登録しました\n${result.storeName || "不明"} ¥${amountStr}`
+        )
+
+        // 院長へpush通知（ADMIN_LINE_USER_ID未設定ならスキップ）
+        const adminId = process.env.ADMIN_LINE_USER_ID
+        if (adminId) {
+          await pushMessage(
+            adminId,
+            `🧾 ${result.staffName}さんが ¥${amountStr} を立替（${result.storeName || "不明"}）。\n${label}で登録されました。`
+          )
+        }
+        return
+      }
+    }
+  } catch (error) {
+    console.error("[LINE Bot] 精算確定エラー:", error)
+    await sendLineMessage(replyToken, source.userId, "⚠️ 精算処理中にエラーが発生しました。経理にご相談ください。")
   }
 }
 
@@ -615,10 +773,10 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     const resultPath = await uploadFile(dropboxPath, imageBuffer)
     console.log(`[LINE Bot] Dropboxアップロード完了: ${resultPath}`)
 
-    // 7. staff_receiptsに保存
+    // 7. staff_receiptsに保存（精算ボタンで使うidを取得）
     console.log("[LINE Bot] DB保存開始")
     const docType = ocrResult.type || "領収書"
-    const { error: insertError } = await supabase
+    const { data: inserted, error: insertError } = await supabase
       .from("staff_receipts")
       .insert({
         staff_member_id: matchedStaff.id,
@@ -632,25 +790,57 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
         account_title: ocrResult.account_title || null,
         ai_raw: JSON.parse(JSON.stringify(ocrResult)) as Json,
       })
+      .select("id")
+      .single()
 
-    if (insertError) {
+    if (insertError || !inserted) {
       console.error("staff_receipts挿入エラー:", insertError)
       await sendLineMessage(replyToken, source.userId, "⚠️ データベースへの保存に失敗しました。管理者にご連絡ください。")
       return
     }
     console.log("[LINE Bot] DB保存完了")
+    const receiptId = (inserted as { id: string }).id
 
-    // 8. 完了メッセージをLINEに返信
+    // 8. 精算方法を提案してLINEに返信
     const storeName = ocrResult.vendor_name || "不明"
-    const amountStr = formatAmount(ocrResult.amount)
+    const amount = ocrResult.amount
+    const amountStr = formatAmount(amount)
     const dateStr = ocrResult.issue_date || "日付不明"
 
-    await sendLineMessage(
+    // 金額が読み取れない場合はボタンを出さず、手動精算を案内（誤精算防止）
+    if (!amount || amount <= 0) {
+      await sendLineMessage(
+        replyToken,
+        source.userId,
+        `✅ 解析しました\n${storeName} ¥${amountStr}（${dateStr}）\nDropboxに保存しました。\n⚠️ 金額が読み取れなかったため、精算は経理側で手動登録してください。`
+      )
+      console.log("[LINE Bot] 処理完了（金額未読のためボタンなし）")
+      return
+    }
+
+    // 金額しきい値で精算方法を自動提案（未満=小口/以上=給与）
+    const proposed: SettlementMethod = amount < PAYROLL_THRESHOLD ? "petty_cash" : "payroll"
+    const other: SettlementMethod = proposed === "petty_cash" ? "payroll" : "petty_cash"
+    const reason =
+      amount < PAYROLL_THRESHOLD
+        ? `${formatAmount(PAYROLL_THRESHOLD)}円未満なので`
+        : `${formatAmount(PAYROLL_THRESHOLD)}円以上なので`
+
+    const text = `✅ 解析しました\n${storeName.slice(0, 30)} ¥${amountStr}（${dateStr}）\n${reason}【${SETTLEMENT_LABELS[proposed]}】で登録します。よろしいですか？`
+
+    const mkData = (m: SettlementMethod) => `action=settle&receipt_id=${receiptId}&method=${m}`
+    await sendLineButtons(
       replyToken,
       source.userId,
-      `✅ 登録完了！\n${storeName} ¥${amountStr}\n${dateStr}\nDropboxに保存しました`
+      `${storeName} ¥${amountStr} の精算方法を選択`,
+      text,
+      [
+        { type: "postback", label: "この内容で確定", data: mkData(proposed), displayText: `${SETTLEMENT_LABELS[proposed]}で確定` },
+        { type: "postback", label: `${SETTLEMENT_LABELS[other]}に変更`, data: mkData(other), displayText: `${SETTLEMENT_LABELS[other]}に変更` },
+        { type: "postback", label: "保管のみ", data: mkData("storage_only"), displayText: "保管のみ" },
+      ]
     )
-    console.log("[LINE Bot] 処理完了")
+    console.log("[LINE Bot] 精算提案ボタン送信完了")
   } catch (error) {
     // 予期しないエラーが発生しても必ずLINEに返信する
     console.error("[LINE Bot] 画像処理中にエラー発生:", error)
