@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { createClient as createAuthClient } from "@/lib/supabase/server"
+import { normalizeSubsidyCategory } from "@/lib/subsidy"
 import type { Database } from "@/types/database"
 
 function createServiceClient() {
@@ -30,6 +31,7 @@ export async function POST(req: NextRequest) {
       note?: string
       transaction_date?: string
       settlement_method?: string
+      subsidy_category?: string
     }
     const { staff_member_id, amount, note, transaction_date } = body
     // 精算方法（未指定は後方互換で小口返金扱い）
@@ -37,6 +39,8 @@ export async function POST(req: NextRequest) {
       body.settlement_method === "payroll" || body.settlement_method === "storage_only"
         ? body.settlement_method
         : "petty_cash"
+    // アチーブメント参加区分（未指定・不正値は 'other' = 全額）
+    const subsidyCategory = normalizeSubsidyCategory(body.subsidy_category)
 
     if (!staff_member_id) {
       return NextResponse.json({ error: "スタッフを選択してください" }, { status: 400 })
@@ -89,6 +93,8 @@ export async function POST(req: NextRequest) {
         settlement_method: settlementMethod,
         // 給与返金のみ返金待ちステータスを付与
         payroll_refund_status: settlementMethod === "payroll" ? "pending" : null,
+        // アチーブメント参加区分（支給率の判定に使用）
+        subsidy_category: subsidyCategory,
       })
       .select()
       .single()

@@ -357,6 +357,11 @@ function PettyCashPageInner() {
     window.location.href = `/api/petty-cash/export-csv?year=${selectedYear}&month=${selectedMonth}`
   }
 
+  // スタッフ別支給額CSV出力（税理士向け・半額計算反映）
+  const handleStaffSubsidyCsvExport = () => {
+    window.location.href = `/api/petty-cash/staff-subsidy-csv?year=${selectedYear}&month=${selectedMonth}`
+  }
+
   return (
     <div className="space-y-6">
       {/* ヘッダー */}
@@ -365,10 +370,16 @@ function PettyCashPageInner() {
           <Wallet className="size-7" style={{ color: "var(--dusk-primary)" }} />
           <h1 className="text-2xl font-bold">小口現金管理</h1>
         </div>
-        <Button onClick={handleCsvExport} variant="outline">
-          <FileDown className="mr-2 size-4" />
-          CSV出力
-        </Button>
+        <div className="flex gap-2">
+          <Button onClick={handleStaffSubsidyCsvExport} variant="outline">
+            <FileDown className="mr-2 size-4" />
+            スタッフ別支給額CSV
+          </Button>
+          <Button onClick={handleCsvExport} variant="outline">
+            <FileDown className="mr-2 size-4" />
+            CSV出力
+          </Button>
+        </div>
       </div>
 
       {/* 残高カード + アクションボタン */}

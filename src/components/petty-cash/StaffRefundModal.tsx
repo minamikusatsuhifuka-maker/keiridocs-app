@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Upload } from "lucide-react"
+import { SUBSIDY_OPTIONS, type SubsidyCategory } from "@/lib/subsidy"
 
 interface Staff {
   id: string
@@ -51,6 +52,8 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
   const [staffId, setStaffId] = useState("")
   const [date, setDate] = useState(today)
   const [settlement, setSettlement] = useState<SettlementMethod>("petty_cash")
+  // アチーブメント参加区分（既定は「それ以外」＝全額）
+  const [subsidyCategory, setSubsidyCategory] = useState<SubsidyCategory>("other")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
 
@@ -133,6 +136,7 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
     setNote("")
     setDate(today)
     setSettlement("petty_cash")
+    setSubsidyCategory("other")
     setFiles([])
     setAnalyzed(null)
     setAnalyzedTotal(0)
@@ -163,6 +167,7 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
           note,
           transaction_date: date,
           settlement_method: settlement,
+          subsidy_category: subsidyCategory,
         }),
       })
       const data = await res.json()
@@ -228,6 +233,7 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
       )
       fd.append("transaction_date", date)
       fd.append("settlement_method", settlement)
+      fd.append("subsidy_category", subsidyCategory)
 
       const res = await fetch("/api/petty-cash/staff-refund/approve", {
         method: "POST",
@@ -288,6 +294,27 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
               <Label>日付</Label>
               <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
             </div>
+          </div>
+
+          {/* 区分（アチーブメント参加区分。手入力・アップロード共通） */}
+          <div className="space-y-1">
+            <Label>区分</Label>
+            <select
+              className="w-full border rounded px-2 py-1.5 text-sm"
+              value={subsidyCategory}
+              onChange={(e) => setSubsidyCategory(e.target.value as SubsidyCategory)}
+            >
+              {SUBSIDY_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500">
+              {subsidyCategory === "achievement_repeat"
+                ? "2回目以降のため、支給額は立替額の半額（端数切り捨て）で計算されます。"
+                : "全額支給（立替額どおり）で計算されます。"}
+            </p>
           </div>
 
           {/* 精算方法（手入力・アップロード共通） */}

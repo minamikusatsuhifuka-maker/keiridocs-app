@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { createClient as createAuthClient } from "@/lib/supabase/server"
 import { uploadFile } from "@/lib/dropbox"
+import { normalizeSubsidyCategory } from "@/lib/subsidy"
 import type { Database } from "@/types/database"
 
 function createServiceClient() {
@@ -49,6 +50,8 @@ export async function POST(req: NextRequest) {
       rawSettlement === "payroll" || rawSettlement === "storage_only"
         ? rawSettlement
         : "petty_cash"
+    // アチーブメント参加区分（未指定・不正値は 'other' = 全額）
+    const subsidyCategory = normalizeSubsidyCategory(formData.get("subsidy_category"))
 
     if (!staffMemberId) {
       return NextResponse.json({ error: "スタッフが選択されていません" }, { status: 400 })
@@ -131,6 +134,8 @@ export async function POST(req: NextRequest) {
         settlement_method: settlementMethod,
         // 給与返金のみ返金待ちステータスを付与
         payroll_refund_status: settlementMethod === "payroll" ? "pending" : null,
+        // アチーブメント参加区分（支給率の判定に使用）
+        subsidy_category: subsidyCategory,
       })
       .select()
       .single()

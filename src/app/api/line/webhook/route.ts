@@ -7,6 +7,11 @@ import {
   SETTLEMENT_LABELS,
   type SettlementMethod,
 } from "@/lib/staff-refund-core"
+import {
+  SUBSIDY_LABELS,
+  normalizeSubsidyCategory,
+  type SubsidyCategory,
+} from "@/lib/subsidy"
 import type { Database } from "@/types/database"
 import type { Json } from "@/types/database"
 import crypto from "crypto"
@@ -357,16 +362,116 @@ async function handleEvent(event: LineEvent): Promise<void> {
   }
 }
 
-/** postbackデータ(action=settle&receipt_id=...&method=...)をパースして精算確定 */
+/**
+ * postbackデータを振り分ける。2段階フロー:
+ *  - action=category&receipt_id=...&cat=...   … 区分選択 → 精算方法の確認ボタンを返す
+ *  - action=settle&receipt_id=...&method=...&cat=... … 確定 → 精算登録
+ */
 async function handlePostback(event: LineEvent): Promise<void> {
-  const { replyToken, source, postback } = event
+  const { postback } = event
   if (!postback?.data) return
 
   const params = new URLSearchParams(postback.data)
-  if (params.get("action") !== "settle") return
+  const action = params.get("action")
+
+  if (action === "category") {
+    await handleCategoryPostback(event, params)
+    return
+  }
+  if (action === "settle") {
+    await handleSettlePostback(event, params)
+    return
+  }
+}
+
+/**
+ * 1段階目: 区分が選ばれたら、金額しきい値で精算方法を自動判定し、
+ * 確認ボタン（data に区分と精算方法の両方を載せる）を返す。
+ */
+async function handleCategoryPostback(
+  event: LineEvent,
+  params: URLSearchParams
+): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("receipt_id")
+  const category = normalizeSubsidyCategory(params.get("cat"))
+  if (!receiptId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
+    return
+  }
+
+  try {
+    const supabase = createServiceClient()
+    // 領収書から金額・店名を取得して精算方法を判定（既存ロジックと同じしきい値）
+    const { data: receipt, error } = await supabase
+      .from("staff_receipts")
+      .select("amount, store_name")
+      .eq("id", receiptId)
+      .single()
+
+    if (error || !receipt) {
+      await sendLineMessage(replyToken, source.userId, "⚠️ 対象の領収書が見つかりませんでした。")
+      return
+    }
+
+    const r = receipt as { amount: number | null; store_name: string | null }
+    const amount = r.amount
+    const storeName = r.store_name || "不明"
+    const amountStr = formatAmount(amount)
+
+    // 金額が読み取れない場合はボタンを出さず手動精算を案内（誤精算防止）
+    if (!amount || amount <= 0) {
+      await sendLineMessage(
+        replyToken,
+        source.userId,
+        "⚠️ 金額が読み取れていないため精算できません。経理側で手動登録してください。"
+      )
+      return
+    }
+
+    // 金額しきい値で精算方法を自動提案（未満=小口/以上=給与）
+    const proposed: SettlementMethod = amount < PAYROLL_THRESHOLD ? "petty_cash" : "payroll"
+    const other: SettlementMethod = proposed === "petty_cash" ? "payroll" : "petty_cash"
+    const reason =
+      amount < PAYROLL_THRESHOLD
+        ? `${formatAmount(PAYROLL_THRESHOLD)}円未満なので`
+        : `${formatAmount(PAYROLL_THRESHOLD)}円以上なので`
+
+    // 2回目以降のみ「支給額が半額になります」と注記
+    const halfNote = category === "achievement_repeat" ? "\n※2回目以降は支給額が半額になります" : ""
+    const text = `${SUBSIDY_LABELS[category]}／${reason}【${SETTLEMENT_LABELS[proposed]}】で登録します。よろしいですか？${halfNote}`
+
+    // 確認ボタンの data に区分(cat)と精算方法(method)の両方を引き継ぐ
+    const mkData = (m: SettlementMethod) =>
+      `action=settle&receipt_id=${receiptId}&method=${m}&cat=${category}`
+    await sendLineButtons(
+      replyToken,
+      source.userId,
+      `${storeName} ¥${amountStr} の登録確認`,
+      text,
+      [
+        { type: "postback", label: "この内容で確定", data: mkData(proposed), displayText: `${SETTLEMENT_LABELS[proposed]}で確定` },
+        { type: "postback", label: `精算方法を変更（${SETTLEMENT_LABELS[other]}）`, data: mkData(other), displayText: `${SETTLEMENT_LABELS[other]}に変更` },
+        { type: "postback", label: "保管のみ", data: mkData("storage_only"), displayText: "保管のみ" },
+      ]
+    )
+  } catch (error) {
+    console.error("[LINE Bot] 区分選択処理エラー:", error)
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理中にエラーが発生しました。経理にご相談ください。")
+  }
+}
+
+/** 2段階目: 区分と精算方法をパースして精算確定 */
+async function handleSettlePostback(
+  event: LineEvent,
+  params: URLSearchParams
+): Promise<void> {
+  const { replyToken, source } = event
 
   const receiptId = params.get("receipt_id")
   const method = params.get("method") as SettlementMethod | null
+  // 区分は確認ボタンに引き継がれている（未指定・不正値は 'other' = 全額）
+  const category: SubsidyCategory = normalizeSubsidyCategory(params.get("cat"))
   if (!receiptId || !method || !(method in SETTLEMENT_LABELS)) {
     await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
     return
@@ -376,6 +481,7 @@ async function handlePostback(event: LineEvent): Promise<void> {
     const result = await settleStaffReceipt({
       staffReceiptId: receiptId,
       settlementMethod: method,
+      subsidyCategory: category,
     })
 
     switch (result.status) {
@@ -390,11 +496,14 @@ async function handlePostback(event: LineEvent): Promise<void> {
         return
       case "ok": {
         const label = SETTLEMENT_LABELS[method]
+        const catLabel = SUBSIDY_LABELS[category]
         const amountStr = formatAmount(result.amount ?? null)
+        // 2回目以降は支給額が半額になる旨を注記
+        const halfNote = category === "achievement_repeat" ? "\n※2回目以降のため支給額は半額（端数切り捨て）で計算されます" : ""
         await sendLineMessage(
           replyToken,
           source.userId,
-          `✅ ${label}で登録しました\n${result.storeName || "不明"} ¥${amountStr}`
+          `✅ ${catLabel}／${label}で登録しました\n${result.storeName || "不明"} ¥${amountStr}${halfNote}`
         )
 
         // 院長へpush通知（ADMIN_LINE_USER_ID未設定ならスキップ）
@@ -402,7 +511,7 @@ async function handlePostback(event: LineEvent): Promise<void> {
         if (adminId) {
           await pushMessage(
             adminId,
-            `🧾 ${result.staffName}さんが ¥${amountStr} を立替（${result.storeName || "不明"}）。\n${label}で登録されました。`
+            `🧾 ${result.staffName}さんが ¥${amountStr} を立替（${result.storeName || "不明"}）。\n区分: ${catLabel}\n${label}で登録されました。${halfNote}`
           )
         }
         return
@@ -801,7 +910,7 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     console.log("[LINE Bot] DB保存完了")
     const receiptId = (inserted as { id: string }).id
 
-    // 8. 精算方法を提案してLINEに返信
+    // 8. まず区分を質問する（2段階フロー1段階目）。精算方法は区分選択後に自動判定する
     const storeName = ocrResult.vendor_name || "不明"
     const amount = ocrResult.amount
     const amountStr = formatAmount(amount)
@@ -818,29 +927,22 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
       return
     }
 
-    // 金額しきい値で精算方法を自動提案（未満=小口/以上=給与）
-    const proposed: SettlementMethod = amount < PAYROLL_THRESHOLD ? "petty_cash" : "payroll"
-    const other: SettlementMethod = proposed === "petty_cash" ? "payroll" : "petty_cash"
-    const reason =
-      amount < PAYROLL_THRESHOLD
-        ? `${formatAmount(PAYROLL_THRESHOLD)}円未満なので`
-        : `${formatAmount(PAYROLL_THRESHOLD)}円以上なので`
-
-    const text = `✅ 解析しました\n${storeName.slice(0, 30)} ¥${amountStr}（${dateStr}）\n${reason}【${SETTLEMENT_LABELS[proposed]}】で登録します。よろしいですか？`
-
-    const mkData = (m: SettlementMethod) => `action=settle&receipt_id=${receiptId}&method=${m}`
+    // 区分ボタン（postback の data に区分を載せる。選択後に精算方法の確認へ進む）
+    const text = `✅ 解析しました\n${storeName.slice(0, 30)} ¥${amountStr}（${dateStr}）\nこの立替の区分を選んでください`
+    const mkCatData = (c: SubsidyCategory) =>
+      `action=category&receipt_id=${receiptId}&cat=${c}`
     await sendLineButtons(
       replyToken,
       source.userId,
-      `${storeName} ¥${amountStr} の精算方法を選択`,
+      `${storeName} ¥${amountStr} の区分を選択`,
       text,
       [
-        { type: "postback", label: "この内容で確定", data: mkData(proposed), displayText: `${SETTLEMENT_LABELS[proposed]}で確定` },
-        { type: "postback", label: `${SETTLEMENT_LABELS[other]}に変更`, data: mkData(other), displayText: `${SETTLEMENT_LABELS[other]}に変更` },
-        { type: "postback", label: "保管のみ", data: mkData("storage_only"), displayText: "保管のみ" },
+        { type: "postback", label: SUBSIDY_LABELS.achievement_first, data: mkCatData("achievement_first"), displayText: SUBSIDY_LABELS.achievement_first },
+        { type: "postback", label: SUBSIDY_LABELS.achievement_repeat, data: mkCatData("achievement_repeat"), displayText: SUBSIDY_LABELS.achievement_repeat },
+        { type: "postback", label: SUBSIDY_LABELS.other, data: mkCatData("other"), displayText: SUBSIDY_LABELS.other },
       ]
     )
-    console.log("[LINE Bot] 精算提案ボタン送信完了")
+    console.log("[LINE Bot] 区分質問ボタン送信完了")
   } catch (error) {
     // 予期しないエラーが発生しても必ずLINEに返信する
     console.error("[LINE Bot] 画像処理中にエラー発生:", error)

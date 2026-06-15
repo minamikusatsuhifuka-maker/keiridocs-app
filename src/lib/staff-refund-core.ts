@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js"
 import type { Database, Json } from "@/types/database"
+import { normalizeSubsidyCategory, type SubsidyCategory } from "@/lib/subsidy"
 
 /**
  * スタッフ立替領収書（staff_receipts）の精算確定を行う共通ロジック。
@@ -61,11 +62,15 @@ export function createServiceClient(): ServiceClient {
 export async function settleStaffReceipt(params: {
   staffReceiptId: string
   settlementMethod: SettlementMethod
+  /** アチーブメント参加区分（未指定は 'other' = 全額扱い） */
+  subsidyCategory?: SubsidyCategory | string | null
   registeredBy?: string
   client?: ServiceClient
 }): Promise<SettleResult> {
   const supabase = params.client ?? createServiceClient()
   const { staffReceiptId, settlementMethod } = params
+  // 区分（未指定・不正値は 'other' = 全額）。支給額は資料出力時に計算するため、ここでは区分のみ保存
+  const subsidyCategory = normalizeSubsidyCategory(params.subsidyCategory)
 
   // 1. 既に小口（精算）登録済みか確認（二重押し対策）
   const { data: existing } = await supabase
@@ -139,6 +144,8 @@ export async function settleStaffReceipt(params: {
       settlement_method: settlementMethod,
       // 給与返金のみ返金待ちステータスを付与
       payroll_refund_status: settlementMethod === "payroll" ? "pending" : null,
+      // アチーブメント参加区分（支給率の判定に使用）
+      subsidy_category: subsidyCategory,
     })
 
   if (insertError) throw insertError

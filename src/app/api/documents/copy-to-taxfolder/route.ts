@@ -9,6 +9,7 @@ import {
 } from "@/lib/dropbox"
 import { getCurrentUserRole } from "@/lib/auth"
 import { buildTaxSubmissionCsv } from "@/lib/tax-submission-csv"
+import { buildStaffSubsidyCsv } from "@/lib/staff-subsidy-csv"
 
 /** 税理士提出フォルダのコピー対象ソースフォルダ */
 const ALL_SOURCE_FOLDERS = [
@@ -388,6 +389,7 @@ export async function POST(request: NextRequest) {
     // それぞれDropboxにアップロードする（既存は上書き）
     let csvDropboxPath: string | null = null
     let salesCsvDropboxPath: string | null = null
+    let staffSubsidyCsvDropboxPath: string | null = null
     let csvSaveError: string | null = null
 
     // 経費CSV: 月フォルダ直下に保存（売上行は除外）
@@ -439,6 +441,37 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // スタッフ別支給額CSV: スタッフ領収書が対象に含まれるとき、領収書サブフォルダ内に保存
+    // 税理士提出/{YYYY年MM月}/領収書/スタッフ別支給額_{YYYY年MM月}.csv
+    if (targetFolders.includes("スタッフ領収書")) {
+      try {
+        const builtSubsidy = await buildStaffSubsidyCsv({
+          supabase,
+          year: yearNum,
+          month: monthNum,
+        })
+        // スタッフ返金が1件もなければCSVは作成しない
+        if (builtSubsidy.rowCount > 0) {
+          const subsidyFolder = `${taxFolderBase}/領収書`
+          try {
+            await ensureDropboxFolderExists(subsidyFolder)
+          } catch (folderError) {
+            console.error("税理士提出 領収書フォルダ作成エラー（支給額CSV用）:", folderError)
+          }
+          const targetSubsidyCsvPath = `${subsidyFolder}/${builtSubsidy.fileName}`
+          const buffer = Buffer.from(builtSubsidy.csvWithBom, "utf-8")
+          staffSubsidyCsvDropboxPath = await uploadFileOverwrite(targetSubsidyCsvPath, buffer)
+          console.log(
+            `スタッフ別支給額CSVを保存しました: ${staffSubsidyCsvDropboxPath} (${builtSubsidy.rowCount}名)`
+          )
+        }
+      } catch (csvError) {
+        const msg = csvError instanceof Error ? csvError.message : String(csvError)
+        csvSaveError = csvSaveError ? `${csvSaveError} / 支給額CSV: ${msg}` : `支給額CSV: ${msg}`
+        console.error("スタッフ別支給額CSV保存エラー:", csvError)
+      }
+    }
+
     return NextResponse.json({
       copied,
       skipped,
@@ -448,6 +481,7 @@ export async function POST(request: NextRequest) {
       csv: csvBody,
       csvDropboxPath,
       salesCsvDropboxPath,
+      staffSubsidyCsvDropboxPath,
       csvSaveError,
     })
   } catch (error) {

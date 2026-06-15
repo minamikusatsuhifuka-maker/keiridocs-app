@@ -730,6 +730,8 @@ export interface Database {
           settlement_method: string | null
           payroll_refund_status: string | null
           payroll_refunded_at: string | null
+          // 026_subsidy_category.sql で追加
+          subsidy_category: string | null
         }
         Insert: {
           id?: string
@@ -753,6 +755,7 @@ export interface Database {
           settlement_method?: string | null
           payroll_refund_status?: string | null
           payroll_refunded_at?: string | null
+          subsidy_category?: string | null
         }
         Update: {
           id?: string
@@ -776,6 +779,7 @@ export interface Database {
           settlement_method?: string | null
           payroll_refund_status?: string | null
           payroll_refunded_at?: string | null
+          subsidy_category?: string | null
         }
         Relationships: []
       }
