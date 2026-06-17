@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -103,6 +103,8 @@ export function PaymentMemo() {
   const [drafts, setDrafts] = useState<DraftItem[]>([])
   const [aiSummary, setAiSummary] = useState("")
   const [saving, setSaving] = useState(false)
+  // 抽出結果の選択削除（保存前の整理。indexで選択を保持する）
+  const [selectedDraftIndices, setSelectedDraftIndices] = useState<Set<number>>(new Set())
 
   // ---- 保存済み一覧 ----
   const [savedItems, setSavedItems] = useState<SavedItem[]>([])
@@ -221,6 +223,7 @@ export function PaymentMemo() {
         }))
       )
       setAiSummary(data.ai_summary || "")
+      setSelectedDraftIndices(new Set())
       if (items.length === 0) {
         toast.info("支払い項目は見つかりませんでした")
       } else {
@@ -239,6 +242,8 @@ export function PaymentMemo() {
   }
   const removeDraft = (index: number) => {
     setDrafts((prev) => prev.filter((_, i) => i !== index))
+    // 行の削除でindexがずれるため選択はリセット
+    setSelectedDraftIndices(new Set())
   }
   const addDraft = () => {
     setDrafts((prev) => [
@@ -313,6 +318,7 @@ export function PaymentMemo() {
       clearImage()
       setDrafts([])
       setAiSummary("")
+      setSelectedDraftIndices(new Set())
       fetchList()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "保存に失敗しました")
@@ -435,6 +441,53 @@ export function PaymentMemo() {
     }
   }
 
+  // ---- 抽出結果の重複判定（保存済み一覧との重複＋抽出結果内の重複） ----
+  // isDuplicatePair に統一（一覧・保存時チェックと同じロジック＝食い違わない）。
+  // savedItems は既存の payment_memo_items そのものなので、追加のAPI呼び出しは不要。
+  const draftDupFlags = useMemo(
+    () =>
+      drafts.map((d, i) => {
+        const di = { vendor_name: d.vendor_name, amount: d.amount }
+        // 既存の保存済み項目と重複するか
+        const dupExisting = savedItems.some((s) => isDuplicatePair(di, s))
+        // 同じ抽出結果の中で他の行と重複するか
+        const dupIntra = drafts.some(
+          (o, j) => j !== i && isDuplicatePair(di, { vendor_name: o.vendor_name, amount: o.amount })
+        )
+        return dupExisting || dupIntra
+      }),
+    [drafts, savedItems]
+  )
+  const duplicateDraftCount = draftDupFlags.filter(Boolean).length
+
+  // ---- 抽出結果行の選択トグル ----
+  const toggleDraftSelect = (index: number) => {
+    setSelectedDraftIndices((prev) => {
+      const next = new Set(prev)
+      if (next.has(index)) next.delete(index)
+      else next.add(index)
+      return next
+    })
+  }
+  // 抽出結果の全選択トグル
+  const allDraftsSelected = drafts.length > 0 && selectedDraftIndices.size === drafts.length
+  const toggleSelectAllDrafts = () => {
+    setSelectedDraftIndices((prev) =>
+      prev.size === drafts.length ? new Set() : new Set(drafts.map((_, i) => i))
+    )
+  }
+  // 重複マークが付いた行をまとめて選択
+  const selectDuplicateDrafts = () => {
+    const dupIdx = draftDupFlags.flatMap((isDup, i) => (isDup ? [i] : []))
+    setSelectedDraftIndices(new Set(dupIdx))
+  }
+  // 選択した抽出結果行を保存前に除外（DBは触らない）
+  const removeSelectedDrafts = () => {
+    if (selectedDraftIndices.size === 0) return
+    setDrafts((prev) => prev.filter((_, i) => !selectedDraftIndices.has(i)))
+    setSelectedDraftIndices(new Set())
+  }
+
   return (
     <div className="space-y-6">
       {/* ============ 入力エリア ============ */}
@@ -523,11 +576,63 @@ export function PaymentMemo() {
             {aiSummary && <p className="text-sm text-muted-foreground">{aiSummary}</p>}
           </CardHeader>
           <CardContent className="space-y-3">
+            {/* 一括操作バー: 全選択・重複を選択・選択削除（保存前の整理） */}
+            <div className="flex flex-wrap items-center gap-2 border-b pb-2">
+              <Checkbox
+                checked={allDraftsSelected}
+                onCheckedChange={toggleSelectAllDrafts}
+                aria-label="抽出結果を全選択"
+              />
+              <span className="text-xs text-muted-foreground">
+                全選択{selectedDraftIndices.size > 0 ? `（${selectedDraftIndices.size}件選択中）` : ""}
+              </span>
+              {duplicateDraftCount > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 gap-1 border-orange-400 px-2 text-xs text-orange-600 hover:bg-orange-50 hover:text-orange-700"
+                  onClick={selectDuplicateDrafts}
+                >
+                  <AlertTriangle className="size-3.5" />
+                  重複を選択（{duplicateDraftCount}）
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="destructive"
+                className="ml-auto h-7 px-2 text-xs"
+                onClick={removeSelectedDrafts}
+                disabled={selectedDraftIndices.size === 0}
+              >
+                <Trash2 className="mr-1 size-3.5" />
+                選択した{selectedDraftIndices.size}件を削除
+              </Button>
+            </div>
             {drafts.map((d, i) => (
               <div
                 key={i}
-                className="flex flex-wrap items-center gap-2 rounded-md border px-3 py-2"
+                className={`flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 ${
+                  draftDupFlags[i]
+                    ? "border-orange-300 bg-orange-50"
+                    : selectedDraftIndices.has(i)
+                      ? "ring-1 ring-[var(--dusk-primary)]"
+                      : ""
+                }`}
               >
+                {/* 行頭: 選択チェックボックス */}
+                <Checkbox
+                  checked={selectedDraftIndices.has(i)}
+                  onCheckedChange={() => toggleDraftSelect(i)}
+                  aria-label={`抽出${i + 1}を選択`}
+                  className="shrink-0"
+                />
+                {/* 重複マーク */}
+                {draftDupFlags[i] && (
+                  <Badge className="gap-0.5 bg-orange-500 px-1.5 py-0 text-xs text-white hover:bg-orange-600">
+                    <AlertTriangle className="size-3" />
+                    重複
+                  </Badge>
+                )}
                 {/* 1段目（狭い画面では折り返す）: 支払先・金額・期限・方法 */}
                 <Input
                   value={d.vendor_name}

@@ -28,7 +28,9 @@ export function normalizeVendor(name: string | null | undefined): string {
 export function normalizeAmountValue(amount: number | string | null | undefined): number | null {
   if (typeof amount === "number") return Number.isNaN(amount) ? null : amount
   if (typeof amount === "string") {
-    const n = Number(amount.replace(/[,，¥￥$\s円]/g, ""))
+    const cleaned = amount.replace(/[,，¥￥$\s円]/g, "")
+    if (cleaned === "") return null // 空文字は Number("")===0 になるため明示的に対象外
+    const n = Number(cleaned)
     return Number.isNaN(n) ? null : n
   }
   return null
