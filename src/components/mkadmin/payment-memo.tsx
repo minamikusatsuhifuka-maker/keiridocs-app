@@ -31,7 +31,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { LinkDocumentModal } from "@/components/mkadmin/link-document-modal"
-import { dedupKey } from "@/lib/payment-memo-dedup"
+import { isDuplicatePair } from "@/lib/payment-memo-dedup"
 
 /** 支払方法の表示ラベル */
 const METHOD_LABELS: Record<string, string> = {
@@ -648,19 +648,16 @@ export function PaymentMemo() {
               </div>
 
               {(() => {
-                // 表示中の全項目で (支払先正規化, 金額) をカウントし、2件以上を重複候補とする
-                const keyCounts = new Map<string, number>()
-                for (const it of savedItems) {
-                  const key = dedupKey(it.vendor_name, it.amount)
-                  if (key) keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1)
-                }
+                // 表示中の項目どうしを総当たりで比較し、重複候補（金額一致＋支払先一致）が
+                // 1件でもある項目を重複候補としてマークする（保存時チェックと同じ判定ロジック）
                 return savedItems.map((item) => {
                   const ds = dueState(item.due_date)
                   const isPaid = item.payment_status === "支払済み"
                   const memoExpanded = expandedMemo === item.id
                   const selected = selectedIds.has(item.id)
-                  const itemKey = dedupKey(item.vendor_name, item.amount)
-                  const isDuplicate = !!itemKey && (keyCounts.get(itemKey) ?? 0) >= 2
+                  const isDuplicate = savedItems.some(
+                    (other) => other.id !== item.id && isDuplicatePair(item, other)
+                  )
                   return (
                   <div
                     key={item.id}

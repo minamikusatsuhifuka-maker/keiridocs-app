@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient as createAuthClient } from "@/lib/supabase/server"
-import { dedupKey } from "@/lib/payment-memo-dedup"
+import { isDuplicatePair, normalizeAmountValue, normalizeVendor, type DedupItem } from "@/lib/payment-memo-dedup"
 
 // 保存前の重複チェック（ソフト方式・ブロックはしない）
 // POST /api/payment-memos/check-duplicates
@@ -30,21 +30,21 @@ export async function POST(request: NextRequest) {
       .select("vendor_name, amount")
     if (error) throw error
 
-    const existingKeys = new Set<string>()
-    for (const row of existingRaw || []) {
-      const key = dedupKey(row.vendor_name, row.amount)
-      if (key) existingKeys.add(key)
-    }
+    // 既存項目のうち、金額・支払先が揃っているものだけを照合対象にする
+    const existing: DedupItem[] = (existingRaw || [])
+      .map((row) => ({ vendor_name: row.vendor_name, amount: row.amount }))
+      .filter((row) => normalizeAmountValue(row.amount) !== null && normalizeVendor(row.vendor_name) !== "")
 
-    // 抽出項目のうち、既存と重複するものを名指しで返す
+    // 抽出項目のうち、既存のいずれかと重複候補になるものを名指しで返す
+    // （金額一致を必須とし、支払先は完全一致 or 包含関係で判定 = payment-memo-dedup.ts に集約）
     const duplicates: Array<{ index: number; vendor_name: string; amount: number | null }> = []
     items.forEach((raw, index) => {
       if (raw && typeof raw === "object") {
         const it = raw as { vendor_name?: unknown; amount?: unknown }
         const vendorName = typeof it.vendor_name === "string" ? it.vendor_name : null
         const amount = typeof it.amount === "number" ? it.amount : null
-        const key = dedupKey(vendorName, amount)
-        if (key && existingKeys.has(key)) {
+        const candidate: DedupItem = { vendor_name: vendorName, amount }
+        if (existing.some((e) => isDuplicatePair(e, candidate))) {
           duplicates.push({ index, vendor_name: vendorName || "", amount })
         }
       }
