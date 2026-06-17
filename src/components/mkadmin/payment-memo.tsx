@@ -26,8 +26,10 @@ import {
   RotateCcw,
   AlertTriangle,
   Save,
+  Link2,
 } from "lucide-react"
 import { toast } from "sonner"
+import { LinkDocumentModal } from "@/components/mkadmin/link-document-modal"
 
 /** 支払方法の表示ラベル */
 const METHOD_LABELS: Record<string, string> = {
@@ -57,6 +59,7 @@ interface SavedItem {
   payment_method: string | null
   note: string | null
   payment_status: string
+  linked_document_id: string | null
   created_at: string
   memo: {
     id: string
@@ -105,6 +108,10 @@ export function PaymentMemo() {
   const [loadingList, setLoadingList] = useState(true)
   const [expandedMemo, setExpandedMemo] = useState<string | null>(null)
   const [updatingId, setUpdatingId] = useState<string | null>(null)
+
+  // ---- 請求書紐づけモーダル ----
+  const [linkTarget, setLinkTarget] = useState<SavedItem | null>(null)
+  const [linkModalOpen, setLinkModalOpen] = useState(false)
 
   // ---- 一覧取得 ----
   const fetchList = useCallback(async () => {
@@ -288,6 +295,30 @@ export function PaymentMemo() {
       toast.error(e instanceof Error ? e.message : "更新に失敗しました")
     } finally {
       setUpdatingId(null)
+    }
+  }
+
+  // ---- 紐づけモーダルを開く ----
+  const openLinkModal = (item: SavedItem) => {
+    setLinkTarget(item)
+    setLinkModalOpen(true)
+  }
+
+  // ---- 紐づけ解除 ----
+  const unlinkDocument = async (item: SavedItem) => {
+    if (!confirm("この支払項目の請求書との紐づけを解除します。よろしいですか？")) return
+    try {
+      const res = await fetch(`/api/payment-memo-items/${item.id}/link`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentId: null }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "解除に失敗しました")
+      toast.success("紐づけを解除しました")
+      fetchList()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "解除に失敗しました")
     }
   }
 
@@ -530,22 +561,61 @@ export function PaymentMemo() {
                           期限間近
                         </Badge>
                       )}
-                      <Button
-                        size="sm"
-                        variant={isPaid ? "outline" : "default"}
-                        className={`ml-auto h-7 px-2 text-xs ${isPaid ? "" : "btn-dusk-primary"}`}
-                        onClick={() => toggleStatus(item)}
-                        disabled={updatingId === item.id}
-                      >
-                        {updatingId === item.id ? (
-                          <Loader2 className="mr-1 size-3.5 animate-spin" />
-                        ) : isPaid ? (
-                          <RotateCcw className="mr-1 size-3.5" />
+                      {/* 紐づけ済みバッジ（リンク先documentsへ飛べる） */}
+                      {item.linked_document_id && (
+                        <a
+                          href={`/documents/${item.linked_document_id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <Badge className="gap-0.5 bg-emerald-600 px-1.5 py-0 text-xs text-white hover:bg-emerald-700">
+                            <CheckCircle2 className="size-3" />
+                            請求書と紐づけ済み
+                          </Badge>
+                        </a>
+                      )}
+
+                      <div className="ml-auto flex items-center gap-1">
+                        {/* 紐づけ導線（支払済みかつ未紐づけのとき）／解除（紐づけ済みのとき） */}
+                        {item.linked_document_id ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs text-muted-foreground"
+                            onClick={() => unlinkDocument(item)}
+                          >
+                            紐づけ解除
+                          </Button>
                         ) : (
-                          <CheckCircle2 className="mr-1 size-3.5" />
+                          isPaid && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2 text-xs"
+                              onClick={() => openLinkModal(item)}
+                            >
+                              <Link2 className="mr-1 size-3.5" />
+                              請求書と紐づける
+                            </Button>
+                          )
                         )}
-                        {isPaid ? "未払いに戻す" : "支払済みにする"}
-                      </Button>
+                        <Button
+                          size="sm"
+                          variant={isPaid ? "outline" : "default"}
+                          className={`h-7 px-2 text-xs ${isPaid ? "" : "btn-dusk-primary"}`}
+                          onClick={() => toggleStatus(item)}
+                          disabled={updatingId === item.id}
+                        >
+                          {updatingId === item.id ? (
+                            <Loader2 className="mr-1 size-3.5 animate-spin" />
+                          ) : isPaid ? (
+                            <RotateCcw className="mr-1 size-3.5" />
+                          ) : (
+                            <CheckCircle2 className="mr-1 size-3.5" />
+                          )}
+                          {isPaid ? "未払いに戻す" : "支払済みにする"}
+                        </Button>
+                      </div>
                     </div>
 
                     {/* 2行目: 期限・内容メモ（薄い文字で1行）＋元メモ展開リンク */}
@@ -601,6 +671,14 @@ export function PaymentMemo() {
           )}
         </CardContent>
       </Card>
+
+      {/* 請求書紐づけモーダル */}
+      <LinkDocumentModal
+        open={linkModalOpen}
+        onOpenChange={setLinkModalOpen}
+        item={linkTarget}
+        onLinked={fetchList}
+      />
     </div>
   )
 }

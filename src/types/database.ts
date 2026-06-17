@@ -874,6 +874,7 @@ export interface Database {
           payment_method: string | null
           note: string | null
           payment_status: string
+          linked_document_id: string | null
           created_at: string
         }
         Insert: {
@@ -885,6 +886,7 @@ export interface Database {
           payment_method?: string | null
           note?: string | null
           payment_status?: string
+          linked_document_id?: string | null
           created_at?: string
         }
         Update: {
@@ -896,6 +898,7 @@ export interface Database {
           payment_method?: string | null
           note?: string | null
           payment_status?: string
+          linked_document_id?: string | null
           created_at?: string
         }
         Relationships: []
