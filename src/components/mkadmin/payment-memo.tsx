@@ -392,75 +392,64 @@ export function PaymentMemo() {
             <CardTitle className="text-lg">抽出結果（保存前に編集できます）</CardTitle>
             {aiSummary && <p className="text-sm text-muted-foreground">{aiSummary}</p>}
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-3">
             {drafts.map((d, i) => (
-              <div key={i} className="space-y-3 rounded-md border p-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-muted-foreground">
-                    支払い {i + 1}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => removeDraft(i)}
-                    className="text-red-500 hover:text-red-600"
-                  >
-                    <Trash2 className="size-4" />
-                  </Button>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="space-y-1">
-                    <Label className="text-xs">支払先</Label>
-                    <Input
-                      value={d.vendor_name}
-                      onChange={(e) => updateDraft(i, "vendor_name", e.target.value)}
-                      placeholder="支払先"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">金額</Label>
-                    <Input
-                      type="number"
-                      value={d.amount}
-                      onChange={(e) => updateDraft(i, "amount", e.target.value)}
-                      placeholder="金額"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">支払期限</Label>
-                    <Input
-                      type="date"
-                      value={d.due_date}
-                      onChange={(e) => updateDraft(i, "due_date", e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">支払方法</Label>
-                    <Select
-                      value={d.payment_method}
-                      onValueChange={(v) => updateDraft(i, "payment_method", v)}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {METHOD_OPTIONS.map((m) => (
-                          <SelectItem key={m} value={m}>
-                            {METHOD_LABELS[m]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-1 sm:col-span-2">
-                    <Label className="text-xs">内容メモ</Label>
-                    <Input
-                      value={d.note}
-                      onChange={(e) => updateDraft(i, "note", e.target.value)}
-                      placeholder="内容・備考"
-                    />
-                  </div>
-                </div>
+              <div
+                key={i}
+                className="flex flex-wrap items-center gap-2 rounded-md border px-3 py-2"
+              >
+                {/* 1段目（狭い画面では折り返す）: 支払先・金額・期限・方法 */}
+                <Input
+                  value={d.vendor_name}
+                  onChange={(e) => updateDraft(i, "vendor_name", e.target.value)}
+                  placeholder="支払先"
+                  className="h-8 min-w-[8rem] flex-[2]"
+                />
+                <Input
+                  type="number"
+                  value={d.amount}
+                  onChange={(e) => updateDraft(i, "amount", e.target.value)}
+                  placeholder="金額"
+                  className="h-8 w-24 flex-1"
+                />
+                <Input
+                  type="date"
+                  value={d.due_date}
+                  onChange={(e) => updateDraft(i, "due_date", e.target.value)}
+                  className="h-8 w-[9.5rem]"
+                  title="支払期限"
+                />
+                <Select
+                  value={d.payment_method}
+                  onValueChange={(v) => updateDraft(i, "payment_method", v)}
+                >
+                  <SelectTrigger className="h-8 w-24" aria-label="支払方法">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {METHOD_OPTIONS.map((m) => (
+                      <SelectItem key={m} value={m}>
+                        {METHOD_LABELS[m]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {/* 内容メモ＋削除（横幅が足りなければ2段目に回る） */}
+                <Input
+                  value={d.note}
+                  onChange={(e) => updateDraft(i, "note", e.target.value)}
+                  placeholder="内容メモ"
+                  className="h-8 min-w-[8rem] flex-[2]"
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => removeDraft(i)}
+                  className="size-8 shrink-0 text-red-500 hover:text-red-600"
+                  aria-label={`支払い${i + 1}を削除`}
+                >
+                  <Trash2 className="size-4" />
+                </Button>
               </div>
             ))}
 
@@ -509,102 +498,100 @@ export function PaymentMemo() {
                 return (
                   <div
                     key={item.id}
-                    className={`rounded-md border p-4 ${isPaid ? "opacity-60" : ""}`}
+                    className={`rounded-md border px-3 py-2 ${isPaid ? "opacity-60" : ""}`}
                   >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1 space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-medium">
-                            {item.vendor_name || "（支払先不明）"}
-                          </span>
-                          {isPaid ? (
-                            <Badge variant="secondary">支払済み</Badge>
-                          ) : (
-                            <Badge variant="destructive">未払い</Badge>
-                          )}
-                          <Badge variant="outline">
-                            {METHOD_LABELS[item.payment_method || "unknown"]}
-                          </Badge>
-                          {!isPaid && ds === "overdue" && (
-                            <Badge variant="destructive" className="gap-1">
-                              <AlertTriangle className="size-3" />
-                              期限切れ
-                            </Badge>
-                          )}
-                          {!isPaid && ds === "soon" && (
-                            <Badge className="gap-1 bg-amber-500 text-white hover:bg-amber-600">
-                              <AlertTriangle className="size-3" />
-                              期限間近
-                            </Badge>
-                          )}
-                        </div>
-                        <div className="text-lg font-bold">{formatYen(item.amount)}</div>
-                        <div className="text-sm text-muted-foreground">
-                          期限: {item.due_date || "—"}
-                          {item.note ? `　/　${item.note}` : ""}
-                        </div>
-                      </div>
-
-                      <div className="flex flex-col items-end gap-2">
-                        <Button
-                          size="sm"
-                          variant={isPaid ? "outline" : "default"}
-                          className={isPaid ? "" : "btn-dusk-primary"}
-                          onClick={() => toggleStatus(item)}
-                          disabled={updatingId === item.id}
-                        >
-                          {updatingId === item.id ? (
-                            <Loader2 className="mr-1 size-4 animate-spin" />
-                          ) : isPaid ? (
-                            <RotateCcw className="mr-1 size-4" />
-                          ) : (
-                            <CheckCircle2 className="mr-1 size-4" />
-                          )}
-                          {isPaid ? "未払いに戻す" : "支払済みにする"}
-                        </Button>
-                      </div>
+                    {/* 1行目: 支払先・金額・各バッジ・操作ボタンを横並び */}
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span className="font-medium">
+                        {item.vendor_name || "（支払先不明）"}
+                      </span>
+                      <span className="font-bold">{formatYen(item.amount)}</span>
+                      <Badge variant="outline" className="px-1.5 py-0 text-xs">
+                        {METHOD_LABELS[item.payment_method || "unknown"]}
+                      </Badge>
+                      {isPaid ? (
+                        <Badge variant="secondary" className="px-1.5 py-0 text-xs">
+                          支払済み
+                        </Badge>
+                      ) : (
+                        <Badge variant="destructive" className="px-1.5 py-0 text-xs">
+                          未払い
+                        </Badge>
+                      )}
+                      {!isPaid && ds === "overdue" && (
+                        <Badge variant="destructive" className="gap-0.5 px-1.5 py-0 text-xs">
+                          <AlertTriangle className="size-3" />
+                          期限切れ
+                        </Badge>
+                      )}
+                      {!isPaid && ds === "soon" && (
+                        <Badge className="gap-0.5 bg-amber-500 px-1.5 py-0 text-xs text-white hover:bg-amber-600">
+                          <AlertTriangle className="size-3" />
+                          期限間近
+                        </Badge>
+                      )}
+                      <Button
+                        size="sm"
+                        variant={isPaid ? "outline" : "default"}
+                        className={`ml-auto h-7 px-2 text-xs ${isPaid ? "" : "btn-dusk-primary"}`}
+                        onClick={() => toggleStatus(item)}
+                        disabled={updatingId === item.id}
+                      >
+                        {updatingId === item.id ? (
+                          <Loader2 className="mr-1 size-3.5 animate-spin" />
+                        ) : isPaid ? (
+                          <RotateCcw className="mr-1 size-3.5" />
+                        ) : (
+                          <CheckCircle2 className="mr-1 size-3.5" />
+                        )}
+                        {isPaid ? "未払いに戻す" : "支払済みにする"}
+                      </Button>
                     </div>
 
-                    {/* 元メモの展開 */}
-                    {item.memo && (item.memo.raw_text || item.memo.image_url) && (
-                      <div className="mt-3 border-t pt-3">
+                    {/* 2行目: 期限・内容メモ（薄い文字で1行）＋元メモ展開リンク */}
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                      <span>期限 {item.due_date || "—"}</span>
+                      {item.note && <span>・{item.note}</span>}
+                      {item.memo && (item.memo.raw_text || item.memo.image_url) && (
                         <button
                           type="button"
                           onClick={() => setExpandedMemo(memoExpanded ? null : item.id)}
-                          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+                          className="ml-auto flex items-center gap-0.5 hover:text-foreground"
                         >
                           {memoExpanded ? (
-                            <ChevronDown className="size-4" />
+                            <ChevronDown className="size-3.5" />
                           ) : (
-                            <ChevronRight className="size-4" />
+                            <ChevronRight className="size-3.5" />
                           )}
-                          元メモを{memoExpanded ? "閉じる" : "表示"}
+                          元メモ
                         </button>
-                        {memoExpanded && (
-                          <div className="mt-2 space-y-2">
-                            {item.memo.raw_text && (
-                              <pre className="whitespace-pre-wrap rounded bg-muted p-3 text-xs">
-                                {item.memo.raw_text}
-                              </pre>
-                            )}
-                            {item.memo.image_url && (
-                              <p className="text-xs text-muted-foreground">
-                                添付画像: {item.memo.image_url}
-                              </p>
-                            )}
-                            <div className="flex justify-end">
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="text-red-500 hover:text-red-600"
-                                onClick={() => deleteMemo(item.memo!.id)}
-                              >
-                                <Trash2 className="mr-1 size-4" />
-                                このメモを削除
-                              </Button>
-                            </div>
-                          </div>
+                      )}
+                    </div>
+
+                    {/* 元メモの展開（閉じている時は高さを取らない） */}
+                    {item.memo && (item.memo.raw_text || item.memo.image_url) && memoExpanded && (
+                      <div className="mt-2 space-y-2 border-t pt-2">
+                        {item.memo.raw_text && (
+                          <pre className="whitespace-pre-wrap rounded bg-muted p-3 text-xs">
+                            {item.memo.raw_text}
+                          </pre>
                         )}
+                        {item.memo.image_url && (
+                          <p className="text-xs text-muted-foreground">
+                            添付画像: {item.memo.image_url}
+                          </p>
+                        )}
+                        <div className="flex justify-end">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs text-red-500 hover:text-red-600"
+                            onClick={() => deleteMemo(item.memo!.id)}
+                          >
+                            <Trash2 className="mr-1 size-3.5" />
+                            このメモを削除
+                          </Button>
+                        </div>
                       </div>
                     )}
                   </div>
