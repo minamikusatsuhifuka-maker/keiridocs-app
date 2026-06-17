@@ -31,6 +31,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { LinkDocumentModal } from "@/components/mkadmin/link-document-modal"
+import { dedupKey } from "@/lib/payment-memo-dedup"
 
 /** 支払方法の表示ラベル */
 const METHOD_LABELS: Record<string, string> = {
@@ -261,6 +262,37 @@ export function PaymentMemo() {
         payment_method: d.payment_method || "unknown",
         note: d.note.trim() || null,
       }))
+
+      // 保存前に重複チェック（ソフト方式・ブロックしない）
+      try {
+        const checkRes = await fetch("/api/payment-memos/check-duplicates", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            items: items.map((it) => ({ vendor_name: it.vendor_name, amount: it.amount })),
+          }),
+        })
+        if (checkRes.ok) {
+          const checkData = (await checkRes.json()) as {
+            duplicates: Array<{ vendor_name: string; amount: number | null }>
+          }
+          if (checkData.duplicates && checkData.duplicates.length > 0) {
+            const list = checkData.duplicates
+              .map((d) => `・${d.vendor_name || "支払先不明"} ${formatYen(d.amount)}`)
+              .join("\n")
+            const proceed = confirm(
+              `次の項目はすでに登録されています:\n${list}\n\n重複して登録しますか？`
+            )
+            if (!proceed) {
+              setSaving(false)
+              return
+            }
+          }
+        }
+      } catch {
+        // 重複チェックの失敗は保存をブロックしない（ソフト方式）
+      }
+
       const res = await fetch("/api/payment-memos", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -615,12 +647,21 @@ export function PaymentMemo() {
                 </Button>
               </div>
 
-              {savedItems.map((item) => {
-                const ds = dueState(item.due_date)
-                const isPaid = item.payment_status === "支払済み"
-                const memoExpanded = expandedMemo === item.id
-                const selected = selectedIds.has(item.id)
-                return (
+              {(() => {
+                // 表示中の全項目で (支払先正規化, 金額) をカウントし、2件以上を重複候補とする
+                const keyCounts = new Map<string, number>()
+                for (const it of savedItems) {
+                  const key = dedupKey(it.vendor_name, it.amount)
+                  if (key) keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1)
+                }
+                return savedItems.map((item) => {
+                  const ds = dueState(item.due_date)
+                  const isPaid = item.payment_status === "支払済み"
+                  const memoExpanded = expandedMemo === item.id
+                  const selected = selectedIds.has(item.id)
+                  const itemKey = dedupKey(item.vendor_name, item.amount)
+                  const isDuplicate = !!itemKey && (keyCounts.get(itemKey) ?? 0) >= 2
+                  return (
                   <div
                     key={item.id}
                     className={`rounded-md border px-3 py-2 ${isPaid ? "opacity-60" : ""} ${
@@ -661,6 +702,13 @@ export function PaymentMemo() {
                         <Badge className="gap-0.5 bg-amber-500 px-1.5 py-0 text-xs text-white hover:bg-amber-600">
                           <AlertTriangle className="size-3" />
                           期限間近
+                        </Badge>
+                      )}
+                      {/* 重複候補バッジ（同じ支払先＋金額が2件以上） */}
+                      {isDuplicate && (
+                        <Badge className="gap-0.5 bg-orange-500 px-1.5 py-0 text-xs text-white hover:bg-orange-600">
+                          <AlertTriangle className="size-3" />
+                          重複の可能性
                         </Badge>
                       )}
                       {/* 紐づけ済みバッジ（リンク先documentsへ飛べる） */}
@@ -777,8 +825,9 @@ export function PaymentMemo() {
                       </div>
                     )}
                   </div>
-                )
-              })}
+                  )
+                })
+              })()}
             </div>
           )}
         </CardContent>
