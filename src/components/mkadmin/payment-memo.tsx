@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Select,
   SelectContent,
@@ -113,6 +114,10 @@ export function PaymentMemo() {
   const [linkTarget, setLinkTarget] = useState<SavedItem | null>(null)
   const [linkModalOpen, setLinkModalOpen] = useState(false)
 
+  // ---- 選択式削除 ----
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [deleting, setDeleting] = useState(false)
+
   // ---- 一覧取得 ----
   const fetchList = useCallback(async () => {
     setLoadingList(true)
@@ -120,8 +125,15 @@ export function PaymentMemo() {
       const res = await fetch("/api/payment-memos")
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "一覧の取得に失敗しました")
-      setSavedItems(data.items || [])
+      const list = (data.items || []) as SavedItem[]
+      setSavedItems(list)
       setUnpaidTotal(data.unpaidTotal || 0)
+      // 存在しなくなった項目を選択から除去
+      setSelectedIds((prev) => {
+        const validIds = new Set(list.map((it) => it.id))
+        const next = new Set([...prev].filter((id) => validIds.has(id)))
+        return next.size === prev.size ? prev : next
+      })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "一覧の取得に失敗しました")
     } finally {
@@ -319,6 +331,61 @@ export function PaymentMemo() {
       fetchList()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "解除に失敗しました")
+    }
+  }
+
+  // ---- 選択トグル ----
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  // ---- 全選択トグル ----
+  const allSelected = savedItems.length > 0 && selectedIds.size === savedItems.length
+  const toggleSelectAll = () => {
+    setSelectedIds((prev) =>
+      prev.size === savedItems.length ? new Set() : new Set(savedItems.map((it) => it.id))
+    )
+  }
+
+  // ---- 項目を個別削除 ----
+  const deleteItem = async (item: SavedItem) => {
+    if (!confirm(`「${item.vendor_name || "支払先不明"}」の支払項目を削除しますか？`)) return
+    try {
+      const res = await fetch(`/api/payment-memo-items/${item.id}`, { method: "DELETE" })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "削除に失敗しました")
+      toast.success("支払項目を削除しました")
+      fetchList()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "削除に失敗しました")
+    }
+  }
+
+  // ---- 選択した項目を一括削除 ----
+  const deleteSelected = async () => {
+    if (selectedIds.size === 0) return
+    if (!confirm(`選択した${selectedIds.size}件の支払項目を削除しますか？`)) return
+    setDeleting(true)
+    try {
+      const res = await fetch("/api/payment-memo-items/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: [...selectedIds] }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "削除に失敗しました")
+      toast.success(`${data.deleted ?? selectedIds.size}件を削除しました`)
+      setSelectedIds(new Set())
+      fetchList()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "削除に失敗しました")
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -522,17 +589,52 @@ export function PaymentMemo() {
             </p>
           ) : (
             <div className="space-y-3">
+              {/* 一括操作バー: 全選択＋選択削除 */}
+              <div className="flex items-center gap-2 border-b pb-2">
+                <Checkbox
+                  checked={allSelected}
+                  onCheckedChange={toggleSelectAll}
+                  aria-label="全選択"
+                />
+                <span className="text-xs text-muted-foreground">
+                  全選択{selectedIds.size > 0 ? `（${selectedIds.size}件選択中）` : ""}
+                </span>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="ml-auto h-7 px-2 text-xs"
+                  onClick={deleteSelected}
+                  disabled={selectedIds.size === 0 || deleting}
+                >
+                  {deleting ? (
+                    <Loader2 className="mr-1 size-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="mr-1 size-3.5" />
+                  )}
+                  選択した{selectedIds.size}件を削除
+                </Button>
+              </div>
+
               {savedItems.map((item) => {
                 const ds = dueState(item.due_date)
                 const isPaid = item.payment_status === "支払済み"
                 const memoExpanded = expandedMemo === item.id
+                const selected = selectedIds.has(item.id)
                 return (
                   <div
                     key={item.id}
-                    className={`rounded-md border px-3 py-2 ${isPaid ? "opacity-60" : ""}`}
+                    className={`rounded-md border px-3 py-2 ${isPaid ? "opacity-60" : ""} ${
+                      selected ? "ring-1 ring-[var(--dusk-primary)]" : ""
+                    }`}
                   >
-                    {/* 1行目: 支払先・金額・各バッジ・操作ボタンを横並び */}
+                    {/* 1行目: チェックボックス・支払先・金額・各バッジ・操作ボタンを横並び */}
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <Checkbox
+                        checked={selected}
+                        onCheckedChange={() => toggleSelect(item.id)}
+                        aria-label={`${item.vendor_name || "支払項目"}を選択`}
+                        className="shrink-0"
+                      />
                       <span className="font-medium">
                         {item.vendor_name || "（支払先不明）"}
                       </span>
@@ -614,6 +716,16 @@ export function PaymentMemo() {
                             <CheckCircle2 className="mr-1 size-3.5" />
                           )}
                           {isPaid ? "未払いに戻す" : "支払済みにする"}
+                        </Button>
+                        {/* 個別削除 */}
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="size-7 shrink-0 text-red-500 hover:text-red-600"
+                          onClick={() => deleteItem(item)}
+                          aria-label="この支払項目を削除"
+                        >
+                          <Trash2 className="size-3.5" />
                         </Button>
                       </div>
                     </div>
