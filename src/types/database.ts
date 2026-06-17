@@ -837,6 +837,69 @@ export interface Database {
         }
         Relationships: []
       }
+      payment_memos: {
+        Row: {
+          id: string
+          raw_text: string | null
+          image_url: string | null
+          ai_summary: string | null
+          created_by: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          raw_text?: string | null
+          image_url?: string | null
+          ai_summary?: string | null
+          created_by?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          raw_text?: string | null
+          image_url?: string | null
+          ai_summary?: string | null
+          created_by?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
+      payment_memo_items: {
+        Row: {
+          id: string
+          memo_id: string | null
+          vendor_name: string | null
+          amount: number | null
+          due_date: string | null
+          payment_method: string | null
+          note: string | null
+          payment_status: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          memo_id?: string | null
+          vendor_name?: string | null
+          amount?: number | null
+          due_date?: string | null
+          payment_method?: string | null
+          note?: string | null
+          payment_status?: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          memo_id?: string | null
+          vendor_name?: string | null
+          amount?: number | null
+          due_date?: string | null
+          payment_method?: string | null
+          note?: string | null
+          payment_status?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: Record<string, never>
     Functions: Record<string, never>

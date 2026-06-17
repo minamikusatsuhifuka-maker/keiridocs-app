@@ -20,7 +20,8 @@ import { FloatingButtonSettings } from "@/components/settings/floating-button-se
 import { RegistrantList } from "@/components/settings/registrant-list"
 import { DocumentStaffList } from "@/components/settings/document-staff-list"
 import { StaffManagement } from "@/components/line-staff/staff-management"
-import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus, Users, MessageCircle, Loader2 } from "lucide-react"
+import { PaymentMemo } from "@/components/mkadmin/payment-memo"
+import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus, Users, MessageCircle, Wallet, Loader2 } from "lucide-react"
 
 // 管理画面（/mkadmin）認証用 sessionStorage キー
 const SESSION_KEY = "mkadmin-auth"
@@ -178,6 +179,10 @@ export default function MkadminPage() {
             <Sparkles className="size-4" />
             AI設定
           </TabsTrigger>
+          <TabsTrigger value="payment-memo" className="flex items-center gap-1.5">
+            <Wallet className="size-4" />
+            支払いメモ
+          </TabsTrigger>
           <TabsTrigger value="line-staff" className="flex items-center gap-1.5">
             <MessageCircle className="size-4" />
             LINEスタッフ管理
@@ -234,6 +239,10 @@ export default function MkadminPage() {
 
         <TabsContent value="ai">
           <AiSettings />
+        </TabsContent>
+
+        <TabsContent value="payment-memo">
+          <PaymentMemo />
         </TabsContent>
 
         <TabsContent value="line-staff">
