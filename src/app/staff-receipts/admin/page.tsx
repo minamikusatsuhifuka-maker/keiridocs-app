@@ -22,6 +22,26 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Loader2, Download, ArrowUpDown, ArrowUp, ArrowDown, Play, Bell, Users, AlertTriangle, ExternalLink, FileText } from "lucide-react"
 import { toast } from "sonner"
+import { subsidyLabel } from "@/lib/subsidy"
+
+// petty_cash_transactions から付与する精算情報
+interface SettleInfo {
+  settlement_method: string | null
+  subsidy_category: string | null
+}
+
+// 精算方法の日本語ラベル（NULLは後方互換で小口現金扱い）
+function settlementMethodLabel(method: string | null | undefined): string {
+  switch (method) {
+    case "payroll":
+      return "給与"
+    case "storage_only":
+      return "保管"
+    case "petty_cash":
+    default:
+      return "小口現金"
+  }
+}
 
 // ファイルがPDFかどうか（PDFは<img>で表示できないためアイコン表示にする）
 function isPdfFile(receipt: { file_name?: string | null; dropbox_path?: string | null }): boolean {
@@ -94,8 +114,8 @@ export default function StaffReceiptsAdminPage() {
   const [isRunningClose, setIsRunningClose] = useState(false)
   const [isRunningRemind, setIsRunningRemind] = useState(false)
 
-  // 小口現金連携
-  const [pettyCashRegistered, setPettyCashRegistered] = useState<Set<string>>(new Set())
+  // 小口現金連携（staff_receipt_id → 精算情報）
+  const [settlementInfo, setSettlementInfo] = useState<Map<string, SettleInfo>>(new Map())
   const [pettyCashTarget, setPettyCashTarget] = useState<StaffReceipt | null>(null)
   const [isRegisteringPettyCash, setIsRegisteringPettyCash] = useState(false)
   const [pettyCashBalance, setPettyCashBalance] = useState<number>(0)
@@ -150,14 +170,23 @@ export default function StaffReceiptsAdminPage() {
         if (!res.ok) return
         const json = await res.json() as {
           balance: number
-          transactions: { staff_receipt_id: string | null }[]
+          transactions: {
+            staff_receipt_id: string | null
+            settlement_method: string | null
+            subsidy_category: string | null
+          }[]
         }
         setPettyCashBalance(json.balance)
-        const registeredIds = new Set<string>()
+        const map = new Map<string, SettleInfo>()
         for (const tx of json.transactions) {
-          if (tx.staff_receipt_id) registeredIds.add(tx.staff_receipt_id)
+          if (tx.staff_receipt_id) {
+            map.set(tx.staff_receipt_id, {
+              settlement_method: tx.settlement_method,
+              subsidy_category: tx.subsidy_category,
+            })
+          }
         }
-        setPettyCashRegistered(registeredIds)
+        setSettlementInfo(map)
       } catch {
         // 取得失敗は無視
       }
@@ -178,7 +207,12 @@ export default function StaffReceiptsAdminPage() {
       if (!res.ok) throw new Error(json.error || "登録に失敗しました")
 
       toast.success(`¥${(receipt.amount || 0).toLocaleString()} を小口現金から出金登録しました`)
-      setPettyCashRegistered((prev) => new Set(prev).add(receipt.id))
+      // 小口対応で登録した分は小口現金（settlement_method=null=小口扱い）／区分なし
+      setSettlementInfo((prev) => {
+        const next = new Map(prev)
+        next.set(receipt.id, { settlement_method: null, subsidy_category: null })
+        return next
+      })
       if (typeof json.balance === "number") setPettyCashBalance(json.balance)
       setPettyCashTarget(null)
     } catch (e) {
@@ -233,6 +267,25 @@ export default function StaffReceiptsAdminPage() {
   const totalAmount = useMemo(() => {
     return receipts.reduce((sum, r) => sum + (r.amount || 0), 0)
   }, [receipts])
+
+  // サマリー（件数・精算済み/未精算の内訳）
+  const summary = useMemo(() => {
+    let settledCount = 0
+    let settledAmount = 0
+    let unsettledCount = 0
+    let unsettledAmount = 0
+    for (const r of receipts) {
+      const amount = r.amount || 0
+      if (settlementInfo.has(r.id)) {
+        settledCount += 1
+        settledAmount += amount
+      } else {
+        unsettledCount += 1
+        unsettledAmount += amount
+      }
+    }
+    return { settledCount, settledAmount, unsettledCount, unsettledAmount }
+  }, [receipts, settlementInfo])
 
   // ソートトグル
   const toggleSort = (key: SortKey) => {
@@ -452,10 +505,33 @@ export default function StaffReceiptsAdminPage() {
         </CardContent>
       </Card>
 
-      {/* 合計 */}
+      {/* サマリー（件数・合計・精算済み/未精算の内訳） */}
       {receipts.length > 0 && (
-        <div className="text-sm text-muted-foreground">
-          {receipts.length}件 / 合計: <span className="font-bold text-foreground">¥{totalAmount.toLocaleString()}</span>
+        <div className="flex flex-wrap gap-3">
+          <Card className="flex-1 min-w-[140px]">
+            <CardContent className="p-4">
+              <p className="text-xs text-muted-foreground">件数 / 合計</p>
+              <p className="mt-1 text-lg font-bold">
+                {receipts.length}件 <span className="text-sm font-normal text-muted-foreground">/</span> ¥{totalAmount.toLocaleString()}
+              </p>
+            </CardContent>
+          </Card>
+          <Card className="flex-1 min-w-[140px]">
+            <CardContent className="p-4">
+              <p className="text-xs text-emerald-700">精算済み</p>
+              <p className="mt-1 text-lg font-bold text-emerald-700">
+                {summary.settledCount}件 <span className="text-sm font-normal">/ ¥{summary.settledAmount.toLocaleString()}</span>
+              </p>
+            </CardContent>
+          </Card>
+          <Card className="flex-1 min-w-[140px]">
+            <CardContent className="p-4">
+              <p className="text-xs text-amber-700">未精算</p>
+              <p className="mt-1 text-lg font-bold text-amber-700">
+                {summary.unsettledCount}件 <span className="text-sm font-normal">/ ¥{summary.unsettledAmount.toLocaleString()}</span>
+              </p>
+            </CardContent>
+          </Card>
         </div>
       )}
 
@@ -495,6 +571,7 @@ export default function StaffReceiptsAdminPage() {
                     <th className="px-4 py-3 text-left font-medium">勘定科目</th>
                     <th className="px-4 py-3 text-left font-medium">登録日時</th>
                     <th className="px-4 py-3 text-center font-medium">精算状態</th>
+                    <th className="px-4 py-3 text-left font-medium">アチーブメント区分</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -543,9 +620,9 @@ export default function StaffReceiptsAdminPage() {
                         {formatRegisteredAt(r.created_at)}
                       </td>
                       <td className="px-4 py-3 text-center">
-                        {pettyCashRegistered.has(r.id) ? (
+                        {settlementInfo.has(r.id) ? (
                           <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">
-                            ✅ 精算済み
+                            ✅ 精算済み（{settlementMethodLabel(settlementInfo.get(r.id)?.settlement_method)}）
                           </Badge>
                         ) : r.amount && r.amount > 0 ? (
                           <div className="flex flex-col items-center gap-1">
@@ -564,6 +641,11 @@ export default function StaffReceiptsAdminPage() {
                         ) : (
                           <span className="text-muted-foreground text-xs">—</span>
                         )}
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        {settlementInfo.get(r.id)?.subsidy_category
+                          ? subsidyLabel(settlementInfo.get(r.id)?.subsidy_category)
+                          : <span className="text-muted-foreground">—</span>}
                       </td>
                     </tr>
                   ))}

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import Link from "next/link"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -21,7 +22,7 @@ import { RegistrantList } from "@/components/settings/registrant-list"
 import { DocumentStaffList } from "@/components/settings/document-staff-list"
 import { StaffManagement } from "@/components/line-staff/staff-management"
 import { PaymentMemo } from "@/components/mkadmin/payment-memo"
-import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus, Users, MessageCircle, Wallet, Loader2 } from "lucide-react"
+import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus, Users, MessageCircle, Wallet, Loader2, Receipt, ArrowRight } from "lucide-react"
 
 // 管理画面（/mkadmin）認証用 sessionStorage キー
 const SESSION_KEY = "mkadmin-auth"
@@ -183,6 +184,10 @@ export default function MkadminPage() {
             <Wallet className="size-4" />
             支払いメモ
           </TabsTrigger>
+          <TabsTrigger value="line-receipts" className="flex items-center gap-1.5">
+            <Receipt className="size-4" />
+            LINE領収書
+          </TabsTrigger>
           <TabsTrigger value="line-staff" className="flex items-center gap-1.5">
             <MessageCircle className="size-4" />
             LINEスタッフ管理
@@ -243,6 +248,31 @@ export default function MkadminPage() {
 
         <TabsContent value="payment-memo">
           <PaymentMemo />
+        </TabsContent>
+
+        <TabsContent value="line-receipts">
+          {/* LINE登録領収書の確認画面（スタッフ別・画像・精算状態・区分）への導線 */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Receipt className="size-5" />
+                LINE登録領収書
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                スタッフがLINEで送った領収書を、スタッフ別・月別で確認できます。
+                画像サムネイル（クリックで拡大）、精算状態（小口現金／給与／保管・未精算）、
+                アチーブメント区分、Dropbox実ファイルへの導線が表示されます。
+              </p>
+              <Button asChild className="btn-dusk-primary">
+                <Link href="/staff-receipts/admin">
+                  領収書一覧を開く
+                  <ArrowRight className="ml-2 size-4" />
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="line-staff">
