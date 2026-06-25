@@ -20,8 +20,27 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Loader2, Download, ArrowUpDown, ArrowUp, ArrowDown, Play, Bell, Users, AlertTriangle } from "lucide-react"
+import { Loader2, Download, ArrowUpDown, ArrowUp, ArrowDown, Play, Bell, Users, AlertTriangle, ExternalLink, FileText } from "lucide-react"
 import { toast } from "sonner"
+
+// ファイルがPDFかどうか（PDFは<img>で表示できないためアイコン表示にする）
+function isPdfFile(receipt: { file_name?: string | null; dropbox_path?: string | null }): boolean {
+  const name = (receipt.file_name || receipt.dropbox_path || "").toLowerCase()
+  return name.endsWith(".pdf")
+}
+
+// 登録日時の表示（YYYY/MM/DD HH:mm）
+function formatRegisteredAt(iso: string): string {
+  if (!iso) return "—"
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return "—"
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  const hh = String(d.getHours()).padStart(2, "0")
+  const mm = String(d.getMinutes()).padStart(2, "0")
+  return `${y}/${m}/${day} ${hh}:${mm}`
+}
 
 interface StaffMember {
   id: string
@@ -80,6 +99,10 @@ export default function StaffReceiptsAdminPage() {
   const [pettyCashTarget, setPettyCashTarget] = useState<StaffReceipt | null>(null)
   const [isRegisteringPettyCash, setIsRegisteringPettyCash] = useState(false)
   const [pettyCashBalance, setPettyCashBalance] = useState<number>(0)
+
+  // 画像プレビュー（拡大表示）
+  const [previewReceipt, setPreviewReceipt] = useState<StaffReceipt | null>(null)
+  const [isOpeningDropbox, setIsOpeningDropbox] = useState(false)
 
   // スタッフ一覧取得
   useEffect(() => {
@@ -162,6 +185,21 @@ export default function StaffReceiptsAdminPage() {
       toast.error(e instanceof Error ? e.message : "小口現金登録に失敗しました")
     } finally {
       setIsRegisteringPettyCash(false)
+    }
+  }
+
+  // Dropboxの実ファイルを新規タブで開く（一時リンクを取得）
+  const handleOpenInDropbox = async (receipt: StaffReceipt) => {
+    setIsOpeningDropbox(true)
+    try {
+      const res = await fetch(`/api/staff-receipts/image?id=${receipt.id}&mode=link`)
+      const json = await res.json() as { link?: string; error?: string }
+      if (!res.ok || !json.link) throw new Error(json.error || "リンク取得に失敗しました")
+      window.open(json.link, "_blank", "noopener,noreferrer")
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Dropboxファイルを開けませんでした")
+    } finally {
+      setIsOpeningDropbox(false)
     }
   }
 
@@ -437,6 +475,7 @@ export default function StaffReceiptsAdminPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-muted/50">
+                    <th className="px-4 py-3 text-center font-medium">画像</th>
                     <th className="cursor-pointer px-4 py-3 text-left font-medium" onClick={() => toggleSort("staff_name")}>
                       スタッフ <SortIcon col="staff_name" />
                     </th>
@@ -454,12 +493,43 @@ export default function StaffReceiptsAdminPage() {
                     </th>
                     <th className="px-4 py-3 text-left font-medium">税区分</th>
                     <th className="px-4 py-3 text-left font-medium">勘定科目</th>
-                    <th className="px-4 py-3 text-center font-medium">小口現金</th>
+                    <th className="px-4 py-3 text-left font-medium">登録日時</th>
+                    <th className="px-4 py-3 text-center font-medium">精算状態</th>
                   </tr>
                 </thead>
                 <tbody>
                   {sortedReceipts.map((r) => (
                     <tr key={r.id} className="border-b hover:bg-muted/30 transition-colors">
+                      {/* 画像サムネイル（クリックで拡大）。PDFはアイコン表示 */}
+                      <td className="px-4 py-3">
+                        <div className="flex justify-center">
+                          {isPdfFile(r) ? (
+                            <button
+                              type="button"
+                              onClick={() => setPreviewReceipt(r)}
+                              title="PDFを開く"
+                              className="flex h-14 w-14 items-center justify-center rounded border bg-muted/40 hover:bg-muted transition-colors"
+                            >
+                              <FileText className="size-6 text-muted-foreground" />
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setPreviewReceipt(r)}
+                              title="クリックで拡大"
+                              className="h-14 w-14 overflow-hidden rounded border bg-muted/40 hover:ring-2 hover:ring-primary/50 transition-all"
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={`/api/staff-receipts/image?id=${r.id}`}
+                                alt={`${r.store_name || "領収書"}のサムネイル`}
+                                loading="lazy"
+                                className="h-full w-full object-cover"
+                              />
+                            </button>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-4 py-3">{r.staff_name}</td>
                       <td className="px-4 py-3">{r.date || "—"}</td>
                       <td className="px-4 py-3">{r.store_name || "—"}</td>
@@ -469,20 +539,28 @@ export default function StaffReceiptsAdminPage() {
                       <td className="px-4 py-3">{r.document_type || "—"}</td>
                       <td className="px-4 py-3">{r.tax_category || "—"}</td>
                       <td className="px-4 py-3">{r.account_title || "—"}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-xs text-muted-foreground">
+                        {formatRegisteredAt(r.created_at)}
+                      </td>
                       <td className="px-4 py-3 text-center">
                         {pettyCashRegistered.has(r.id) ? (
                           <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">
-                            ✅ 小口登録済
+                            ✅ 精算済み
                           </Badge>
                         ) : r.amount && r.amount > 0 ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="text-xs"
-                            onClick={() => setPettyCashTarget(r)}
-                          >
-                            💰 小口対応
-                          </Button>
+                          <div className="flex flex-col items-center gap-1">
+                            <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">
+                              未精算
+                            </Badge>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="text-xs"
+                              onClick={() => setPettyCashTarget(r)}
+                            >
+                              💰 小口対応
+                            </Button>
+                          </div>
                         ) : (
                           <span className="text-muted-foreground text-xs">—</span>
                         )}
@@ -548,6 +626,57 @@ export default function StaffReceiptsAdminPage() {
                 >
                   {isRegisteringPettyCash && <Loader2 className="mr-2 size-4 animate-spin" />}
                   出金登録する
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* 画像拡大プレビュー */}
+      <Dialog open={!!previewReceipt} onOpenChange={(open) => !open && setPreviewReceipt(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>
+              {previewReceipt?.store_name || "領収書"}
+              {previewReceipt?.amount != null && (
+                <span className="ml-2 text-muted-foreground">
+                  ¥{previewReceipt.amount.toLocaleString()}
+                </span>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          {previewReceipt && (
+            <div className="space-y-4">
+              <div className="text-sm text-muted-foreground">
+                {previewReceipt.staff_name} ／ {previewReceipt.date || "日付不明"} ／ 登録: {formatRegisteredAt(previewReceipt.created_at)}
+              </div>
+
+              {/* 本体（画像 or PDFはアイコン案内） */}
+              <div className="flex max-h-[60vh] items-center justify-center overflow-auto rounded-lg border bg-muted/30 p-2">
+                {isPdfFile(previewReceipt) ? (
+                  <div className="flex flex-col items-center gap-3 py-12 text-center text-muted-foreground">
+                    <FileText className="size-12" />
+                    <p className="text-sm">PDFファイルです。下のボタンからDropboxで開いてください。</p>
+                  </div>
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={`/api/staff-receipts/image?id=${previewReceipt.id}`}
+                    alt={`${previewReceipt.store_name || "領収書"}の画像`}
+                    className="max-h-[58vh] w-auto object-contain"
+                  />
+                )}
+              </div>
+
+              <div className="flex justify-end gap-3">
+                <Button
+                  variant="outline"
+                  disabled={isOpeningDropbox}
+                  onClick={() => handleOpenInDropbox(previewReceipt)}
+                >
+                  {isOpeningDropbox ? <Loader2 className="mr-2 size-4 animate-spin" /> : <ExternalLink className="mr-2 size-4" />}
+                  Dropboxで開く
                 </Button>
               </div>
             </div>

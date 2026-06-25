@@ -270,6 +270,38 @@ export async function downloadFile(path: string): Promise<{ buffer: Buffer; mime
   return { buffer: Buffer.from(arrayBuffer), mimeType: contentType }
 }
 
+/* ---------- 一時リンク ---------- */
+
+/**
+ * Dropboxファイルの一時直リンク（get_temporary_link）を取得する。
+ * 取得したリンクは4時間有効。画像のプレビュー表示やファイルを開く導線に使う。
+ * @param path Dropbox上のファイルパス
+ * @returns 一時リンクURL
+ */
+export async function getTemporaryLink(path: string): Promise<string> {
+  const token = await getValidAccessToken()
+  const res = await fetch(`${DROPBOX_API}/files/get_temporary_link`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ path }),
+  })
+
+  if (!res.ok) {
+    const text = await res.text()
+    // ファイル欠損（409 path/not_found）は専用エラーで区別する
+    if (res.status === 409 && text.includes("not_found")) {
+      throw new DropboxFileNotFoundError(path)
+    }
+    throw new Error(`Dropbox get_temporary_link error: ${res.status} ${text}`)
+  }
+
+  const data = await res.json()
+  return data.link as string
+}
+
 /* ---------- コピー ---------- */
 
 /**
