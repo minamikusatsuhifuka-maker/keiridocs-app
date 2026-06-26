@@ -22,7 +22,8 @@ import { RegistrantList } from "@/components/settings/registrant-list"
 import { DocumentStaffList } from "@/components/settings/document-staff-list"
 import { StaffManagement } from "@/components/line-staff/staff-management"
 import { PaymentMemo } from "@/components/mkadmin/payment-memo"
-import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus, Users, MessageCircle, Wallet, Loader2, Receipt, ArrowRight } from "lucide-react"
+import { StaffReimburseList } from "@/components/mkadmin/staff-reimburse-list"
+import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus, Users, MessageCircle, Wallet, Loader2, Receipt, ArrowRight, ClipboardList } from "lucide-react"
 
 // 管理画面（/mkadmin）認証用 sessionStorage キー
 const SESSION_KEY = "mkadmin-auth"
@@ -184,6 +185,10 @@ export default function MkadminPage() {
             <Wallet className="size-4" />
             支払いメモ
           </TabsTrigger>
+          <TabsTrigger value="staff-reimburse" className="flex items-center gap-1.5">
+            <ClipboardList className="size-4" />
+            立替まとめ
+          </TabsTrigger>
           <TabsTrigger value="line-receipts" className="flex items-center gap-1.5">
             <Receipt className="size-4" />
             LINE領収書
@@ -248,6 +253,10 @@ export default function MkadminPage() {
 
         <TabsContent value="payment-memo">
           <PaymentMemo />
+        </TabsContent>
+
+        <TabsContent value="staff-reimburse">
+          <StaffReimburseList />
         </TabsContent>
 
         <TabsContent value="line-receipts">
