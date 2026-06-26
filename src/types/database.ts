@@ -524,6 +524,8 @@ export interface Database {
           account_title: string | null
           ai_raw: Json | null
           created_at: string
+          // 030_staff_receipt_image_hash.sql で追加（重複検知用の画像SHA-256）
+          image_hash: string | null
         }
         Insert: {
           id?: string
@@ -538,6 +540,7 @@ export interface Database {
           account_title?: string | null
           ai_raw?: Json | null
           created_at?: string
+          image_hash?: string | null
         }
         Update: {
           id?: string
@@ -552,6 +555,7 @@ export interface Database {
           account_title?: string | null
           ai_raw?: Json | null
           created_at?: string
+          image_hash?: string | null
         }
         Relationships: []
       }

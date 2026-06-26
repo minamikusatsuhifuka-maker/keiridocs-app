@@ -5,12 +5,16 @@ import { analyzeDocument, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
 import { settleStaffReceipt } from "@/lib/staff-refund-core"
 import {
   EXPENSE_GROUP_LABELS,
-  STAFF_EXPENSE_DETAILS,
   expenseDetailsByGroup,
   getExpenseDetail,
   calcSubsidy,
   type ExpenseGroup,
 } from "@/lib/subsidy"
+import {
+  findImageHashDuplicate,
+  findContentDuplicate,
+  type ExistingDuplicate,
+} from "@/lib/staff-receipt-dedup"
 import type { Database } from "@/types/database"
 import type { Json } from "@/types/database"
 import crypto from "crypto"
@@ -305,6 +309,21 @@ function getStaffReceiptPath(
 function formatAmount(amount: number | null): string {
   if (amount === null || amount === undefined) return "不明"
   return amount.toLocaleString("ja-JP")
+}
+
+/** 重複領収書の警告メッセージ（二重申請ブロック時にスタッフへ返す） */
+function buildDuplicateWarning(dup: ExistingDuplicate): string {
+  const appliedDate = toJstDateString(new Date(dup.created_at))
+  return (
+    "⚠️ この領収書はすでに登録されています。\n" +
+    "─────────────\n" +
+    `🏪 ${dup.store_name || "不明"}\n` +
+    `💰 ¥${formatAmount(dup.amount ?? null)}\n` +
+    `📅 申請日：${appliedDate}\n` +
+    "─────────────\n" +
+    "二重申請の可能性があるため、登録を中止しました。\n" +
+    "ご不明な場合は院長にご確認ください。"
+  )
 }
 
 /* ---------- Webhookハンドラ ---------- */
@@ -960,12 +979,35 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     }
     console.log(`[LINE Bot] 画像取得完了: ${imageBuffer.length} bytes`)
 
+    // 4.5 画像ハッシュで重複チェック（解析前。同一画像の再送をハードブロック）
+    const imageHash = crypto.createHash("sha256").update(imageBuffer).digest("hex")
+    const imageDup = await findImageHashDuplicate(supabase, imageHash)
+    if (imageDup) {
+      console.log("[LINE Bot] 画像ハッシュ重複を検知 → 登録中止")
+      await sendLineMessage(replyToken, source.userId, buildDuplicateWarning(imageDup))
+      return
+    }
+
     // 5. Gemini AI解析
     console.log("[LINE Bot] Gemini AI解析開始")
     const base64Data = imageBuffer.toString("base64")
     const mimeType = "image/jpeg" // LINEの画像はJPEG
     const ocrResult = await analyzeDocument(base64Data, mimeType)
     console.log(`[LINE Bot] Gemini AI解析完了: vendor=${ocrResult.vendor_name}, amount=${ocrResult.amount}`)
+
+    // 5.5 内容（店名+金額+日付）で重複チェック（同一スタッフ内。別画像での再申請をブロック）
+    const receiptDate = ocrResult.issue_date || new Date().toISOString().split("T")[0]
+    const contentDup = await findContentDuplicate(supabase, {
+      staffMemberId: matchedStaff.id,
+      storeName: ocrResult.vendor_name || null,
+      amount: ocrResult.amount,
+      date: receiptDate,
+    })
+    if (contentDup) {
+      console.log("[LINE Bot] 内容重複を検知 → 登録中止")
+      await sendLineMessage(replyToken, source.userId, buildDuplicateWarning(contentDup))
+      return
+    }
 
     // 6. Dropboxに保存（申請日＝アップロード日のフォルダ。JSTで日付を確定）
     console.log("[LINE Bot] Dropboxアップロード開始")
@@ -980,30 +1022,53 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     // 7. staff_receiptsに保存（精算ボタンで使うidを取得）
     console.log("[LINE Bot] DB保存開始")
     const docType = ocrResult.type || "領収書"
-    const { data: inserted, error: insertError } = await supabase
+    const baseReceipt = {
+      staff_member_id: matchedStaff.id,
+      file_name: fileName,
+      dropbox_path: resultPath,
+      document_type: docType,
+      date: receiptDate,
+      amount: ocrResult.amount,
+      store_name: ocrResult.vendor_name || null,
+      tax_category: ocrResult.tax_category || null,
+      account_title: ocrResult.account_title || null,
+      ai_raw: JSON.parse(JSON.stringify(ocrResult)) as Json,
+    }
+
+    // image_hash は migration 030 で追加。未適用環境でも保存を止めないようフォールバック
+    let inserted: { id: string } | null = null
+    const withHash = await supabase
       .from("staff_receipts")
-      .insert({
-        staff_member_id: matchedStaff.id,
-        file_name: fileName,
-        dropbox_path: resultPath,
-        document_type: docType,
-        date: ocrResult.issue_date || new Date().toISOString().split("T")[0],
-        amount: ocrResult.amount,
-        store_name: ocrResult.vendor_name || null,
-        tax_category: ocrResult.tax_category || null,
-        account_title: ocrResult.account_title || null,
-        ai_raw: JSON.parse(JSON.stringify(ocrResult)) as Json,
-      })
+      .insert({ ...baseReceipt, image_hash: imageHash })
       .select("id")
       .single()
 
-    if (insertError || !inserted) {
-      console.error("staff_receipts挿入エラー:", insertError)
+    if (withHash.error) {
+      const e = withHash.error
+      const isMissingColumn =
+        e.code === "PGRST204" || e.code === "42703" || /image_hash/.test(e.message || "")
+      if (isMissingColumn) {
+        console.warn("[LINE Bot] image_hash カラム未適用のためハッシュなしで保存（migration 030未実行）")
+        const noHash = await supabase
+          .from("staff_receipts")
+          .insert(baseReceipt)
+          .select("id")
+          .single()
+        if (!noHash.error && noHash.data) inserted = noHash.data as { id: string }
+        else console.error("staff_receipts挿入エラー:", noHash.error)
+      } else {
+        console.error("staff_receipts挿入エラー:", e)
+      }
+    } else {
+      inserted = withHash.data as { id: string }
+    }
+
+    if (!inserted) {
       await sendLineMessage(replyToken, source.userId, "⚠️ データベースへの保存に失敗しました。管理者にご連絡ください。")
       return
     }
     console.log("[LINE Bot] DB保存完了")
-    const receiptId = (inserted as { id: string }).id
+    const receiptId = inserted.id
 
     // 8. まず区分を質問する（2段階フロー1段階目）。精算方法は区分選択後に自動判定する
     const storeName = ocrResult.vendor_name || "不明"

@@ -23,6 +23,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Loader2, Download, ArrowUpDown, ArrowUp, ArrowDown, Play, Bell, Users, AlertTriangle, ExternalLink, FileText } from "lucide-react"
 import { toast } from "sonner"
 import { subsidyLabel } from "@/lib/subsidy"
+import { findDuplicateIds } from "@/lib/staff-receipt-dedup"
 
 // petty_cash_transactions から付与する精算情報
 interface SettleInfo {
@@ -80,6 +81,7 @@ interface StaffReceipt {
   tax_category: string | null
   account_title: string | null
   created_at: string
+  image_hash?: string | null
 }
 
 type SortKey = "date" | "staff_name" | "store_name" | "amount" | "document_type"
@@ -267,6 +269,10 @@ export default function StaffReceiptsAdminPage() {
   const totalAmount = useMemo(() => {
     return receipts.reduce((sum, r) => sum + (r.amount || 0), 0)
   }, [receipts])
+
+  // 重複している領収書のIDセット（画像ハッシュ一致 or 同一スタッフの店名+金額+日付一致）
+  // 表示中（絞り込み後）のデータから検出する
+  const duplicateIds = useMemo(() => findDuplicateIds(receipts), [receipts])
 
   // サマリー（件数・精算済み/未精算の内訳）
   const summary = useMemo(() => {
@@ -609,7 +615,21 @@ export default function StaffReceiptsAdminPage() {
                       </td>
                       <td className="px-4 py-3">{r.staff_name}</td>
                       <td className="px-4 py-3">{r.date || "—"}</td>
-                      <td className="px-4 py-3">{r.store_name || "—"}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col gap-1">
+                          <span>{r.store_name || "—"}</span>
+                          {duplicateIds.has(r.id) && (
+                            <Badge
+                              variant="outline"
+                              className="w-fit gap-1 border-rose-200 bg-rose-50 text-rose-700"
+                              title="同じ画像、または同一スタッフで店名・金額・日付が一致する領収書があります"
+                            >
+                              <AlertTriangle className="size-3" />
+                              重複の可能性
+                            </Badge>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-4 py-3 text-right tabular-nums">
                         {r.amount != null ? `¥${r.amount.toLocaleString()}` : "—"}
                       </td>
