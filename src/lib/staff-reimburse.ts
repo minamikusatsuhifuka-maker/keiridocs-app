@@ -21,6 +21,8 @@ export interface ReimburseDetail {
   transactionId: string
   staffMemberId: string | null
   staffName: string
+  /** 支払年月日（領収書のOCR発行日。読み取れていない場合は ""＝「—」表示） */
+  paymentDate: string
   /** 申請日（YYYY-MM-DD・JST） */
   applicationDate: string
   storeName: string
@@ -59,9 +61,17 @@ interface TxRow {
   subsidy_category: string | null
   settlement_method: string | null
   created_at: string
+  transaction_date: string | null
   description: string | null
   note: string | null
   staff_receipt_id: string | null
+}
+
+/** ai_raw（OCR生データ）から発行日（issue_date）を取り出す。無ければ "" */
+function extractIssueDate(aiRaw: unknown): string {
+  if (!aiRaw || typeof aiRaw !== "object") return ""
+  const v = (aiRaw as Record<string, unknown>).issue_date
+  return typeof v === "string" ? v.trim() : ""
 }
 
 /** ISO日時を日本時間の YYYY-MM-DD に変換（サーバTZがUTCのため明示変換） */
@@ -101,24 +111,37 @@ export async function buildStaffReimburse(params: {
   const { data: txRaw, error: txError } = await supabase
     .from("petty_cash_transactions")
     .select(
-      "id, staff_member_id, amount, expense_detail, subsidy_category, settlement_method, created_at, description, note, staff_receipt_id"
+      "id, staff_member_id, amount, expense_detail, subsidy_category, settlement_method, created_at, transaction_date, description, note, staff_receipt_id"
     )
     .eq("category", "staff_refund")
   if (txError) throw txError
   const txRows = (txRaw as unknown as TxRow[]) ?? []
 
-  // 2. 参照されている領収書（店名・アップロード日時）をまとめて取得
+  // 2. 参照されている領収書（店名・アップロード日時・OCR発行日）をまとめて取得
   const receiptIds = Array.from(
     new Set(txRows.map((t) => t.staff_receipt_id).filter((v): v is string => !!v))
   )
-  const receiptMap = new Map<string, { store_name: string | null; created_at: string }>()
+  const receiptMap = new Map<
+    string,
+    { store_name: string | null; created_at: string; issueDate: string }
+  >()
   if (receiptIds.length > 0) {
     const { data: receipts } = await supabase
       .from("staff_receipts")
-      .select("id, store_name, created_at")
+      .select("id, store_name, created_at, ai_raw")
       .in("id", receiptIds)
-    for (const r of (receipts ?? []) as { id: string; store_name: string | null; created_at: string }[]) {
-      receiptMap.set(r.id, { store_name: r.store_name, created_at: r.created_at })
+    for (const r of (receipts ?? []) as {
+      id: string
+      store_name: string | null
+      created_at: string
+      ai_raw: unknown
+    }[]) {
+      receiptMap.set(r.id, {
+        store_name: r.store_name,
+        created_at: r.created_at,
+        // 支払年月日はOCR発行日（読み取れない場合は ""＝「—」。アップロード日では埋めない）
+        issueDate: extractIssueDate(r.ai_raw),
+      })
     }
   }
 
@@ -145,11 +168,15 @@ export async function buildStaffReimburse(params: {
     const subsidy = calcSubsidy(amount, t.subsidy_category)
     const staffName =
       (t.staff_member_id && staffNameMap.get(t.staff_member_id)) || "不明なスタッフ"
+    // 支払年月日: 領収書ありはOCR発行日のみ（読み取れなければ ""＝「—」。申請日で埋めない）、
+    // 領収書なし（手動登録等）は取引のtransaction_dateを使用
+    const paymentDate = receipt ? receipt.issueDate : (t.transaction_date ?? "")
 
     details.push({
       transactionId: t.id,
       staffMemberId: t.staff_member_id,
       staffName,
+      paymentDate,
       applicationDate,
       storeName,
       expenseDetail,
@@ -235,18 +262,28 @@ export function buildStaffReimburseCsv(result: StaffReimburseResult, periodLabel
   ])
   lines.push([])
 
-  // 明細
+  // 明細（会計士希望の項目順: 対象スタッフ/支払年月日/支払先/用途/金額/支給判定/支給額/(参考)申請日）
   lines.push(["■ 明細"])
-  lines.push(["スタッフ名", "申請日", "店名", "区分", "立替額", "支給率", "支給額"])
+  lines.push([
+    "スタッフ名",
+    "支払年月日",
+    "支払先",
+    "目的・用途",
+    "支払金額",
+    "支給判定",
+    "支給額",
+    "申請日(参考)",
+  ])
   for (const d of result.details) {
     lines.push([
       d.staffName,
-      d.applicationDate,
+      d.paymentDate || "—",
       d.storeName,
       d.expenseDetail,
       String(d.amount),
       d.isHalf ? "半額" : "全額",
       String(d.subsidy),
+      d.applicationDate,
     ])
   }
 

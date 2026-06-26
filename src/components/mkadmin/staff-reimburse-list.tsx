@@ -28,6 +28,7 @@ interface ReimburseDetail {
   transactionId: string
   staffMemberId: string | null
   staffName: string
+  paymentDate: string
   applicationDate: string
   storeName: string
   expenseDetail: string
@@ -308,6 +309,7 @@ export function StaffReimburseList() {
                                 <table className="w-full text-sm">
                                   <thead>
                                     <tr style={{ color: "var(--dusk-text-muted)" }}>
+                                      <th className="px-2 py-1 text-left font-medium">支払年月日</th>
                                       <th className="px-2 py-1 text-left font-medium">申請日</th>
                                       <th className="px-2 py-1 text-left font-medium">店名</th>
                                       <th className="px-2 py-1 text-left font-medium">区分</th>
@@ -319,6 +321,9 @@ export function StaffReimburseList() {
                                   <tbody>
                                     {rows.map((d) => (
                                       <tr key={d.transactionId} className="border-t">
+                                        <td className="whitespace-nowrap px-2 py-1.5 tabular-nums">
+                                          {d.paymentDate || "—"}
+                                        </td>
                                         <td className="whitespace-nowrap px-2 py-1.5 tabular-nums">
                                           {d.applicationDate}
                                         </td>
