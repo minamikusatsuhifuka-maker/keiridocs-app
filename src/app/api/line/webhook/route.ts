@@ -448,6 +448,58 @@ async function sendTier1(
   ])
 }
 
+/**
+ * 領収書IDから、そのスタッフが「初回ATC＋アカデミー会員費」を申請済みかを判定する。
+ * staff_members.first_atc_claimed_at が非NULLなら申請済み。
+ * カラム未適用（migration 031未実行）・エラー時は未申請扱い（ボタンを出す）。
+ */
+async function isFirstAtcClaimedByReceipt(
+  supabase: ReturnType<typeof createServiceClient>,
+  receiptId: string
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("staff_receipts")
+    .select("staff_members!inner(first_atc_claimed_at)")
+    .eq("id", receiptId)
+    .single()
+  if (error) {
+    console.warn("[LINE Bot] 初回ATC判定スキップ（migration 031未実行?）:", error.message)
+    return false
+  }
+  const claimedAt = (
+    data as unknown as { staff_members: { first_atc_claimed_at: string | null } } | null
+  )?.staff_members?.first_atc_claimed_at
+  return !!claimedAt
+}
+
+/**
+ * 「初回ATC＋アカデミー会員費」申請完了を記録する（staff_members.first_atc_claimed_at をセット）。
+ * 会計履歴は書き換えない。カラム未適用・失敗時はログのみで精算フローは止めない。
+ */
+async function markFirstAtcClaimed(
+  supabase: ReturnType<typeof createServiceClient>,
+  receiptId: string
+): Promise<void> {
+  try {
+    const { data } = await supabase
+      .from("staff_receipts")
+      .select("staff_member_id")
+      .eq("id", receiptId)
+      .single()
+    const staffId = (data as { staff_member_id?: string } | null)?.staff_member_id
+    if (!staffId) return
+    const { error } = await supabase
+      .from("staff_members")
+      .update({ first_atc_claimed_at: new Date().toISOString() })
+      .eq("id", staffId)
+    if (error) {
+      console.warn("[LINE Bot] first_atc_claimed_at 更新スキップ（migration 031未実行?）:", error.message)
+    }
+  } catch (e) {
+    console.warn("[LINE Bot] first_atc_claimed_at 更新エラー:", e)
+  }
+}
+
 /** 第1階層選択 → 第2階層（サブ選択）のクイックリプライを返す */
 async function handleTier1Postback(
   event: LineEvent,
@@ -461,7 +513,18 @@ async function handleTier1Postback(
     return
   }
 
-  const details = expenseDetailsByGroup(group)
+  const supabase = createServiceClient()
+
+  // アチーブメント関連は、初回ATC申請済みなら「初回ATC＋アカデミー会員費」を非表示にする（1人1回限り）
+  let details = expenseDetailsByGroup(group)
+  let claimed = false
+  if (group === "ach") {
+    claimed = await isFirstAtcClaimedByReceipt(supabase, receiptId)
+    if (claimed) {
+      details = details.filter((d) => d.key !== "ach_first")
+    }
+  }
+
   const items: PostbackAction[] = details.map((d) => ({
     type: "postback",
     label: d.buttonLabel,
@@ -470,10 +533,14 @@ async function handleTier1Postback(
   }))
 
   // アチーブメント関連は補足（再受講・他コース）を本文に記載（ボタンラベルは20文字制限のため）
-  const text =
-    group === "ach"
-      ? "アチーブメント関連のどれですか？\n\n・初回ATC＋アカデミー会員費\n・セミナー2回目以降（ATC再受講、ATC以外のコース）"
-      : "種類を選んでください。"
+  let text: string
+  if (group === "ach") {
+    text = claimed
+      ? "アチーブメント関連のどれですか？\n\n・セミナー2回目以降（ATC再受講、ATC以外のコース）\n\n※「初回ATC＋アカデミー会員費」は申請済みのため表示されません。"
+      : "アチーブメント関連のどれですか？\n\n・初回ATC＋アカデミー会員費\n・セミナー2回目以降（ATC再受講、ATC以外のコース）"
+  } else {
+    text = "種類を選んでください。"
+  }
 
   await sendLineQuickReply(replyToken, source.userId, text, items)
 }
@@ -589,12 +656,15 @@ async function handleConfirmPostback(
     return
   }
 
+  const supabase = createServiceClient()
+
   try {
     const result = await settleStaffReceipt({
       staffReceiptId: receiptId,
       settlementMethod: "payroll", // LINEからは常に給与支給に一本化
       subsidyCategory: detail.subsidyCategory, // 支給率（achievement_repeat=半額 / other=全額）
       expenseDetail: detail.fullLabel, // 6種類の詳細区分フル名称
+      client: supabase,
     })
 
     switch (result.status) {
@@ -611,6 +681,11 @@ async function handleConfirmPostback(
         const amount = result.amount ?? 0
         const subsidy = calcSubsidy(amount, detail.subsidyCategory)
         const isHalf = detail.subsidyCategory === "achievement_repeat"
+
+        // 初回ATC＋アカデミー会員費は1人1回限り。完了したスタッフを記録（以降LINEで非表示）
+        if (detail.key === "ach_first") {
+          await markFirstAtcClaimed(supabase, receiptId)
+        }
 
         await sendLineMessage(
           replyToken,

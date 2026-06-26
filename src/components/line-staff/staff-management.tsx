@@ -30,6 +30,8 @@ import {
   AlertTriangle,
   MessageCircle,
   ArrowRight,
+  BadgeCheck,
+  RotateCcw,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -38,6 +40,7 @@ interface StaffMember {
   name: string
   line_user_id: string | null
   created_at: string
+  first_atc_claimed_at?: string | null
 }
 
 /**
@@ -64,6 +67,9 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
 
   // 削除中のID
   const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  // 初回ATC「未申請に戻す」処理中のID
+  const [clearingId, setClearingId] = useState<string | null>(null)
 
   /* ---------- データ取得 ---------- */
   const fetchStaff = useCallback(async () => {
@@ -143,6 +149,29 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
       toast.error(error instanceof Error ? error.message : "更新に失敗しました")
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  /* ---------- 初回ATCを未申請に戻す（訂正用・会計履歴は無改変） ---------- */
+  async function handleClearFirstAtc(id: string, name: string) {
+    if (!confirm(`「${name}」の初回ATC申請を未申請に戻しますか？\n（会計履歴は変更されません）`)) return
+    setClearingId(id)
+    try {
+      const res = await fetch("/api/line-staff", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, action: "clear_first_atc" }),
+      })
+      if (!res.ok) {
+        const json = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(json.error || "操作に失敗しました")
+      }
+      toast.success("初回ATCを未申請に戻しました")
+      fetchStaff()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "操作に失敗しました")
+    } finally {
+      setClearingId(null)
     }
   }
 
@@ -235,6 +264,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                   <TableRow>
                     <TableHead>名前</TableHead>
                     <TableHead>LINE登録状況</TableHead>
+                    <TableHead>初回ATC</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -252,6 +282,38 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                           <span className="inline-flex items-center gap-1.5 text-sm text-amber-600">
                             <AlertTriangle className="h-4 w-4" />
                             未登録
+                          </span>
+                        )}
+                      </TableCell>
+                      {/* 初回ATC＋アカデミー会員費の申請状態（1人1回限り）。済みは「未申請に戻す」可 */}
+                      <TableCell>
+                        {member.first_atc_claimed_at ? (
+                          <div className="flex flex-col items-start gap-1">
+                            <span
+                              className="inline-flex items-center gap-1.5 text-sm font-medium"
+                              style={{ color: "var(--dusk-primary)" }}
+                            >
+                              <BadgeCheck className="h-4 w-4" />
+                              申請済み
+                            </span>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2 text-xs"
+                              onClick={() => handleClearFirstAtc(member.id, member.name)}
+                              disabled={clearingId === member.id}
+                            >
+                              {clearingId === member.id ? (
+                                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                              ) : (
+                                <RotateCcw className="mr-1 h-3 w-3" />
+                              )}
+                              未申請に戻す
+                            </Button>
+                          </div>
+                        ) : (
+                          <span className="text-sm" style={{ color: "var(--dusk-text-muted)" }}>
+                            未申請
                           </span>
                         )}
                       </TableCell>

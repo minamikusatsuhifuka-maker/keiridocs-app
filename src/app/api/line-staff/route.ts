@@ -143,6 +143,56 @@ export async function PUT(request: NextRequest) {
   }
 }
 
+// スタッフの初回ATC申請状態の操作（現状は「未申請に戻す」= フラグのクリアのみ）
+// 会計履歴（petty_cash_transactions）は書き換えず、staff_members のフラグだけを戻す（訂正用）
+export async function PATCH(request: NextRequest) {
+  const user = await checkAuth()
+  if (!user) {
+    return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
+  }
+
+  try {
+    const body = await request.json() as { id?: string; action?: string }
+    if (!body.id) {
+      return NextResponse.json({ error: "IDは必須です" }, { status: 400 })
+    }
+    if (body.action !== "clear_first_atc") {
+      return NextResponse.json({ error: "不正な操作です" }, { status: 400 })
+    }
+
+    const service = createServiceClient()
+    const { data, error } = await service
+      .from("staff_members")
+      .update({ first_atc_claimed_at: null })
+      .eq("id", body.id)
+      .select("*")
+      .single()
+
+    if (error) {
+      console.error("初回ATC状態クリアエラー:", error.message, error.details, error.hint, error.code)
+      // 列未適用（migration 031未実行）の場合は分かりやすく案内
+      const isMissingColumn =
+        error.code === "PGRST204" || error.code === "42703" || /first_atc_claimed_at/.test(error.message || "")
+      if (isMissingColumn) {
+        return NextResponse.json(
+          { error: "first_atc_claimed_at カラムが未適用です。migration 031 を実行してください。" },
+          { status: 400 }
+        )
+      }
+      throw error
+    }
+
+    return NextResponse.json({ data })
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    console.error("初回ATC状態クリアエラー:", msg)
+    return NextResponse.json(
+      { error: `初回ATC状態の更新に失敗しました: ${msg}` },
+      { status: 500 }
+    )
+  }
+}
+
 // スタッフ削除
 export async function DELETE(request: NextRequest) {
   const user = await checkAuth()
