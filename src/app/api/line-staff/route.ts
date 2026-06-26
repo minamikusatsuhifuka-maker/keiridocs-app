@@ -143,8 +143,9 @@ export async function PUT(request: NextRequest) {
   }
 }
 
-// スタッフの初回ATC申請状態の操作（現状は「未申請に戻す」= フラグのクリアのみ）
-// 会計履歴（petty_cash_transactions）は書き換えず、staff_members のフラグだけを戻す（訂正用）
+// スタッフの初回ATC申請状態のトグル（ON=申請済み/OFF=未申請）
+// 会計履歴（petty_cash_transactions）は書き換えず、staff_members のフラグだけを切り替える（訂正・手動管理用）
+// body: { id, first_atc_claimed: boolean }  ON→申請日時をセット（既存は保持）/ OFF→NULL
 export async function PATCH(request: NextRequest) {
   const user = await checkAuth()
   if (!user) {
@@ -152,30 +153,53 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
-    const body = await request.json() as { id?: string; action?: string }
+    // action=clear_first_atc（旧形式）も後方互換で OFF として受け付ける
+    const body = await request.json() as { id?: string; first_atc_claimed?: boolean; action?: string }
     if (!body.id) {
       return NextResponse.json({ error: "IDは必須です" }, { status: 400 })
     }
-    if (body.action !== "clear_first_atc") {
-      return NextResponse.json({ error: "不正な操作です" }, { status: 400 })
+    let claimed: boolean
+    if (typeof body.first_atc_claimed === "boolean") {
+      claimed = body.first_atc_claimed
+    } else if (body.action === "clear_first_atc") {
+      claimed = false
+    } else {
+      return NextResponse.json({ error: "first_atc_claimed（真偽値）は必須です" }, { status: 400 })
     }
 
     const service = createServiceClient()
+
+    // ON要求かつ既に申請済みなら、元の申請日時を保持（上書きしない・冪等）
+    if (claimed) {
+      const { data: current, error: readError } = await service
+        .from("staff_members")
+        .select("first_atc_claimed_at")
+        .eq("id", body.id)
+        .single()
+      if (!readError) {
+        const existing = (current as { first_atc_claimed_at?: string | null } | null)?.first_atc_claimed_at
+        if (existing) {
+          return NextResponse.json({ data: current })
+        }
+      }
+    }
+
+    const newValue = claimed ? new Date().toISOString() : null
     const { data, error } = await service
       .from("staff_members")
-      .update({ first_atc_claimed_at: null })
+      .update({ first_atc_claimed_at: newValue })
       .eq("id", body.id)
       .select("*")
       .single()
 
     if (error) {
-      console.error("初回ATC状態クリアエラー:", error.message, error.details, error.hint, error.code)
-      // 列未適用（migration 031未実行）の場合は分かりやすく案内
+      console.error("初回ATC状態更新エラー:", error.message, error.details, error.hint, error.code)
+      // 列未適用（migration未実行）の場合は分かりやすく案内
       const isMissingColumn =
         error.code === "PGRST204" || error.code === "42703" || /first_atc_claimed_at/.test(error.message || "")
       if (isMissingColumn) {
         return NextResponse.json(
-          { error: "first_atc_claimed_at カラムが未適用です。migration 031 を実行してください。" },
+          { error: "first_atc_claimed_at カラムが未適用です。migration 031_first_atc_claimed.sql を実行してください。" },
           { status: 400 }
         )
       }
@@ -185,7 +209,7 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ data })
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
-    console.error("初回ATC状態クリアエラー:", msg)
+    console.error("初回ATC状態更新エラー:", msg)
     return NextResponse.json(
       { error: `初回ATC状態の更新に失敗しました: ${msg}` },
       { status: 500 }

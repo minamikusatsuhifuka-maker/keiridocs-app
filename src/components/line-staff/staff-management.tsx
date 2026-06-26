@@ -20,6 +20,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Switch } from "@/components/ui/switch"
 import {
   Users,
   Plus,
@@ -30,8 +31,6 @@ import {
   AlertTriangle,
   MessageCircle,
   ArrowRight,
-  BadgeCheck,
-  RotateCcw,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -41,6 +40,20 @@ interface StaffMember {
   line_user_id: string | null
   created_at: string
   first_atc_claimed_at?: string | null
+}
+
+/** 初回ATC申請日時を日本時間で表示（YYYY/MM/DD HH:mm） */
+function formatClaimedAt(iso: string): string {
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ""
+  return d.toLocaleString("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
 }
 
 /**
@@ -68,8 +81,8 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   // 削除中のID
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
-  // 初回ATC「未申請に戻す」処理中のID
-  const [clearingId, setClearingId] = useState<string | null>(null)
+  // 初回ATC ON/OFFトグル処理中のID
+  const [togglingId, setTogglingId] = useState<string | null>(null)
 
   /* ---------- データ取得 ---------- */
   const fetchStaff = useCallback(async () => {
@@ -152,26 +165,29 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
     }
   }
 
-  /* ---------- 初回ATCを未申請に戻す（訂正用・会計履歴は無改変） ---------- */
-  async function handleClearFirstAtc(id: string, name: string) {
-    if (!confirm(`「${name}」の初回ATC申請を未申請に戻しますか？\n（会計履歴は変更されません）`)) return
-    setClearingId(id)
+  /* ---------- 初回ATC ON/OFFトグル（手動切替・訂正用・会計履歴は無改変） ---------- */
+  async function handleToggleFirstAtc(member: StaffMember, next: boolean) {
+    // 申請済み→未申請（OFF）に戻すときのみ確認（誤操作防止）
+    if (!next && !confirm(`「${member.name}」の初回ATCを未申請（OFF）に戻しますか？\n（会計履歴は変更されません）`)) {
+      return
+    }
+    setTogglingId(member.id)
     try {
       const res = await fetch("/api/line-staff", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, action: "clear_first_atc" }),
+        body: JSON.stringify({ id: member.id, first_atc_claimed: next }),
       })
       if (!res.ok) {
         const json = (await res.json().catch(() => ({}))) as { error?: string }
         throw new Error(json.error || "操作に失敗しました")
       }
-      toast.success("初回ATCを未申請に戻しました")
+      toast.success(next ? "初回ATCを申請済み（ON）にしました" : "初回ATCを未申請（OFF）に戻しました")
       fetchStaff()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "操作に失敗しました")
     } finally {
-      setClearingId(null)
+      setTogglingId(null)
     }
   }
 
@@ -285,37 +301,34 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                           </span>
                         )}
                       </TableCell>
-                      {/* 初回ATC＋アカデミー会員費の申請状態（1人1回限り）。済みは「未申請に戻す」可 */}
+                      {/* 初回ATC＋アカデミー会員費の申請状態（1人1回限り）。ON/OFFを手動トグル可（訂正用） */}
                       <TableCell>
-                        {member.first_atc_claimed_at ? (
-                          <div className="flex flex-col items-start gap-1">
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center gap-2">
+                            <Switch
+                              checked={!!member.first_atc_claimed_at}
+                              onCheckedChange={(checked) => handleToggleFirstAtc(member, checked)}
+                              disabled={togglingId === member.id}
+                              aria-label="初回ATC申請済みの切り替え"
+                            />
                             <span
-                              className="inline-flex items-center gap-1.5 text-sm font-medium"
-                              style={{ color: "var(--dusk-primary)" }}
+                              className="inline-flex items-center gap-1 text-sm font-medium"
+                              style={{
+                                color: member.first_atc_claimed_at
+                                  ? "var(--dusk-primary)"
+                                  : "var(--dusk-text-muted)",
+                              }}
                             >
-                              <BadgeCheck className="h-4 w-4" />
-                              申請済み
+                              {togglingId === member.id && <Loader2 className="h-3 w-3 animate-spin" />}
+                              {member.first_atc_claimed_at ? "申請済み(ON)" : "未申請(OFF)"}
                             </span>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 px-2 text-xs"
-                              onClick={() => handleClearFirstAtc(member.id, member.name)}
-                              disabled={clearingId === member.id}
-                            >
-                              {clearingId === member.id ? (
-                                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                              ) : (
-                                <RotateCcw className="mr-1 h-3 w-3" />
-                              )}
-                              未申請に戻す
-                            </Button>
                           </div>
-                        ) : (
-                          <span className="text-sm" style={{ color: "var(--dusk-text-muted)" }}>
-                            未申請
-                          </span>
-                        )}
+                          {member.first_atc_claimed_at && (
+                            <span className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                              {formatClaimedAt(member.first_atc_claimed_at)}
+                            </span>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">

@@ -488,10 +488,12 @@ async function markFirstAtcClaimed(
       .single()
     const staffId = (data as { staff_member_id?: string } | null)?.staff_member_id
     if (!staffId) return
+    // 未設定（NULL）の場合のみセット。既に申請済みなら元の申請日時を保持する
     const { error } = await supabase
       .from("staff_members")
       .update({ first_atc_claimed_at: new Date().toISOString() })
       .eq("id", staffId)
+      .is("first_atc_claimed_at", null)
     if (error) {
       console.warn("[LINE Bot] first_atc_claimed_at 更新スキップ（migration 031未実行?）:", error.message)
     }
