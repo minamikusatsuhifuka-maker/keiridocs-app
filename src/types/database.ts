@@ -732,6 +732,8 @@ export interface Database {
           payroll_refunded_at: string | null
           // 026_subsidy_category.sql で追加
           subsidy_category: string | null
+          // 029_staff_receipt_expense_detail.sql で追加（スタッフ立替の詳細区分）
+          expense_detail: string | null
         }
         Insert: {
           id?: string
@@ -756,6 +758,7 @@ export interface Database {
           payroll_refund_status?: string | null
           payroll_refunded_at?: string | null
           subsidy_category?: string | null
+          expense_detail?: string | null
         }
         Update: {
           id?: string
@@ -780,6 +783,7 @@ export interface Database {
           payroll_refund_status?: string | null
           payroll_refunded_at?: string | null
           subsidy_category?: string | null
+          expense_detail?: string | null
         }
         Relationships: []
       }

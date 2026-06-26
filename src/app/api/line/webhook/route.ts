@@ -2,15 +2,14 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { uploadFile } from "@/lib/dropbox"
 import { analyzeDocument, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
+import { settleStaffReceipt } from "@/lib/staff-refund-core"
 import {
-  settleStaffReceipt,
-  SETTLEMENT_LABELS,
-  type SettlementMethod,
-} from "@/lib/staff-refund-core"
-import {
-  SUBSIDY_LABELS,
-  normalizeSubsidyCategory,
-  type SubsidyCategory,
+  EXPENSE_GROUP_LABELS,
+  STAFF_EXPENSE_DETAILS,
+  expenseDetailsByGroup,
+  getExpenseDetail,
+  calcSubsidy,
+  type ExpenseGroup,
 } from "@/lib/subsidy"
 import type { Database } from "@/types/database"
 import type { Json } from "@/types/database"
@@ -18,9 +17,6 @@ import crypto from "crypto"
 
 /** Vercel関数のタイムアウトを60秒に延長（Gemini + Dropbox処理に十分な時間を確保） */
 export const maxDuration = 60
-
-/** スタッフ立替の精算方法しきい値（円）。未満=小口/以上=給与。未設定なら10000円 */
-const PAYROLL_THRESHOLD = Number(process.env.STAFF_REFUND_PAYROLL_THRESHOLD) || 10000
 
 /* ---------- 型定義 ---------- */
 
@@ -248,46 +244,61 @@ async function pushRaw(userId: string, messages: unknown[]): Promise<boolean> {
 }
 
 /**
- * ボタンテンプレート（最大4アクション）を送信する（reply→pushフォールバック付き）
- * textは160文字以内に丸める（LINE仕様）
+ * クイックリプライ付きテキストメッセージを送信する（reply→pushフォールバック付き）。
+ * 選択肢が5個以上（ボタンテンプレートの上限4を超える）場合や、本文が長い確認画面で使う。
+ * - 本文は最大5000文字、選択肢は最大13個、ラベルは20文字以内（LINE仕様）
  */
-async function sendLineButtons(
+async function sendLineQuickReply(
   replyToken: string,
   userId: string,
-  altText: string,
   text: string,
-  actions: PostbackAction[]
+  items: PostbackAction[]
 ): Promise<void> {
   const message = {
-    type: "template",
-    altText: altText.slice(0, 400),
-    template: {
-      type: "buttons",
-      text: text.slice(0, 160),
-      actions: actions.slice(0, 4),
+    type: "text",
+    text: text.slice(0, 4900),
+    quickReply: {
+      items: items.slice(0, 13).map((a) => ({
+        type: "action",
+        action: {
+          type: "postback",
+          label: a.label.slice(0, 20),
+          data: a.data,
+          displayText: a.displayText,
+        },
+      })),
     },
   }
   const replied = await replyRaw(replyToken, [message])
   if (!replied) {
-    console.log("Reply(buttons)失敗のためPushで再送:", userId)
+    console.log("Reply(quickReply)失敗のためPushで再送:", userId)
     await pushRaw(userId, [message])
   }
 }
 
+/** Date を日本時間（JST）の YYYY-MM-DD 文字列に変換する（Vercelのサーバ時刻はUTCのため明示変換） */
+function toJstDateString(date: Date): string {
+  // en-CA ロケールは YYYY-MM-DD 形式を返す
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date)
+}
+
 /**
- * スタッフ領収書用のDropboxパスを生成する
- * /経理書類/スタッフ領収書/{スタッフ名}/{YYYY年MM月}/{ファイル名}
+ * スタッフ領収書用のDropboxパスを生成する（申請日フォルダ）
+ * /経理書類/スタッフ領収書/{スタッフ名}/{申請日YYYY-MM-DD}/{ファイル名}
+ * @param applicationDate 申請日（アップロード日）の YYYY-MM-DD 文字列（JST）
  */
 function getStaffReceiptPath(
   staffName: string,
-  date: Date,
+  applicationDate: string,
   originalFileName: string
 ): string {
-  const year = `${date.getFullYear()}年`
-  const month = `${String(date.getMonth() + 1).padStart(2, "0")}月`
   const safeName = staffName.replace(/[/\\:*?"<>|]/g, "_")
-
-  return `/経理書類/スタッフ領収書/${safeName}/${year}${month}/${originalFileName}`
+  return `/経理書類/スタッフ領収書/${safeName}/${applicationDate}/${originalFileName}`
 }
 
 /** 金額をフォーマット（3桁区切り） */
@@ -363,9 +374,11 @@ async function handleEvent(event: LineEvent): Promise<void> {
 }
 
 /**
- * postbackデータを振り分ける。2段階フロー:
- *  - action=category&receipt_id=...&cat=...   … 区分選択 → 精算方法の確認ボタンを返す
- *  - action=settle&receipt_id=...&method=...&cat=... … 確定 → 精算登録
+ * postbackデータを振り分ける。新フロー（給与一本化・2階層区分・確認/修正）:
+ *  - action=t1&rid=...&g=ach|other      … 第1階層選択 → 第2階層（サブ選択）を返す
+ *  - action=t2&rid=...&d=<detailKey>    … 第2階層選択 → 確認画面（OK/修正）を返す
+ *  - action=ok&rid=...&d=<detailKey>    … 確定 → 給与支給で精算登録
+ *  - action=fix&rid=...                 … 修正 → 第1階層に戻る（写真再送不要）
  */
 async function handlePostback(event: LineEvent): Promise<void> {
   const { postback } = event
@@ -374,38 +387,96 @@ async function handlePostback(event: LineEvent): Promise<void> {
   const params = new URLSearchParams(postback.data)
   const action = params.get("action")
 
-  if (action === "category") {
-    await handleCategoryPostback(event, params)
-    return
-  }
-  if (action === "settle") {
-    await handleSettlePostback(event, params)
-    return
+  switch (action) {
+    case "t1":
+      await handleTier1Postback(event, params)
+      return
+    case "t2":
+      await handleTier2Postback(event, params)
+      return
+    case "ok":
+      await handleConfirmPostback(event, params)
+      return
+    case "fix":
+      await handleFixPostback(event, params)
+      return
   }
 }
 
 /**
- * 1段階目: 区分が選ばれたら、金額しきい値で精算方法を自動判定し、
- * 確認ボタン（data に区分と精算方法の両方を載せる）を返す。
+ * 第1階層（アチーブメント関連/それ以外）のクイックリプライを送信する。
+ * 画像受信直後と「修正」時の両方から呼ばれる。
  */
-async function handleCategoryPostback(
+async function sendTier1(
+  replyToken: string,
+  userId: string,
+  receiptId: string,
+  header: string
+): Promise<void> {
+  await sendLineQuickReply(replyToken, userId, `${header}\nこの立替の区分を選んでください。`, [
+    {
+      type: "postback",
+      label: EXPENSE_GROUP_LABELS.ach,
+      data: `action=t1&rid=${receiptId}&g=ach`,
+      displayText: EXPENSE_GROUP_LABELS.ach,
+    },
+    {
+      type: "postback",
+      label: EXPENSE_GROUP_LABELS.other,
+      data: `action=t1&rid=${receiptId}&g=other`,
+      displayText: EXPENSE_GROUP_LABELS.other,
+    },
+  ])
+}
+
+/** 第1階層選択 → 第2階層（サブ選択）のクイックリプライを返す */
+async function handleTier1Postback(
   event: LineEvent,
   params: URLSearchParams
 ): Promise<void> {
   const { replyToken, source } = event
-  const receiptId = params.get("receipt_id")
-  const category = normalizeSubsidyCategory(params.get("cat"))
-  if (!receiptId) {
+  const receiptId = params.get("rid")
+  const group = params.get("g") as ExpenseGroup | null
+  if (!receiptId || (group !== "ach" && group !== "other")) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
+    return
+  }
+
+  const details = expenseDetailsByGroup(group)
+  const items: PostbackAction[] = details.map((d) => ({
+    type: "postback",
+    label: d.buttonLabel,
+    data: `action=t2&rid=${receiptId}&d=${d.key}`,
+    displayText: d.buttonLabel,
+  }))
+
+  // アチーブメント関連は補足（再受講・他コース）を本文に記載（ボタンラベルは20文字制限のため）
+  const text =
+    group === "ach"
+      ? "アチーブメント関連のどれですか？\n\n・初回ATC＋アカデミー会員費\n・セミナー2回目以降（ATC再受講、ATC以外のコース）"
+      : "種類を選んでください。"
+
+  await sendLineQuickReply(replyToken, source.userId, text, items)
+}
+
+/** 第2階層選択 → 確認画面（OK/修正）を返す */
+async function handleTier2Postback(
+  event: LineEvent,
+  params: URLSearchParams
+): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  const detail = getExpenseDetail(params.get("d"))
+  if (!receiptId || !detail) {
     await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
     return
   }
 
   try {
     const supabase = createServiceClient()
-    // 領収書から金額・店名を取得して精算方法を判定（既存ロジックと同じしきい値）
     const { data: receipt, error } = await supabase
       .from("staff_receipts")
-      .select("amount, store_name")
+      .select("amount, store_name, created_at, staff_members!inner(name)")
       .eq("id", receiptId)
       .single()
 
@@ -414,12 +485,15 @@ async function handleCategoryPostback(
       return
     }
 
-    const r = receipt as { amount: number | null; store_name: string | null }
+    const r = receipt as unknown as {
+      amount: number | null
+      store_name: string | null
+      created_at: string
+      staff_members: { name: string }
+    }
     const amount = r.amount
-    const storeName = r.store_name || "不明"
-    const amountStr = formatAmount(amount)
 
-    // 金額が読み取れない場合はボタンを出さず手動精算を案内（誤精算防止）
+    // 金額が読み取れない場合は確認に進めず手動精算を案内（誤精算防止）
     if (!amount || amount <= 0) {
       await sendLineMessage(
         replyToken,
@@ -429,50 +503,69 @@ async function handleCategoryPostback(
       return
     }
 
-    // 金額しきい値で精算方法を自動提案（未満=小口/以上=給与）
-    const proposed: SettlementMethod = amount < PAYROLL_THRESHOLD ? "petty_cash" : "payroll"
-    const other: SettlementMethod = proposed === "petty_cash" ? "payroll" : "petty_cash"
-    const reason =
-      amount < PAYROLL_THRESHOLD
-        ? `${formatAmount(PAYROLL_THRESHOLD)}円未満なので`
-        : `${formatAmount(PAYROLL_THRESHOLD)}円以上なので`
+    const staffName = r.staff_members.name
+    const storeName = r.store_name || "不明"
+    // 支給額（セミナー2回目以降のみ半額・端数切り捨て、他は全額）
+    const subsidy = calcSubsidy(amount, detail.subsidyCategory)
+    const isHalf = detail.subsidyCategory === "achievement_repeat"
+    // 申請日 = アップロード日（領収書の登録日）をJSTで表示
+    const applicationDate = toJstDateString(new Date(r.created_at))
 
-    // 2回目以降のみ「支給額が半額になります」と注記
-    const halfNote = category === "achievement_repeat" ? "\n※2回目以降は支給額が半額になります" : ""
-    const text = `${SUBSIDY_LABELS[category]}／${reason}【${SETTLEMENT_LABELS[proposed]}】で登録します。よろしいですか？${halfNote}`
+    const text =
+      "以下の内容で登録します。確認してください。\n" +
+      "─────────────\n" +
+      `👤 スタッフ：${staffName}\n` +
+      `🏪 店名：${storeName}\n` +
+      `💰 立替額：¥${formatAmount(amount)}\n` +
+      `🏷 区分：${detail.fullLabel}\n` +
+      `💴 支給額：¥${formatAmount(subsidy)}（${isHalf ? "半額" : "全額"}・給与支給）\n` +
+      `📅 申請日：${applicationDate}\n` +
+      "─────────────\n" +
+      "この内容でよろしいですか？"
 
-    // 確認ボタンの data に区分(cat)と精算方法(method)の両方を引き継ぐ
-    const mkData = (m: SettlementMethod) =>
-      `action=settle&receipt_id=${receiptId}&method=${m}&cat=${category}`
-    await sendLineButtons(
-      replyToken,
-      source.userId,
-      `${storeName} ¥${amountStr} の登録確認`,
-      text,
-      [
-        { type: "postback", label: "この内容で確定", data: mkData(proposed), displayText: `${SETTLEMENT_LABELS[proposed]}で確定` },
-        { type: "postback", label: `精算方法を変更（${SETTLEMENT_LABELS[other]}）`, data: mkData(other), displayText: `${SETTLEMENT_LABELS[other]}に変更` },
-        { type: "postback", label: "保管のみ", data: mkData("storage_only"), displayText: "保管のみ" },
-      ]
-    )
+    await sendLineQuickReply(replyToken, source.userId, text, [
+      {
+        type: "postback",
+        label: "✅ OK",
+        data: `action=ok&rid=${receiptId}&d=${detail.key}`,
+        displayText: "✅ OK",
+      },
+      {
+        type: "postback",
+        label: "🔄 修正",
+        data: `action=fix&rid=${receiptId}`,
+        displayText: "🔄 修正",
+      },
+    ])
   } catch (error) {
-    console.error("[LINE Bot] 区分選択処理エラー:", error)
+    console.error("[LINE Bot] 確認画面生成エラー:", error)
     await sendLineMessage(replyToken, source.userId, "⚠️ 処理中にエラーが発生しました。経理にご相談ください。")
   }
 }
 
-/** 2段階目: 区分と精算方法をパースして精算確定 */
-async function handleSettlePostback(
+/** 「修正」→ 第1階層からやり直し（写真再送不要） */
+async function handleFixPostback(
   event: LineEvent,
   params: URLSearchParams
 ): Promise<void> {
   const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  if (!receiptId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
+    return
+  }
+  await sendTier1(replyToken, source.userId, receiptId, "もう一度、区分を選んでください。")
+}
 
-  const receiptId = params.get("receipt_id")
-  const method = params.get("method") as SettlementMethod | null
-  // 区分は確認ボタンに引き継がれている（未指定・不正値は 'other' = 全額）
-  const category: SubsidyCategory = normalizeSubsidyCategory(params.get("cat"))
-  if (!receiptId || !method || !(method in SETTLEMENT_LABELS)) {
+/** 「OK」→ 給与支給（payroll）固定で精算確定。詳細区分・主区分マッピングを保存 */
+async function handleConfirmPostback(
+  event: LineEvent,
+  params: URLSearchParams
+): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  const detail = getExpenseDetail(params.get("d"))
+  if (!receiptId || !detail) {
     await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
     return
   }
@@ -480,8 +573,9 @@ async function handleSettlePostback(
   try {
     const result = await settleStaffReceipt({
       staffReceiptId: receiptId,
-      settlementMethod: method,
-      subsidyCategory: category,
+      settlementMethod: "payroll", // LINEからは常に給与支給に一本化
+      subsidyCategory: detail.subsidyCategory, // 支給率（achievement_repeat=半額 / other=全額）
+      expenseDetail: detail.fullLabel, // 6種類の詳細区分フル名称
     })
 
     switch (result.status) {
@@ -495,15 +589,14 @@ async function handleSettlePostback(
         await sendLineMessage(replyToken, source.userId, "⚠️ 金額が読み取れていないため精算できません。経理にご相談ください。")
         return
       case "ok": {
-        const label = SETTLEMENT_LABELS[method]
-        const catLabel = SUBSIDY_LABELS[category]
-        const amountStr = formatAmount(result.amount ?? null)
-        // 2回目以降は支給額が半額になる旨を注記
-        const halfNote = category === "achievement_repeat" ? "\n※2回目以降のため支給額は半額（端数切り捨て）で計算されます" : ""
+        const amount = result.amount ?? 0
+        const subsidy = calcSubsidy(amount, detail.subsidyCategory)
+        const isHalf = detail.subsidyCategory === "achievement_repeat"
+
         await sendLineMessage(
           replyToken,
           source.userId,
-          `✅ ${catLabel}／${label}で登録しました\n${result.storeName || "不明"} ¥${amountStr}${halfNote}`
+          "✅ 登録しました。給与支給で処理されます。\nお疲れさまでした！"
         )
 
         // 院長へpush通知（ADMIN_LINE_USER_ID未設定ならスキップ）
@@ -511,7 +604,9 @@ async function handleSettlePostback(
         if (adminId) {
           await pushMessage(
             adminId,
-            `🧾 ${result.staffName}さんが ¥${amountStr} を立替（${result.storeName || "不明"}）。\n区分: ${catLabel}\n${label}で登録されました。${halfNote}`
+            `🧾 ${result.staffName}さんが ¥${formatAmount(amount)} を立替（${result.storeName || "不明"}）。\n` +
+              `区分: ${detail.fullLabel}\n` +
+              `支給額: ¥${formatAmount(subsidy)}（${isHalf ? "半額" : "全額"}・給与支給）`
           )
         }
         return
@@ -872,12 +967,12 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     const ocrResult = await analyzeDocument(base64Data, mimeType)
     console.log(`[LINE Bot] Gemini AI解析完了: vendor=${ocrResult.vendor_name}, amount=${ocrResult.amount}`)
 
-    // 6. Dropboxに保存
+    // 6. Dropboxに保存（申請日＝アップロード日のフォルダ。JSTで日付を確定）
     console.log("[LINE Bot] Dropboxアップロード開始")
-    const dateObj = ocrResult.issue_date ? new Date(ocrResult.issue_date) : new Date()
+    const applicationDate = toJstDateString(new Date()) // 申請日（YYYY-MM-DD・JST）
     const timestamp = Date.now().toString().slice(-6)
     const fileName = `${matchedStaff.name}_LINE_${timestamp}.jpg`
-    const dropboxPath = getStaffReceiptPath(matchedStaff.name, dateObj, fileName)
+    const dropboxPath = getStaffReceiptPath(matchedStaff.name, applicationDate, fileName)
 
     const resultPath = await uploadFile(dropboxPath, imageBuffer)
     console.log(`[LINE Bot] Dropboxアップロード完了: ${resultPath}`)
@@ -927,22 +1022,15 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
       return
     }
 
-    // 区分ボタン（postback の data に区分を載せる。選択後に精算方法の確認へ進む）
-    const text = `✅ 解析しました\n${storeName.slice(0, 30)} ¥${amountStr}（${dateStr}）\nこの立替の区分を選んでください`
-    const mkCatData = (c: SubsidyCategory) =>
-      `action=category&receipt_id=${receiptId}&cat=${c}`
-    await sendLineButtons(
-      replyToken,
-      source.userId,
-      `${storeName} ¥${amountStr} の区分を選択`,
-      text,
-      [
-        { type: "postback", label: SUBSIDY_LABELS.achievement_first, data: mkCatData("achievement_first"), displayText: SUBSIDY_LABELS.achievement_first },
-        { type: "postback", label: SUBSIDY_LABELS.achievement_repeat, data: mkCatData("achievement_repeat"), displayText: SUBSIDY_LABELS.achievement_repeat },
-        { type: "postback", label: SUBSIDY_LABELS.other, data: mkCatData("other"), displayText: SUBSIDY_LABELS.other },
-      ]
-    )
-    console.log("[LINE Bot] 区分質問ボタン送信完了")
+    // 第1階層の区分選択（アチーブメント関連/それ以外）をクイックリプライで質問する
+    const header =
+      "📸 領収書を受け取りました。\n" +
+      "─────────────\n" +
+      `🏪 ${storeName.slice(0, 30)}\n` +
+      `💰 ¥${amountStr}\n` +
+      "─────────────"
+    await sendTier1(replyToken, source.userId, receiptId, header)
+    console.log("[LINE Bot] 区分質問（第1階層）送信完了")
   } catch (error) {
     // 予期しないエラーが発生しても必ずLINEに返信する
     console.error("[LINE Bot] 画像処理中にエラー発生:", error)

@@ -64,6 +64,8 @@ export async function settleStaffReceipt(params: {
   settlementMethod: SettlementMethod
   /** アチーブメント参加区分（未指定は 'other' = 全額扱い） */
   subsidyCategory?: SubsidyCategory | string | null
+  /** スタッフ立替の詳細区分フル名称（expense_detail カラムに保存。任意） */
+  expenseDetail?: string | null
   registeredBy?: string
   client?: ServiceClient
 }): Promise<SettleResult> {
@@ -124,31 +126,57 @@ export async function settleStaffReceipt(params: {
   const description = `${staffName}/${storeName || "不明"}`
 
   // 4. 取引登録
+  // 共通のinsertペイロード（expense_detailは下で条件付きに付与する）
+  const basePayload = {
+    type: "出金",
+    amount,
+    description,
+    staff_member_id: r.staff_member_id as string,
+    staff_receipt_id: staffReceiptId,
+    dropbox_path: dropboxPath,
+    // 給与返金待ちパネル等でレシートを参照できるようDropboxパスを格納
+    receipt_urls: (dropboxPath ? [dropboxPath] : null) as Json,
+    registered_by: registeredBy,
+    category: "staff_refund",
+    note: description,
+    created_by: registeredBy,
+    transaction_date: txDate,
+    balance_after: newBalance,
+    settlement_method: settlementMethod,
+    // 給与返金のみ返金待ちステータスを付与
+    payroll_refund_status: settlementMethod === "payroll" ? "pending" : null,
+    // アチーブメント参加区分（支給率の判定に使用）
+    subsidy_category: subsidyCategory,
+  }
+
+  const expenseDetail = params.expenseDetail?.trim() || null
+  // expense_detail カラムは migration 029 で追加される。未適用の環境でも精算を
+  // 止めないよう、列が存在しない（PostgRESTスキーマ未認識）エラー時は列なしで再登録する。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const insertPayload: any = expenseDetail
+    ? { ...basePayload, expense_detail: expenseDetail }
+    : basePayload
   const { error: insertError } = await supabase
     .from("petty_cash_transactions")
-    .insert({
-      type: "出金",
-      amount,
-      description,
-      staff_member_id: r.staff_member_id as string,
-      staff_receipt_id: staffReceiptId,
-      dropbox_path: dropboxPath,
-      // 給与返金待ちパネル等でレシートを参照できるようDropboxパスを格納
-      receipt_urls: (dropboxPath ? [dropboxPath] : null) as Json,
-      registered_by: registeredBy,
-      category: "staff_refund",
-      note: description,
-      created_by: registeredBy,
-      transaction_date: txDate,
-      balance_after: newBalance,
-      settlement_method: settlementMethod,
-      // 給与返金のみ返金待ちステータスを付与
-      payroll_refund_status: settlementMethod === "payroll" ? "pending" : null,
-      // アチーブメント参加区分（支給率の判定に使用）
-      subsidy_category: subsidyCategory,
-    })
+    .insert(insertPayload)
 
-  if (insertError) throw insertError
+  if (insertError) {
+    const isMissingColumn =
+      insertError.code === "PGRST204" ||
+      insertError.code === "42703" ||
+      /expense_detail/.test(insertError.message || "")
+    if (expenseDetail && isMissingColumn) {
+      console.warn(
+        "[staff-refund] expense_detail カラム未適用のため詳細区分なしで登録します（migration 029未実行）"
+      )
+      const { error: retryError } = await supabase
+        .from("petty_cash_transactions")
+        .insert(basePayload)
+      if (retryError) throw retryError
+    } else {
+      throw insertError
+    }
+  }
 
   // 5. 残高更新（小口返金のときだけ）
   if (deductsBalance) {

@@ -54,3 +54,78 @@ export function calcSubsidy(amount: number, category: string | null | undefined)
 export function subsidyLabel(category: string | null | undefined): string {
   return SUBSIDY_LABELS[normalizeSubsidyCategory(category)]
 }
+
+/* ---------- スタッフ立替の詳細区分（LINE 2階層選択） ---------- */
+
+/**
+ * LINE精算フローの2階層区分。
+ * 第1階層（group）で「アチーブメント関連 / それ以外」を選び、第2階層で詳細を選ぶ。
+ *
+ * - fullLabel        … 確認画面表示・expense_detail カラム保存に使うフル名称
+ * - buttonLabel      … LINEボタン/クイックリプライ用ラベル（20文字以内）
+ * - subsidyCategory  … 支給率判定に使う主区分（achievement_repeat=半額 / other=全額）。
+ *                      半額は「セミナー2回目以降」のみ。他はすべて other（全額）。
+ */
+export type ExpenseDetailKey =
+  | "ach_first"
+  | "ach_repeat"
+  | "transport"
+  | "lodging"
+  | "books"
+  | "insurance"
+  | "other"
+
+export type ExpenseGroup = "ach" | "other"
+
+export interface ExpenseDetailDef {
+  key: ExpenseDetailKey
+  group: ExpenseGroup
+  fullLabel: string
+  buttonLabel: string
+  subsidyCategory: SubsidyCategory
+}
+
+/** 第1階層グループのラベル */
+export const EXPENSE_GROUP_LABELS: Record<ExpenseGroup, string> = {
+  ach: "アチーブメント関連",
+  other: "それ以外",
+}
+
+/** スタッフ立替の詳細区分定義（半額は ach_repeat のみ、他は全額） */
+export const STAFF_EXPENSE_DETAILS: ExpenseDetailDef[] = [
+  {
+    key: "ach_first",
+    group: "ach",
+    fullLabel: "初回ATC＋アカデミー会員費",
+    buttonLabel: "初回ATC＋アカデミー会員費",
+    subsidyCategory: "other",
+  },
+  {
+    key: "ach_repeat",
+    group: "ach",
+    fullLabel: "セミナー2回目以降（ATC再受講、ATC以外のコース）",
+    buttonLabel: "セミナー2回目以降",
+    subsidyCategory: "achievement_repeat",
+  },
+  { key: "transport", group: "other", fullLabel: "交通費", buttonLabel: "交通費", subsidyCategory: "other" },
+  { key: "lodging", group: "other", fullLabel: "宿泊費", buttonLabel: "宿泊費", subsidyCategory: "other" },
+  { key: "books", group: "other", fullLabel: "書籍代", buttonLabel: "書籍代", subsidyCategory: "other" },
+  {
+    key: "insurance",
+    group: "other",
+    fullLabel: "当院での保険診療代",
+    buttonLabel: "当院での保険診療代",
+    subsidyCategory: "other",
+  },
+  { key: "other", group: "other", fullLabel: "その他", buttonLabel: "その他", subsidyCategory: "other" },
+]
+
+/** detailKey から詳細区分定義を取得（不正値は undefined） */
+export function getExpenseDetail(key: string | null | undefined): ExpenseDetailDef | undefined {
+  return STAFF_EXPENSE_DETAILS.find((d) => d.key === key)
+}
+
+/** 指定グループの詳細区分一覧 */
+export function expenseDetailsByGroup(group: ExpenseGroup): ExpenseDetailDef[] {
+  return STAFF_EXPENSE_DETAILS.filter((d) => d.group === group)
+}
