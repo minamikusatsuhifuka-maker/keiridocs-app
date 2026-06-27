@@ -27,6 +27,10 @@ export type TransitStep =
   | "other_purpose" // 用途・支払先の入力待ち（任意）
   | "other_date" // 利用日の入力待ち
   | "other_confirm" // 確認待ち（OK）
+  // 自宅最寄り駅 自己登録フロー（同じセッションテーブルを流用）
+  | "home_input" // 駅名の入力待ち
+  | "home_confirm" // 一意判定の確認待ち（OK/修正）
+  | "home_pick" // 候補からの選択待ち
 
 /** セッションに溜める入力途中データ */
 export interface TransitData {
@@ -45,6 +49,9 @@ export interface TransitData {
   // 共通
   useDate?: string // 利用日 YYYY-MM-DD
   amount?: number // 確定額（確認後）
+  // 自宅最寄り駅 自己登録フロー用
+  homeStationPick?: { station: string; pref: string; line?: string | null } // 一意判定の確認対象
+  homeStationCandidates?: { station: string; pref: string; line?: string | null }[] // 候補選択肢
 }
 
 export interface TransitSession {
@@ -124,6 +131,27 @@ export async function setTransitSession(
   )
   if (error) {
     console.warn("[line-transit] セッション保存失敗（migration034未実行?）:", error.message)
+    return false
+  }
+  return true
+}
+
+/**
+ * 自宅最寄り駅を更新する（LINE自己登録）。/mkadmin の管理者登録と同じカラムを更新するため双方に反映される。
+ * 駅名は「○○駅」表記で渡すこと（電車運賃推定 transit-fare.ts と整合）。
+ */
+export async function updateStaffHomeStation(
+  supabase: Client,
+  staffId: string,
+  station: string,
+  pref: string | null
+): Promise<boolean> {
+  const { error } = await supabase
+    .from("staff_members")
+    .update({ home_station: station, home_station_pref: pref })
+    .eq("id", staffId)
+  if (error) {
+    console.error("[line-transit] 自宅最寄り駅の更新エラー:", error.message)
     return false
   }
   return true

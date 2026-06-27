@@ -9,10 +9,12 @@ import {
   setTransitSession,
   clearTransitSession,
   finalizeTransitClaim,
+  updateStaffHomeStation,
   NEARBY_PREFECTURES,
   type TransitData,
   type TransitSession,
 } from "@/lib/line-transit"
+import { judgeStation, toStationName } from "@/lib/station-judge"
 import {
   EXPENSE_GROUP_LABELS,
   expenseDetailsByGroup,
@@ -447,6 +449,19 @@ async function handlePostback(event: LineEvent): Promise<void> {
       return
     case "trx": // キャンセル
       await handleTransitCancelPostback(event)
+      return
+    // 自宅最寄り駅 自己登録フロー
+    case "hsok": // 確認OK → 保存
+      await handleHomeStationConfirmPostback(event)
+      return
+    case "hspick": // 候補選択 → 保存
+      await handleHomeStationPickPostback(event, params)
+      return
+    case "hsfix": // 入力し直す
+      await handleHomeStationFixPostback(event)
+      return
+    case "hsx": // キャンセル
+      await handleHomeStationCancelPostback(event)
       return
   }
 }
@@ -1320,6 +1335,268 @@ async function handleTransitText(
   }
 }
 
+/* ========== 自宅最寄り駅の自己登録フロー（LINE。/mkadmin管理者登録と併存） ========== */
+
+/** 「最寄り駅」「最寄駅」開始キーワードか */
+function isHomeStationEntry(text: string): boolean {
+  const t = text.replace(/[\s　]/g, "")
+  return t.includes("最寄り駅") || t.includes("最寄駅")
+}
+
+/** 自宅最寄り駅フロー用のキャンセルボタン */
+function homeCancelItem(): PostbackAction {
+  return { type: "postback", label: "✖ キャンセル", data: "action=hsx", displayText: "✖ キャンセル" }
+}
+
+/** 開始キーワード → セッション作成 → 駅名入力を促す（既登録なら現在値を併記） */
+async function handleHomeStationEntry(
+  event: LineEvent,
+  supabase: ReturnType<typeof createServiceClient>,
+  staffMembers: { id: string; name: string; line_user_id?: string | null }[]
+): Promise<void> {
+  const { replyToken, source } = event
+  const staff = resolveStaffForUser(staffMembers, source.userId)
+  if (!staff) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "🏠 自宅最寄り駅を登録します。\nまずお名前をテキストで送って登録してください。\n例：楠葉"
+    )
+    return
+  }
+  const { data: cur } = await supabase
+    .from("staff_members")
+    .select("home_station, home_station_pref")
+    .eq("id", staff.id)
+    .single()
+  const c = cur as { home_station: string | null; home_station_pref: string | null } | null
+
+  const ok = await setTransitSession(supabase, source.userId, staff.id, "home_input", {})
+  if (!ok) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ 登録機能の準備が未完了です（DBの更新待ち）。管理者にご連絡ください。"
+    )
+    return
+  }
+
+  const text = c?.home_station
+    ? `🏠 現在の登録：${c.home_station}${c.home_station_pref ? `（${c.home_station_pref}）` : ""}\n` +
+      "変更する場合は新しい駅名を送信してください。（例：草津駅）"
+    : "🏠 自宅の最寄り駅を登録します。最寄り駅名を送信してください。（例：草津駅）"
+  await sendLineQuickReply(replyToken, source.userId, text, [homeCancelItem()])
+}
+
+/** 駅名テキストをGeminiで判定し、確認 or 候補提示 or 再入力に分岐 */
+async function runHomeStationJudge(
+  supabase: ReturnType<typeof createServiceClient>,
+  event: LineEvent,
+  staffId: string,
+  inputText: string
+): Promise<void> {
+  const { replyToken, source } = event
+  const judge = await judgeStation(inputText)
+  const cands = judge.candidates.slice(0, 4)
+
+  if (cands.length >= 2) {
+    await setTransitSession(supabase, source.userId, staffId, "home_pick", { homeStationCandidates: cands })
+    await sendHomeStationCandidates(replyToken, source.userId, cands)
+    return
+  }
+  if (judge.station && judge.pref) {
+    const pick = { station: judge.station, pref: judge.pref, line: judge.line }
+    await setTransitSession(supabase, source.userId, staffId, "home_confirm", { homeStationPick: pick })
+    await sendHomeStationConfirm(replyToken, source.userId, pick)
+    return
+  }
+  if (cands.length === 1) {
+    await setTransitSession(supabase, source.userId, staffId, "home_confirm", { homeStationPick: cands[0] })
+    await sendHomeStationConfirm(replyToken, source.userId, cands[0])
+    return
+  }
+  // 判定不能 → 県名付き再入力
+  await setTransitSession(supabase, source.userId, staffId, "home_input", {})
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    "🚉 駅を特定できませんでした。県名を付けてもう一度送信してください。\n例：滋賀県 草津駅",
+    [homeCancelItem()]
+  )
+}
+
+/** 一意判定の確認メッセージ（OK/修正） */
+async function sendHomeStationConfirm(
+  replyToken: string,
+  userId: string,
+  pick: { station: string; pref: string; line?: string | null }
+): Promise<void> {
+  const lineStr = pick.line ? `・${pick.line}` : ""
+  await sendLineQuickReply(
+    replyToken,
+    userId,
+    `「${pick.station}（${pick.pref}${lineStr}）」でよろしいですか？`,
+    [
+      { type: "postback", label: "✅ OK", data: "action=hsok", displayText: "✅ OK" },
+      { type: "postback", label: "🔄 修正", data: "action=hsfix", displayText: "🔄 修正" },
+      homeCancelItem(),
+    ]
+  )
+}
+
+/** 複数候補の選択肢 */
+async function sendHomeStationCandidates(
+  replyToken: string,
+  userId: string,
+  candidates: { station: string; pref: string; line?: string | null }[]
+): Promise<void> {
+  const items: PostbackAction[] = candidates.map((c, i) => ({
+    type: "postback",
+    label: `${c.pref}の${c.station}`,
+    data: `action=hspick&n=${i}`,
+    displayText: `${c.pref}の${c.station}`,
+  }))
+  items.push({ type: "postback", label: "入力し直す", data: "action=hsfix", displayText: "入力し直す" })
+  items.push(homeCancelItem())
+  await sendLineQuickReply(
+    replyToken,
+    userId,
+    "🚉 候補が複数あります。該当するものを選んでください。\n（無ければ「入力し直す」で県名を付けて再送信してください）",
+    items
+  )
+}
+
+/** 確定保存（駅名は○○駅表記に正規化）＋完了メッセージ */
+async function saveHomeStation(
+  supabase: ReturnType<typeof createServiceClient>,
+  event: LineEvent,
+  staffId: string,
+  station: string,
+  pref: string | null
+): Promise<void> {
+  const { replyToken, source } = event
+  const normalized = toStationName(station)
+  const ok = await updateStaffHomeStation(supabase, staffId, normalized, pref || null)
+  await clearTransitSession(supabase, source.userId)
+  if (!ok) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 登録に失敗しました。お手数ですが、もう一度お試しください。")
+    return
+  }
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    `✅ 自宅最寄り駅を「${normalized}（${pref || "県未設定"}）」で登録しました。\n` +
+      "領収書なし交通費（電車）の出発駅に使われます。"
+  )
+}
+
+/** 自宅最寄り駅フロー中のテキスト（どのステップでも駅名の再判定として扱う） */
+async function handleHomeStationText(
+  event: LineEvent,
+  supabase: ReturnType<typeof createServiceClient>,
+  session: TransitSession,
+  inputText: string
+): Promise<void> {
+  const { replyToken, source } = event
+  const staffId = session.staffMemberId
+
+  if (/^(キャンセル|中止|やめる|やめます|終了)$/.test(inputText)) {
+    await clearTransitSession(supabase, source.userId)
+    await sendLineMessage(replyToken, source.userId, "✋ 自宅最寄り駅の登録を中止しました。")
+    return
+  }
+  if (!staffId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  if (/^(最初から|やり直し|やりなおし|入力し直す|入力しなおす)$/.test(inputText)) {
+    await setTransitSession(supabase, source.userId, staffId, "home_input", {})
+    await sendLineQuickReply(
+      replyToken,
+      source.userId,
+      "最寄り駅名を送信してください。（例：草津駅）",
+      [homeCancelItem()]
+    )
+    return
+  }
+  // home_input / home_confirm / home_pick のいずれでも、テキストは駅名（再）入力として判定し直す
+  await runHomeStationJudge(supabase, event, staffId, inputText)
+}
+
+/** 確認OK → 保存 */
+async function handleHomeStationConfirmPostback(event: LineEvent): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getTransitSession(supabase, source.userId)
+  if (!session?.staffMemberId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  const pick = session.data.homeStationPick
+  if (!pick?.station || !pick?.pref) {
+    await setTransitSession(supabase, source.userId, session.staffMemberId, "home_input", {})
+    await sendLineQuickReply(
+      replyToken,
+      source.userId,
+      "⚠️ 登録対象が見つかりませんでした。最寄り駅名をもう一度送信してください。",
+      [homeCancelItem()]
+    )
+    return
+  }
+  await saveHomeStation(supabase, event, session.staffMemberId, pick.station, pick.pref)
+}
+
+/** 候補選択 → 保存 */
+async function handleHomeStationPickPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getTransitSession(supabase, source.userId)
+  if (!session?.staffMemberId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  const n = Number(params.get("n"))
+  const cands = session.data.homeStationCandidates || []
+  const c = Number.isInteger(n) ? cands[n] : undefined
+  if (!c?.station || !c?.pref) {
+    await setTransitSession(supabase, source.userId, session.staffMemberId, "home_input", {})
+    await sendLineQuickReply(
+      replyToken,
+      source.userId,
+      "⚠️ 選択を認識できませんでした。最寄り駅名をもう一度送信してください。",
+      [homeCancelItem()]
+    )
+    return
+  }
+  await saveHomeStation(supabase, event, session.staffMemberId, c.station, c.pref)
+}
+
+/** 入力し直す → 駅名入力へ戻す */
+async function handleHomeStationFixPostback(event: LineEvent): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getTransitSession(supabase, source.userId)
+  if (!session?.staffMemberId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  await setTransitSession(supabase, source.userId, session.staffMemberId, "home_input", {})
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    "最寄り駅名をもう一度送信してください。\n同名駅がある場合は県名を付けてください（例：滋賀県 草津駅）。",
+    [homeCancelItem()]
+  )
+}
+
+/** 自宅最寄り駅登録のキャンセル */
+async function handleHomeStationCancelPostback(event: LineEvent): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  await clearTransitSession(supabase, source.userId)
+  await sendLineMessage(replyToken, source.userId, "✋ 自宅最寄り駅の登録を中止しました。")
+}
+
 /** 質問キーワードを含むかチェック */
 const QUESTION_KEYWORDS = ["？", "?", "は？", "教えて", "手順", "方法", "やり方", "どうすれば", "マニュアル", "ルール", "規則", "対応", "操作", "使い方", "どうやって", "なぜ", "何"]
 
@@ -1549,10 +1826,14 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
 
   const supabase = createServiceClient()
 
-  // 0. 領収書なし交通費：進行中の対話セッションがあれば最優先で処理（テキスト入力を取りこぼさない）
+  // 0. 進行中の対話セッションがあれば最優先で処理（テキスト入力を取りこぼさない）
   const transitSession = await getTransitSession(supabase, source.userId)
   if (transitSession) {
-    await handleTransitText(event, supabase, transitSession, inputText)
+    if (transitSession.step.startsWith("home_")) {
+      await handleHomeStationText(event, supabase, transitSession, inputText)
+    } else {
+      await handleTransitText(event, supabase, transitSession, inputText)
+    }
     return
   }
 
@@ -1569,6 +1850,12 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
   // 0b. 領収書なし交通費の開始キーワード（例「交通費（領収書なし）」）
   if (isTransitEntry(inputText)) {
     await handleTransitEntry(event, supabase, staffMembers, inputText)
+    return
+  }
+
+  // 0c. 自宅最寄り駅 自己登録の開始キーワード（「最寄り駅」「最寄駅」）
+  if (isHomeStationEntry(inputText)) {
+    await handleHomeStationEntry(event, supabase, staffMembers)
     return
   }
 
