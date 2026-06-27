@@ -15,10 +15,11 @@ function createServiceClient() {
 
 /**
  * GET /api/petty-cash/staff-subsidy-csv?year=2026&month=5
- * 税理士向け「スタッフ別支給額一覧」CSVをダウンロード。
+ * 会計士向け「スタッフ立替明細」CSVをダウンロード（税理士提出フォルダへコピーされるものと同一）。
  *
- * 項目: スタッフ名 / 立替額合計 / 区分内訳（初参加・2回目以降・それ以外の件数）/
- *       支給額合計（半額計算反映）/ 小口支給額 / 給与支給額 / 保管のみ件数
+ * 項目（領収書1件ごと・7列）: 対象スタッフ / 支払年月日 / 支払先 / 目的・用途 /
+ *       支払金額 / 支給割合（全額・半額）/ 支給額（calcSubsidyで半額計算反映）
+ * ＋ スタッフごとの小計行 ＋ 全体合計行。
  */
 export async function GET(req: NextRequest) {
   const authSupabase = await createAuthClient()

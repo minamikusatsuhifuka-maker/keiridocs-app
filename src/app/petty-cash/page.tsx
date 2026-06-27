@@ -357,7 +357,7 @@ function PettyCashPageInner() {
     window.location.href = `/api/petty-cash/export-csv?year=${selectedYear}&month=${selectedMonth}`
   }
 
-  // スタッフ別支給額CSV出力（税理士向け・半額計算反映）
+  // スタッフ立替明細CSV出力（会計士向け・領収書1件ごと・半額計算反映）
   const handleStaffSubsidyCsvExport = () => {
     window.location.href = `/api/petty-cash/staff-subsidy-csv?year=${selectedYear}&month=${selectedMonth}`
   }
@@ -373,7 +373,7 @@ function PettyCashPageInner() {
         <div className="flex gap-2">
           <Button onClick={handleStaffSubsidyCsvExport} variant="outline">
             <FileDown className="mr-2 size-4" />
-            スタッフ別支給額CSV
+            スタッフ立替明細CSV
           </Button>
           <Button onClick={handleCsvExport} variant="outline">
             <FileDown className="mr-2 size-4" />

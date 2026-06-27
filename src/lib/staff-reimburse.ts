@@ -240,52 +240,72 @@ function escapeCsv(value: unknown): string {
 
 /**
  * 会計士向けCSV（BOM付きUTF-8・CRLF）。
- * 上段にスタッフ毎サマリー、下段に明細を1ファイルにまとめる（給与反映にそのまま使える構成）。
+ * 領収書1件＝1行の明細。列は会計士提出仕様の7列に統一する:
+ *   対象スタッフ / 支払年月日 / 支払先 / 目的・用途 / 支払金額 / 支給割合 / 支給額
+ * スタッフごとの小計行と全体合計行を併記する。
+ * 並び順: 対象スタッフ → 支払年月日 昇順（支払日が読み取れない行は末尾）。
+ * 支払年月日は領収書のOCR発行日。未取得の行は申請日を代用し「（申請日）」と明記する。
  */
 export function buildStaffReimburseCsv(result: StaffReimburseResult, periodLabel: string): string {
   const lines: string[][] = []
 
-  lines.push([`スタッフ立替まとめ（${periodLabel}・申請日ベース・全件給与支給）`])
+  lines.push([`スタッフ立替明細（${periodLabel}・領収書1件ごと・全件給与支給）`])
   lines.push([])
-
-  // サマリー
-  lines.push(["■ スタッフ毎サマリー"])
-  lines.push(["スタッフ名", "立替件数", "立替額合計", "支給額合計"])
-  for (const s of result.summaries) {
-    lines.push([s.staffName, String(s.count), String(s.totalAmount), String(s.totalSubsidy)])
-  }
   lines.push([
-    "合計",
-    String(result.totals.count),
-    String(result.totals.totalAmount),
-    String(result.totals.totalSubsidy),
-  ])
-  lines.push([])
-
-  // 明細（会計士希望の項目順: 対象スタッフ/支払年月日/支払先/用途/金額/支給判定/支給額/(参考)申請日）
-  lines.push(["■ 明細"])
-  lines.push([
-    "スタッフ名",
+    "対象スタッフ",
     "支払年月日",
     "支払先",
     "目的・用途",
     "支払金額",
-    "支給判定",
+    "支給割合",
     "支給額",
-    "申請日(参考)",
   ])
-  for (const d of result.details) {
-    lines.push([
-      d.staffName,
-      d.paymentDate || "—",
-      d.storeName,
-      d.expenseDetail,
-      String(d.amount),
-      d.isHalf ? "半額" : "全額",
-      String(d.subsidy),
-      d.applicationDate,
-    ])
+
+  // 対象スタッフ → 支払年月日 昇順（支払日が読み取れない行は末尾へ）
+  const sortKey = (d: ReimburseDetail) => d.paymentDate || "9999-99-99"
+  const sorted = [...result.details].sort(
+    (a, b) =>
+      a.staffName.localeCompare(b.staffName, "ja") || sortKey(a).localeCompare(sortKey(b))
+  )
+
+  // スタッフ単位で明細→小計を出力（同一スタッフの行は連続している）
+  let i = 0
+  while (i < sorted.length) {
+    const staffKey = sorted[i].staffMemberId ?? "__unknown__"
+    const staffName = sorted[i].staffName
+    let staffAmount = 0
+    let staffSubsidy = 0
+    while (i < sorted.length && (sorted[i].staffMemberId ?? "__unknown__") === staffKey) {
+      const d = sorted[i]
+      // 支払年月日: OCR発行日。未取得なら申請日を代用し、その旨を明記
+      const paymentCell = d.paymentDate || `${d.applicationDate}（申請日）`
+      lines.push([
+        d.staffName,
+        paymentCell,
+        d.storeName,
+        d.expenseDetail,
+        String(d.amount),
+        d.isHalf ? "半額" : "全額",
+        String(d.subsidy),
+      ])
+      staffAmount += d.amount
+      staffSubsidy += d.subsidy
+      i++
+    }
+    // スタッフ小計
+    lines.push([`${staffName} 小計`, "", "", "", String(staffAmount), "", String(staffSubsidy)])
   }
+
+  // 全体合計
+  lines.push([
+    "合計",
+    "",
+    "",
+    "",
+    String(result.totals.totalAmount),
+    "",
+    String(result.totals.totalSubsidy),
+  ])
 
   const body = lines.map((row) => row.map(escapeCsv).join(",")).join("\r\n")
   // BOM付きUTF-8（Excel互換）

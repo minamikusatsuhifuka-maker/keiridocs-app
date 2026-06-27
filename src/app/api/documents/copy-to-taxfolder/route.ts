@@ -441,8 +441,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // スタッフ別支給額CSV: スタッフ領収書が対象に含まれるとき、領収書サブフォルダ内に保存
-    // 税理士提出/{YYYY年MM月}/領収書/スタッフ別支給額_{YYYY年MM月}.csv
+    // スタッフ立替明細CSV: スタッフ領収書が対象に含まれるとき、領収書サブフォルダ内に保存
+    // 税理士提出/{YYYY年MM月}/領収書/スタッフ立替明細_{YYYY年MM月}.csv
     if (targetFolders.includes("スタッフ領収書")) {
       try {
         const builtSubsidy = await buildStaffSubsidyCsv({
@@ -462,13 +462,13 @@ export async function POST(request: NextRequest) {
           const buffer = Buffer.from(builtSubsidy.csvWithBom, "utf-8")
           staffSubsidyCsvDropboxPath = await uploadFileOverwrite(targetSubsidyCsvPath, buffer)
           console.log(
-            `スタッフ別支給額CSVを保存しました: ${staffSubsidyCsvDropboxPath} (${builtSubsidy.rowCount}名)`
+            `スタッフ立替明細CSVを保存しました: ${staffSubsidyCsvDropboxPath} (${builtSubsidy.rowCount}件)`
           )
         }
       } catch (csvError) {
         const msg = csvError instanceof Error ? csvError.message : String(csvError)
-        csvSaveError = csvSaveError ? `${csvSaveError} / 支給額CSV: ${msg}` : `支給額CSV: ${msg}`
-        console.error("スタッフ別支給額CSV保存エラー:", csvError)
+        csvSaveError = csvSaveError ? `${csvSaveError} / 立替明細CSV: ${msg}` : `立替明細CSV: ${msg}`
+        console.error("スタッフ立替明細CSV保存エラー:", csvError)
       }
     }
 
