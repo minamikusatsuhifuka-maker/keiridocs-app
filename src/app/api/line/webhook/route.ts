@@ -1,8 +1,18 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { uploadFile } from "@/lib/dropbox"
-import { analyzeDocument, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
+import { analyzeDocument, DEFAULT_GEMINI_MODEL, normalizeAmount } from "@/lib/gemini"
 import { settleStaffReceipt } from "@/lib/staff-refund-core"
+import { estimateTrainFare } from "@/lib/transit-fare"
+import {
+  getTransitSession,
+  setTransitSession,
+  clearTransitSession,
+  finalizeTransitClaim,
+  NEARBY_PREFECTURES,
+  type TransitData,
+  type TransitSession,
+} from "@/lib/line-transit"
 import {
   EXPENSE_GROUP_LABELS,
   expenseDetailsByGroup,
@@ -419,6 +429,25 @@ async function handlePostback(event: LineEvent): Promise<void> {
     case "fix":
       await handleFixPostback(event, params)
       return
+    // 領収書なし交通費フロー
+    case "trm": // 交通手段の選択（電車/その他）
+      await handleTransitModePostback(event, params)
+      return
+    case "trp": // 到着駅の県の選択
+      await handleTransitPrefPostback(event, params)
+      return
+    case "trt": // 片道/往復の選択
+      await handleTransitTripPostback(event, params)
+      return
+    case "trd": // 利用日＝今日
+      await handleTransitTodayPostback(event)
+      return
+    case "trok": // 確認OK → 確定
+      await handleTransitConfirmPostback(event)
+      return
+    case "trx": // キャンセル
+      await handleTransitCancelPostback(event)
+      return
   }
 }
 
@@ -719,6 +748,578 @@ async function handleConfirmPostback(
   }
 }
 
+/* ========== 領収書なし交通費フロー（電車＝AI推定＋確認 / その他＝手動） ========== */
+
+/** 「交通費（領収書なし）」開始キーワードか判定（質問文に誤反応しないよう3語一致を要求） */
+function isTransitEntry(text: string): boolean {
+  const t = text.replace(/[\s　]/g, "")
+  return t.includes("交通費") && t.includes("領収書") && (t.includes("なし") || t.includes("無"))
+}
+
+/** 2桁ゼロ埋め */
+function pad2(s: string | number): string {
+  return String(s).padStart(2, "0")
+}
+
+/** 「今日」やYYYY-MM-DD / M/D / M月D日 を YYYY-MM-DD（JST）に正規化。解釈不能は null */
+function parseJpDate(text: string): string | null {
+  const t = text.trim()
+  if (/^(今日|きょう|本日)$/.test(t)) return toJstDateString(new Date())
+  let m = t.match(/^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?$/)
+  if (!m) {
+    const mm = t.match(/^(\d{1,2})[-/月](\d{1,2})日?$/)
+    if (mm) {
+      const year = toJstDateString(new Date()).slice(0, 4)
+      m = [mm[0], year, mm[1], mm[2]] as unknown as RegExpMatchArray
+    }
+  }
+  if (!m) return null
+  const month = Number(m[2])
+  const day = Number(m[3])
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null
+  return `${m[1]}-${pad2(month)}-${pad2(day)}`
+}
+
+/** line_user_id（無ければ30分キャッシュ）からスタッフを解決 */
+function resolveStaffForUser(
+  staffMembers: { id: string; name: string; line_user_id?: string | null }[],
+  userId: string
+): { id: string; name: string } | null {
+  const byLine = staffMembers.find((s) => s.line_user_id === userId)
+  if (byLine) return { id: byLine.id, name: byLine.name }
+  const cached = staffNameCache.get(userId)
+  if (cached && cached.expiresAt > Date.now()) return { id: cached.staffId, name: cached.staffName }
+  return null
+}
+
+/** 共通のキャンセルボタン */
+function transitCancelItem(): PostbackAction {
+  return { type: "postback", label: "✖ キャンセル", data: "action=trx", displayText: "✖ キャンセル" }
+}
+
+/** セッション切れ案内 */
+async function sendTransitExpired(replyToken: string, userId: string): Promise<void> {
+  await sendLineMessage(
+    replyToken,
+    userId,
+    "⌛ 申請の途中経過が見つかりませんでした。\n「交通費（領収書なし）」と送ると最初からやり直せます。"
+  )
+}
+
+/** 交通手段の選択を送る */
+async function sendTransitModeChoice(replyToken: string, userId: string): Promise<void> {
+  await sendLineQuickReply(
+    replyToken,
+    userId,
+    "🚃 交通費（領収書なし）の申請です。\n交通手段を選んでください。",
+    [
+      { type: "postback", label: "電車", data: "action=trm&m=train", displayText: "電車" },
+      { type: "postback", label: "その他（バス・車など）", data: "action=trm&m=other", displayText: "その他（バス・車など）" },
+      transitCancelItem(),
+    ]
+  )
+}
+
+/** 到着駅の県の選択を送る（一覧外はテキスト入力も可） */
+async function askArrivalPref(replyToken: string, userId: string): Promise<void> {
+  const items: PostbackAction[] = NEARBY_PREFECTURES.map((p) => ({
+    type: "postback",
+    label: p,
+    data: `action=trp&p=${encodeURIComponent(p)}`,
+    displayText: p,
+  }))
+  items.push(transitCancelItem())
+  await sendLineQuickReply(
+    replyToken,
+    userId,
+    "到着駅の県を選んでください。\n（一覧に無い場合は県名をテキストで送ってください）",
+    items
+  )
+}
+
+/** 片道/往復の選択を送る */
+async function askTrip(replyToken: string, userId: string): Promise<void> {
+  await sendLineQuickReply(replyToken, userId, "片道／往復を選んでください。", [
+    { type: "postback", label: "片道", data: "action=trt&t=one", displayText: "片道" },
+    { type: "postback", label: "往復", data: "action=trt&t=round", displayText: "往復" },
+    transitCancelItem(),
+  ])
+}
+
+/** 利用日の入力を促す（今日ボタン or テキスト日付） */
+async function askUseDate(replyToken: string, userId: string): Promise<void> {
+  await sendLineQuickReply(
+    replyToken,
+    userId,
+    "利用日を選んでください。\n別の日は「2026-06-20」「6/20」のように送ってください。",
+    [
+      { type: "postback", label: "今日", data: "action=trd&d=today", displayText: "今日" },
+      transitCancelItem(),
+    ]
+  )
+}
+
+/** その他（手動）の確認画面 */
+async function sendOtherConfirm(replyToken: string, userId: string, data: TransitData): Promise<void> {
+  const purpose = data.otherPurpose?.trim()
+  const text =
+    "以下の内容で登録します。確認してください。\n" +
+    "─────────────\n" +
+    "🚌 交通手段：その他（手動）\n" +
+    (purpose ? `🏷 用途・支払先：${purpose}\n` : "") +
+    `💰 金額：¥${formatAmount(data.amount ?? 0)}\n` +
+    `📅 利用日：${data.useDate}\n` +
+    "─────────────\n" +
+    "区分＝交通費＝全額・給与支給で登録します。よろしいですか？"
+  await sendLineQuickReply(replyToken, userId, text, [
+    { type: "postback", label: "✅ OK", data: "action=trok", displayText: "✅ OK" },
+    transitCancelItem(),
+  ])
+}
+
+/** 電車：AIで片道運賃を推定し、確認画面（OK/金額上書き）を送る */
+async function runTrainEstimate(
+  supabase: ReturnType<typeof createServiceClient>,
+  event: LineEvent,
+  staffId: string,
+  data: TransitData
+): Promise<void> {
+  const { replyToken, source } = event
+  const est = await estimateTrainFare({
+    fromStation: data.fromStation || "",
+    fromPref: data.fromPref || "",
+    toStation: data.toStation || "",
+    toPref: data.toPref || "",
+  })
+
+  // 推定不能（fare=null / confidence=low）は手動入力にフォールバック
+  if (est.fare == null || est.confidence === "low") {
+    const newData: TransitData = { ...data, estimateMethod: "manual", oneWayFare: null, estimatedTotal: null }
+    await setTransitSession(supabase, source.userId, staffId, "train_confirm", newData)
+    await sendLineQuickReply(
+      replyToken,
+      source.userId,
+      "🤖 電車代を自動で推定できませんでした。\n実際に支払う金額（往復ならその合計）を円で送ってください。\n例：1480",
+      [transitCancelItem()]
+    )
+    return
+  }
+
+  const oneWay = est.fare
+  const total = data.trip === "round" ? oneWay * 2 : oneWay
+  const newData: TransitData = {
+    ...data,
+    estimateMethod: "ai",
+    oneWayFare: oneWay,
+    estimatedTotal: total,
+    amount: total,
+  }
+  await setTransitSession(supabase, source.userId, staffId, "train_confirm", newData)
+  const tripLabel = data.trip === "round" ? "往復" : "片道"
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    `🚃 電車代は ¥${formatAmount(total)}（${tripLabel}・AI推定）と推定しました。\n` +
+      `（${data.fromStation} → ${data.toStation}）\n\n` +
+      "よろしければ「OK」を押してください。\n違う場合は正しい金額を円で送ってください（例：1480）。",
+    [
+      { type: "postback", label: "✅ OK", data: "action=trok", displayText: "✅ OK" },
+      transitCancelItem(),
+    ]
+  )
+}
+
+/** 利用日確定後の分岐（電車＝推定へ / その他＝確認へ） */
+async function applyUseDate(
+  supabase: ReturnType<typeof createServiceClient>,
+  event: LineEvent,
+  session: TransitSession,
+  useDate: string
+): Promise<void> {
+  const { replyToken, source } = event
+  const staffId = session.staffMemberId
+  if (!staffId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  const data: TransitData = { ...session.data, useDate }
+  if (session.data.mode === "other") {
+    await setTransitSession(supabase, source.userId, staffId, "other_confirm", data)
+    await sendOtherConfirm(replyToken, source.userId, data)
+  } else {
+    await runTrainEstimate(supabase, event, staffId, data)
+  }
+}
+
+/** 確定処理＋メッセージ＋院長通知 */
+async function doTransitFinalize(
+  supabase: ReturnType<typeof createServiceClient>,
+  event: LineEvent,
+  session: TransitSession
+): Promise<void> {
+  const { replyToken, source } = event
+  const data = session.data
+  const staffId = session.staffMemberId
+  if (!staffId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+
+  const { data: staffRow } = await supabase.from("staff_members").select("name").eq("id", staffId).single()
+  const staffName = (staffRow as { name?: string } | null)?.name || "スタッフ"
+  const amount = data.amount || 0
+  const useDate = data.useDate || toJstDateString(new Date())
+
+  let storeName: string
+  let meta: Record<string, unknown>
+  if (data.mode === "train") {
+    const tripLabel = data.trip === "round" ? "往復" : "片道"
+    const method = data.estimateMethod === "ai" ? "AI推定" : "手動"
+    storeName = `電車：${data.fromStation}→${data.toStation}（${tripLabel}・${method}）`
+    meta = {
+      source: "line_transit",
+      transit_mode: "train",
+      estimate_method: data.estimateMethod || "manual",
+      trip: data.trip || "one",
+      from_station: data.fromStation,
+      from_pref: data.fromPref,
+      to_station: data.toStation,
+      to_pref: data.toPref,
+      one_way_fare: data.oneWayFare ?? null,
+      estimated_total: data.estimatedTotal ?? null,
+    }
+  } else {
+    const purpose = data.otherPurpose?.trim()
+    storeName = purpose ? `その他：${purpose}（手動）` : "その他：交通費（手動）"
+    meta = { source: "line_transit", transit_mode: "other", estimate_method: "manual", purpose: purpose || "" }
+  }
+
+  const result = await finalizeTransitClaim(supabase, { staffId, staffName, amount, useDate, storeName, meta })
+  await clearTransitSession(supabase, source.userId)
+
+  if (result.status === "duplicate" && result.duplicate) {
+    await sendLineMessage(replyToken, source.userId, buildDuplicateWarning(result.duplicate))
+    return
+  }
+  if (result.status === "no_amount") {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 金額が未確定のため登録できませんでした。最初からやり直してください。")
+    return
+  }
+  if (result.status !== "ok") {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 登録中にエラーが発生しました。経理にご相談ください。")
+    return
+  }
+
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    "✅ 登録しました（交通費・全額・給与支給）。\n" +
+      "─────────────\n" +
+      `🏷 ${storeName}\n` +
+      `💰 ¥${formatAmount(amount)}\n` +
+      `📅 利用日：${useDate}\n` +
+      "─────────────\n" +
+      "お疲れさまでした！"
+  )
+
+  const adminId = process.env.ADMIN_LINE_USER_ID
+  if (adminId) {
+    await pushMessage(
+      adminId,
+      `🚃 ${staffName}さんが交通費（領収書なし）¥${formatAmount(amount)} を申請。\n${storeName}\n利用日：${useDate}`
+    )
+  }
+}
+
+/** 開始キーワード受信 → セッション作成 → 交通手段選択 */
+async function handleTransitEntry(
+  event: LineEvent,
+  supabase: ReturnType<typeof createServiceClient>,
+  staffMembers: { id: string; name: string; line_user_id?: string | null }[],
+  _inputText: string
+): Promise<void> {
+  const { replyToken, source } = event
+  const staff = resolveStaffForUser(staffMembers, source.userId)
+  if (!staff) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "🚃 交通費（領収書なし）の申請を始めます。\nまずお名前をテキストで送って登録してください。\n例：楠葉"
+    )
+    return
+  }
+  const ok = await setTransitSession(supabase, source.userId, staff.id, "mode", {})
+  if (!ok) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ 交通費申請機能の準備が未完了です（DBの更新待ち）。管理者にご連絡ください。"
+    )
+    return
+  }
+  await sendTransitModeChoice(replyToken, source.userId)
+}
+
+/** 交通手段の選択 */
+async function handleTransitModePostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getTransitSession(supabase, source.userId)
+  if (!session?.staffMemberId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  const mode = params.get("m")
+  if (mode === "train") {
+    const { data: staff } = await supabase
+      .from("staff_members")
+      .select("name, home_station, home_station_pref")
+      .eq("id", session.staffMemberId)
+      .single()
+    const s = staff as { name: string; home_station: string | null; home_station_pref: string | null } | null
+    if (!s?.home_station) {
+      await clearTransitSession(supabase, source.userId)
+      await sendLineMessage(
+        replyToken,
+        source.userId,
+        "⚠️ 自宅最寄り駅が未登録のため電車代を推定できません。\n" +
+          "院長／管理者に、管理画面（/mkadmin → LINEスタッフ管理）で「自宅最寄り駅」の登録を依頼してください。\n" +
+          "登録後にもう一度「交通費（領収書なし）」と送ってください。"
+      )
+      return
+    }
+    const data: TransitData = {
+      ...session.data,
+      mode: "train",
+      fromStation: s.home_station,
+      fromPref: s.home_station_pref ?? "",
+    }
+    await setTransitSession(supabase, source.userId, session.staffMemberId, "train_arrival_station", data)
+    await sendLineQuickReply(
+      replyToken,
+      source.userId,
+      `🏠 出発：${s.home_station}${s.home_station_pref ? `（${s.home_station_pref}）` : ""}\n\n` +
+        "到着駅（会場の最寄り駅）の名前をテキストで送ってください。\n例：梅田",
+      [transitCancelItem()]
+    )
+  } else if (mode === "other") {
+    const data: TransitData = { ...session.data, mode: "other" }
+    await setTransitSession(supabase, source.userId, session.staffMemberId, "other_amount", data)
+    await sendLineQuickReply(
+      replyToken,
+      source.userId,
+      "🚌 バス・自家用車などの交通費ですね。\n金額（円）をテキストで送ってください。\n例：1200",
+      [transitCancelItem()]
+    )
+  } else {
+    await sendTransitModeChoice(replyToken, source.userId)
+  }
+}
+
+/** 到着駅の県の選択 */
+async function handleTransitPrefPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getTransitSession(supabase, source.userId)
+  if (!session?.staffMemberId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  const pref = params.get("p") || ""
+  const data: TransitData = { ...session.data, toPref: pref }
+  await setTransitSession(supabase, source.userId, session.staffMemberId, "train_trip", data)
+  await askTrip(replyToken, source.userId)
+}
+
+/** 片道/往復の選択 */
+async function handleTransitTripPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getTransitSession(supabase, source.userId)
+  if (!session?.staffMemberId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  const trip = params.get("t") === "round" ? "round" : "one"
+  const data: TransitData = { ...session.data, trip }
+  await setTransitSession(supabase, source.userId, session.staffMemberId, "train_date", data)
+  await askUseDate(replyToken, source.userId)
+}
+
+/** 利用日＝今日 */
+async function handleTransitTodayPostback(event: LineEvent): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getTransitSession(supabase, source.userId)
+  if (!session?.staffMemberId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  await applyUseDate(supabase, event, session, toJstDateString(new Date()))
+}
+
+/** 確認OK → 確定 */
+async function handleTransitConfirmPostback(event: LineEvent): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getTransitSession(supabase, source.userId)
+  if (!session?.staffMemberId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  if (!session.data.amount || session.data.amount <= 0) {
+    await sendLineQuickReply(
+      replyToken,
+      source.userId,
+      "⚠️ 金額が未確定です。金額を円で送ってください。例：1480",
+      [transitCancelItem()]
+    )
+    return
+  }
+  await doTransitFinalize(supabase, event, session)
+}
+
+/** キャンセル */
+async function handleTransitCancelPostback(event: LineEvent): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  await clearTransitSession(supabase, source.userId)
+  await sendLineMessage(replyToken, source.userId, "✋ 交通費の申請を中止しました。")
+}
+
+/** 交通費フロー中のテキスト入力をステップに応じて処理 */
+async function handleTransitText(
+  event: LineEvent,
+  supabase: ReturnType<typeof createServiceClient>,
+  session: TransitSession,
+  inputText: string
+): Promise<void> {
+  const { replyToken, source } = event
+  const staffId = session.staffMemberId
+
+  // 中止・やり直し（どのステップでも）
+  if (/^(キャンセル|中止|やめる|やめます|終了)$/.test(inputText)) {
+    await clearTransitSession(supabase, source.userId)
+    await sendLineMessage(replyToken, source.userId, "✋ 交通費の申請を中止しました。")
+    return
+  }
+  if (/^(最初から|やり直し|やりなおし)$/.test(inputText)) {
+    if (staffId) {
+      await setTransitSession(supabase, source.userId, staffId, "mode", {})
+      await sendTransitModeChoice(replyToken, source.userId)
+    } else {
+      await sendTransitExpired(replyToken, source.userId)
+    }
+    return
+  }
+  if (!staffId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+
+  switch (session.step) {
+    case "train_arrival_station": {
+      const toStation = inputText.replace(/駅$/, "").trim()
+      if (!toStation) {
+        await sendLineMessage(replyToken, source.userId, "到着駅名をテキストで送ってください。例：梅田")
+        return
+      }
+      const data: TransitData = { ...session.data, toStation }
+      await setTransitSession(supabase, source.userId, staffId, "train_arrival_pref", data)
+      await askArrivalPref(replyToken, source.userId)
+      return
+    }
+    case "train_arrival_pref": {
+      // 一覧に無い県はテキストで受け付ける
+      const data: TransitData = { ...session.data, toPref: inputText.trim() }
+      await setTransitSession(supabase, source.userId, staffId, "train_trip", data)
+      await askTrip(replyToken, source.userId)
+      return
+    }
+    case "train_trip": {
+      await askTrip(replyToken, source.userId) // ボタンで選んでもらう
+      return
+    }
+    case "train_date": {
+      const d = parseJpDate(inputText)
+      if (!d) {
+        await sendLineMessage(
+          replyToken,
+          source.userId,
+          "日付を読み取れませんでした。「今日」または「2026-06-20」「6/20」のように送ってください。"
+        )
+        return
+      }
+      await applyUseDate(supabase, event, session, d)
+      return
+    }
+    case "train_confirm": {
+      // 金額のテキスト入力＝手動で上書きして確定
+      const amt = normalizeAmount(inputText)
+      if (amt == null || amt <= 0) {
+        await sendLineMessage(replyToken, source.userId, "金額は数字で送ってください。例：1480")
+        return
+      }
+      const data: TransitData = { ...session.data, amount: amt, estimateMethod: "manual" }
+      await setTransitSession(supabase, source.userId, staffId, "train_confirm", data)
+      await doTransitFinalize(supabase, event, { ...session, data })
+      return
+    }
+    case "other_amount": {
+      const amt = normalizeAmount(inputText)
+      if (amt == null || amt <= 0) {
+        await sendLineMessage(replyToken, source.userId, "金額は数字で送ってください。例：1200")
+        return
+      }
+      const data: TransitData = { ...session.data, amount: amt }
+      await setTransitSession(supabase, source.userId, staffId, "other_purpose", data)
+      await sendLineQuickReply(
+        replyToken,
+        source.userId,
+        "用途・支払先があれば入力してください（例：○○バス）。\n無ければ「なし」と送ってください。",
+        [transitCancelItem()]
+      )
+      return
+    }
+    case "other_purpose": {
+      const purpose = /^(なし|無し|スキップ|skip)$/i.test(inputText) ? "" : inputText.trim()
+      const data: TransitData = { ...session.data, otherPurpose: purpose }
+      await setTransitSession(supabase, source.userId, staffId, "other_date", data)
+      await askUseDate(replyToken, source.userId)
+      return
+    }
+    case "other_date": {
+      const d = parseJpDate(inputText)
+      if (!d) {
+        await sendLineMessage(
+          replyToken,
+          source.userId,
+          "日付を読み取れませんでした。「今日」または「2026-06-20」「6/20」のように送ってください。"
+        )
+        return
+      }
+      await applyUseDate(supabase, event, session, d)
+      return
+    }
+    case "other_confirm": {
+      // 金額のテキスト入力で修正可
+      const amt = normalizeAmount(inputText)
+      if (amt != null && amt > 0) {
+        const data: TransitData = { ...session.data, amount: amt }
+        await setTransitSession(supabase, source.userId, staffId, "other_confirm", data)
+        await sendOtherConfirm(replyToken, source.userId, data)
+        return
+      }
+      await sendLineMessage(replyToken, source.userId, "「OK」を押すか、修正する金額を数字で送ってください。")
+      return
+    }
+    default: {
+      await sendTransitModeChoice(replyToken, source.userId)
+      return
+    }
+  }
+}
+
 /** 質問キーワードを含むかチェック */
 const QUESTION_KEYWORDS = ["？", "?", "は？", "教えて", "手順", "方法", "やり方", "どうすれば", "マニュアル", "ルール", "規則", "対応", "操作", "使い方", "どうやって", "なぜ", "何"]
 
@@ -947,6 +1548,14 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
   if (!inputText) return
 
   const supabase = createServiceClient()
+
+  // 0. 領収書なし交通費：進行中の対話セッションがあれば最優先で処理（テキスト入力を取りこぼさない）
+  const transitSession = await getTransitSession(supabase, source.userId)
+  if (transitSession) {
+    await handleTransitText(event, supabase, transitSession, inputText)
+    return
+  }
+
   const { data: staffMembers, error: staffError } = await supabase
     .from("staff_members")
     .select("id, name, line_user_id")
@@ -954,6 +1563,12 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
   if (staffError || !staffMembers) {
     console.error("staff_members取得エラー:", staffError)
     await sendLineMessage(replyToken, source.userId, "⚠️ システムエラーが発生しました。管理者にご連絡ください。")
+    return
+  }
+
+  // 0b. 領収書なし交通費の開始キーワード（例「交通費（領収書なし）」）
+  if (isTransitEntry(inputText)) {
+    await handleTransitEntry(event, supabase, staffMembers, inputText)
     return
   }
 

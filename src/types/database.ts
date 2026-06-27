@@ -499,6 +499,9 @@ export interface Database {
           first_atc_claimed_at: string | null
           // 032_seminar_repeat_claimed.sql で追加（セミナー2回目以降の登録完了日時。非NULL=以降「初回ATC＋アカデミー会員費」を非表示）
           seminar_repeat_claimed_at: string | null
+          // 033_staff_home_station.sql で追加（領収書なし交通費の電車運賃AI推定に使う自宅最寄り駅）
+          home_station: string | null
+          home_station_pref: string | null
         }
         Insert: {
           id?: string
@@ -507,6 +510,8 @@ export interface Database {
           created_at?: string
           first_atc_claimed_at?: string | null
           seminar_repeat_claimed_at?: string | null
+          home_station?: string | null
+          home_station_pref?: string | null
         }
         Update: {
           id?: string
@@ -515,6 +520,33 @@ export interface Database {
           created_at?: string
           first_atc_claimed_at?: string | null
           seminar_repeat_claimed_at?: string | null
+          home_station?: string | null
+          home_station_pref?: string | null
+        }
+        Relationships: []
+      }
+      line_transit_sessions: {
+        // 034_line_transit_sessions.sql で追加（LINE「領収書なし交通費」申請の対話セッション）
+        Row: {
+          line_user_id: string
+          staff_member_id: string | null
+          step: string
+          data: Json
+          updated_at: string
+        }
+        Insert: {
+          line_user_id: string
+          staff_member_id?: string | null
+          step: string
+          data?: Json
+          updated_at?: string
+        }
+        Update: {
+          line_user_id?: string
+          staff_member_id?: string | null
+          step?: string
+          data?: Json
+          updated_at?: string
         }
         Relationships: []
       }

@@ -97,7 +97,13 @@ export async function PUT(request: NextRequest) {
   }
 
   try {
-    const body = await request.json() as { id?: string; name?: string; line_user_id?: string | null }
+    const body = await request.json() as {
+      id?: string
+      name?: string
+      line_user_id?: string | null
+      home_station?: string | null
+      home_station_pref?: string | null
+    }
 
     if (!body.id) {
       return NextResponse.json({ error: "IDは必須です" }, { status: 400 })
@@ -114,6 +120,13 @@ export async function PUT(request: NextRequest) {
     if (body.line_user_id !== undefined) {
       updates.line_user_id = body.line_user_id
     }
+    // 自宅最寄り駅（領収書なし交通費の電車運賃AI推定に使用）。空文字はNULLとして保存
+    if (body.home_station !== undefined) {
+      updates.home_station = body.home_station?.trim() || null
+    }
+    if (body.home_station_pref !== undefined) {
+      updates.home_station_pref = body.home_station_pref?.trim() || null
+    }
 
     if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: "更新する項目がありません" }, { status: 400 })
@@ -129,6 +142,17 @@ export async function PUT(request: NextRequest) {
 
     if (error) {
       console.error("スタッフ更新エラー:", error.message, error.details, error.hint, error.code)
+      // 自宅最寄り駅カラム未適用（migration033未実行）の場合は分かりやすく案内
+      const isMissingColumn =
+        error.code === "PGRST204" ||
+        error.code === "42703" ||
+        /home_station/.test(error.message || "")
+      if (isMissingColumn) {
+        return NextResponse.json(
+          { error: "自宅最寄り駅カラムが未適用です。migration 033_staff_home_station.sql を実行してください。" },
+          { status: 400 }
+        )
+      }
       throw error
     }
 

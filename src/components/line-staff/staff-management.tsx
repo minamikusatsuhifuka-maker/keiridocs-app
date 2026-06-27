@@ -40,6 +40,8 @@ interface StaffMember {
   line_user_id: string | null
   created_at: string
   seminar_repeat_claimed_at?: string | null
+  home_station?: string | null
+  home_station_pref?: string | null
 }
 
 /** セミナー2回目以降の申請日時を日本時間で表示（YYYY/MM/DD HH:mm） */
@@ -76,6 +78,8 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const [editDialogOpen, setEditDialogOpen] = useState(false)
   const [editingStaff, setEditingStaff] = useState<StaffMember | null>(null)
   const [editName, setEditName] = useState("")
+  const [editHomeStation, setEditHomeStation] = useState("")
+  const [editHomeStationPref, setEditHomeStationPref] = useState("")
   const [isSaving, setIsSaving] = useState(false)
 
   // 削除中のID
@@ -135,6 +139,8 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   function openEditDialog(member: StaffMember) {
     setEditingStaff(member)
     setEditName(member.name)
+    setEditHomeStation(member.home_station ?? "")
+    setEditHomeStationPref(member.home_station_pref ?? "")
     setEditDialogOpen(true)
   }
 
@@ -148,7 +154,12 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
       const res = await fetch("/api/line-staff", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: editingStaff.id, name: editName.trim() }),
+        body: JSON.stringify({
+          id: editingStaff.id,
+          name: editName.trim(),
+          home_station: editHomeStation.trim() || null,
+          home_station_pref: editHomeStationPref.trim() || null,
+        }),
       })
       if (!res.ok) {
         const json = (await res.json().catch(() => ({}))) as { error?: string }
@@ -281,6 +292,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                   <TableRow>
                     <TableHead>名前</TableHead>
                     <TableHead>LINE登録状況</TableHead>
+                    <TableHead>自宅最寄り駅</TableHead>
                     <TableHead>セミナー2回目以降</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
@@ -298,6 +310,23 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                         ) : (
                           <span className="inline-flex items-center gap-1.5 text-sm text-amber-600">
                             <AlertTriangle className="h-4 w-4" />
+                            未登録
+                          </span>
+                        )}
+                      </TableCell>
+                      {/* 自宅最寄り駅（領収書なし交通費の電車運賃AI推定の出発駅）。編集ダイアログで登録 */}
+                      <TableCell>
+                        {member.home_station ? (
+                          <span className="text-sm">
+                            {member.home_station}
+                            {member.home_station_pref && (
+                              <span className="ml-1 text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                                （{member.home_station_pref}）
+                              </span>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="text-sm" style={{ color: "var(--dusk-text-muted)" }}>
                             未登録
                           </span>
                         )}
@@ -422,6 +451,28 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !isSaving) handleEdit()
                 }}
+              />
+            </div>
+            {/* 自宅最寄り駅（領収書なし交通費の電車運賃AI推定の出発駅。県は同名駅の特定用） */}
+            <div className="space-y-2">
+              <Label htmlFor="edit-home-station">自宅最寄り駅</Label>
+              <Input
+                id="edit-home-station"
+                placeholder="例: 南草津"
+                value={editHomeStation}
+                onChange={(e) => setEditHomeStation(e.target.value)}
+              />
+              <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                LINEの「交通費（領収書なし）・電車」で運賃を推定する出発駅に使います。
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-home-station-pref">県（都道府県）</Label>
+              <Input
+                id="edit-home-station-pref"
+                placeholder="例: 滋賀県"
+                value={editHomeStationPref}
+                onChange={(e) => setEditHomeStationPref(e.target.value)}
               />
             </div>
             <div className="flex justify-end gap-2">
