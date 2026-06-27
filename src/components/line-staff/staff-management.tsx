@@ -39,10 +39,10 @@ interface StaffMember {
   name: string
   line_user_id: string | null
   created_at: string
-  first_atc_claimed_at?: string | null
+  seminar_repeat_claimed_at?: string | null
 }
 
-/** 初回ATC申請日時を日本時間で表示（YYYY/MM/DD HH:mm） */
+/** セミナー2回目以降の申請日時を日本時間で表示（YYYY/MM/DD HH:mm） */
 function formatClaimedAt(iso: string): string {
   const d = new Date(iso)
   if (isNaN(d.getTime())) return ""
@@ -81,7 +81,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   // 削除中のID
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
-  // 初回ATC ON/OFFトグル処理中のID
+  // セミナー2回目以降 ON/OFFトグル処理中のID
   const [togglingId, setTogglingId] = useState<string | null>(null)
 
   /* ---------- データ取得 ---------- */
@@ -165,10 +165,11 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
     }
   }
 
-  /* ---------- 初回ATC ON/OFFトグル（手動切替・訂正用・会計履歴は無改変） ---------- */
-  async function handleToggleFirstAtc(member: StaffMember, next: boolean) {
+  /* ---------- セミナー2回目以降 ON/OFFトグル（手動切替・訂正用・会計履歴は無改変） ---------- */
+  // ON→以降「初回ATC＋アカデミー会員費」を非表示 / OFF→初回ATCを再表示
+  async function handleToggleSeminarRepeat(member: StaffMember, next: boolean) {
     // 申請済み→未申請（OFF）に戻すときのみ確認（誤操作防止）
-    if (!next && !confirm(`「${member.name}」の初回ATCを未申請（OFF）に戻しますか？\n（会計履歴は変更されません）`)) {
+    if (!next && !confirm(`「${member.name}」のセミナー2回目以降を未登録（OFF）に戻しますか？\n（初回ATCが再表示されます。会計履歴は変更されません）`)) {
       return
     }
     setTogglingId(member.id)
@@ -176,13 +177,13 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
       const res = await fetch("/api/line-staff", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: member.id, first_atc_claimed: next }),
+        body: JSON.stringify({ id: member.id, seminar_repeat_claimed: next }),
       })
       if (!res.ok) {
         const json = (await res.json().catch(() => ({}))) as { error?: string }
         throw new Error(json.error || "操作に失敗しました")
       }
-      toast.success(next ? "初回ATCを申請済み（ON）にしました" : "初回ATCを未申請（OFF）に戻しました")
+      toast.success(next ? "セミナー2回目以降を登録済（ON）にしました（初回ATC非表示）" : "セミナー2回目以降を未登録（OFF）に戻しました（初回ATC再表示）")
       fetchStaff()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "操作に失敗しました")
@@ -280,7 +281,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                   <TableRow>
                     <TableHead>名前</TableHead>
                     <TableHead>LINE登録状況</TableHead>
-                    <TableHead>初回ATC</TableHead>
+                    <TableHead>セミナー2回目以降</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -301,31 +302,31 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                           </span>
                         )}
                       </TableCell>
-                      {/* 初回ATC＋アカデミー会員費の申請状態（1人1回限り）。ON/OFFを手動トグル可（訂正用） */}
+                      {/* セミナー2回目以降の登録状態。ON=初回ATC非表示 / OFF=初回ATC再表示。手動トグル可（訂正用） */}
                       <TableCell>
                         <div className="flex flex-col gap-1">
                           <div className="flex items-center gap-2">
                             <Switch
-                              checked={!!member.first_atc_claimed_at}
-                              onCheckedChange={(checked) => handleToggleFirstAtc(member, checked)}
+                              checked={!!member.seminar_repeat_claimed_at}
+                              onCheckedChange={(checked) => handleToggleSeminarRepeat(member, checked)}
                               disabled={togglingId === member.id}
-                              aria-label="初回ATC申請済みの切り替え"
+                              aria-label="セミナー2回目以降 登録済の切り替え"
                             />
                             <span
                               className="inline-flex items-center gap-1 text-sm font-medium"
                               style={{
-                                color: member.first_atc_claimed_at
+                                color: member.seminar_repeat_claimed_at
                                   ? "var(--dusk-primary)"
                                   : "var(--dusk-text-muted)",
                               }}
                             >
                               {togglingId === member.id && <Loader2 className="h-3 w-3 animate-spin" />}
-                              {member.first_atc_claimed_at ? "申請済み(ON)" : "未申請(OFF)"}
+                              {member.seminar_repeat_claimed_at ? "登録済（初回ATC非表示）" : "未登録（初回ATC表示）"}
                             </span>
                           </div>
-                          {member.first_atc_claimed_at && (
+                          {member.seminar_repeat_claimed_at && (
                             <span className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                              {formatClaimedAt(member.first_atc_claimed_at)}
+                              {formatClaimedAt(member.seminar_repeat_claimed_at)}
                             </span>
                           )}
                         </div>

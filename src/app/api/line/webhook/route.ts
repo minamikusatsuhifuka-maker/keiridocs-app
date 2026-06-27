@@ -449,34 +449,36 @@ async function sendTier1(
 }
 
 /**
- * 領収書IDから、そのスタッフが「初回ATC＋アカデミー会員費」を申請済みかを判定する。
- * staff_members.first_atc_claimed_at が非NULLなら申請済み。
- * カラム未適用（migration 031未実行）・エラー時は未申請扱い（ボタンを出す）。
+ * 領収書IDから、そのスタッフが「セミナー2回目以降」を申請済みかを判定する。
+ * staff_members.seminar_repeat_claimed_at が非NULLなら申請済み。
+ * 申請済みのスタッフには以降「初回ATC＋アカデミー会員費」を非表示にする。
+ * カラム未適用（migration 032未実行）・エラー時は未申請扱い（ボタンを出す）。
  */
-async function isFirstAtcClaimedByReceipt(
+async function isSeminarRepeatClaimedByReceipt(
   supabase: ReturnType<typeof createServiceClient>,
   receiptId: string
 ): Promise<boolean> {
   const { data, error } = await supabase
     .from("staff_receipts")
-    .select("staff_members!inner(first_atc_claimed_at)")
+    .select("staff_members!inner(seminar_repeat_claimed_at)")
     .eq("id", receiptId)
     .single()
   if (error) {
-    console.warn("[LINE Bot] 初回ATC判定スキップ（migration 031未実行?）:", error.message)
+    console.warn("[LINE Bot] セミナー2回目以降判定スキップ（migration 032未実行?）:", error.message)
     return false
   }
   const claimedAt = (
-    data as unknown as { staff_members: { first_atc_claimed_at: string | null } } | null
-  )?.staff_members?.first_atc_claimed_at
+    data as unknown as { staff_members: { seminar_repeat_claimed_at: string | null } } | null
+  )?.staff_members?.seminar_repeat_claimed_at
   return !!claimedAt
 }
 
 /**
- * 「初回ATC＋アカデミー会員費」申請完了を記録する（staff_members.first_atc_claimed_at をセット）。
+ * 「セミナー2回目以降」申請完了を記録する（staff_members.seminar_repeat_claimed_at をセット）。
+ * 以降そのスタッフには「初回ATC＋アカデミー会員費」を非表示にする。
  * 会計履歴は書き換えない。カラム未適用・失敗時はログのみで精算フローは止めない。
  */
-async function markFirstAtcClaimed(
+async function markSeminarRepeatClaimed(
   supabase: ReturnType<typeof createServiceClient>,
   receiptId: string
 ): Promise<void> {
@@ -491,14 +493,14 @@ async function markFirstAtcClaimed(
     // 未設定（NULL）の場合のみセット。既に申請済みなら元の申請日時を保持する
     const { error } = await supabase
       .from("staff_members")
-      .update({ first_atc_claimed_at: new Date().toISOString() })
+      .update({ seminar_repeat_claimed_at: new Date().toISOString() })
       .eq("id", staffId)
-      .is("first_atc_claimed_at", null)
+      .is("seminar_repeat_claimed_at", null)
     if (error) {
-      console.warn("[LINE Bot] first_atc_claimed_at 更新スキップ（migration 031未実行?）:", error.message)
+      console.warn("[LINE Bot] seminar_repeat_claimed_at 更新スキップ（migration 032未実行?）:", error.message)
     }
   } catch (e) {
-    console.warn("[LINE Bot] first_atc_claimed_at 更新エラー:", e)
+    console.warn("[LINE Bot] seminar_repeat_claimed_at 更新エラー:", e)
   }
 }
 
@@ -517,11 +519,11 @@ async function handleTier1Postback(
 
   const supabase = createServiceClient()
 
-  // アチーブメント関連は、初回ATC申請済みなら「初回ATC＋アカデミー会員費」を非表示にする（1人1回限り）
+  // アチーブメント関連は、「セミナー2回目以降」申請済みなら以降「初回ATC＋アカデミー会員費」を非表示にする
   let details = expenseDetailsByGroup(group)
   let claimed = false
   if (group === "ach") {
-    claimed = await isFirstAtcClaimedByReceipt(supabase, receiptId)
+    claimed = await isSeminarRepeatClaimedByReceipt(supabase, receiptId)
     if (claimed) {
       details = details.filter((d) => d.key !== "ach_first")
     }
@@ -538,7 +540,7 @@ async function handleTier1Postback(
   let text: string
   if (group === "ach") {
     text = claimed
-      ? "アチーブメント関連のどれですか？\n\n・セミナー2回目以降（ATC再受講、ATC以外のコース）\n\n※「初回ATC＋アカデミー会員費」は申請済みのため表示されません。"
+      ? "アチーブメント関連のどれですか？\n\n・セミナー2回目以降（ATC再受講、ATC以外のコース）"
       : "アチーブメント関連のどれですか？\n\n・初回ATC＋アカデミー会員費\n・セミナー2回目以降（ATC再受講、ATC以外のコース）"
   } else {
     text = "種類を選んでください。"
@@ -684,9 +686,9 @@ async function handleConfirmPostback(
         const subsidy = calcSubsidy(amount, detail.subsidyCategory)
         const isHalf = detail.subsidyCategory === "achievement_repeat"
 
-        // 初回ATC＋アカデミー会員費は1人1回限り。完了したスタッフを記録（以降LINEで非表示）
-        if (detail.key === "ach_first") {
-          await markFirstAtcClaimed(supabase, receiptId)
+        // 「セミナー2回目以降」が確定したら記録（以降「初回ATC＋アカデミー会員費」をLINEで非表示）
+        if (detail.key === "ach_repeat") {
+          await markSeminarRepeatClaimed(supabase, receiptId)
         }
 
         await sendLineMessage(

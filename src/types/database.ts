@@ -495,8 +495,10 @@ export interface Database {
           name: string
           line_user_id: string | null
           created_at: string
-          // 031_first_atc_claimed.sql で追加（初回ATC＋アカデミー会員費の申請完了日時。NULL=未申請）
+          // 031_first_atc_claimed.sql で追加（履歴保持のため残置。読み書きは停止）
           first_atc_claimed_at: string | null
+          // 032_seminar_repeat_claimed.sql で追加（セミナー2回目以降の登録完了日時。非NULL=以降「初回ATC＋アカデミー会員費」を非表示）
+          seminar_repeat_claimed_at: string | null
         }
         Insert: {
           id?: string
@@ -504,6 +506,7 @@ export interface Database {
           line_user_id?: string | null
           created_at?: string
           first_atc_claimed_at?: string | null
+          seminar_repeat_claimed_at?: string | null
         }
         Update: {
           id?: string
@@ -511,6 +514,7 @@ export interface Database {
           line_user_id?: string | null
           created_at?: string
           first_atc_claimed_at?: string | null
+          seminar_repeat_claimed_at?: string | null
         }
         Relationships: []
       }
