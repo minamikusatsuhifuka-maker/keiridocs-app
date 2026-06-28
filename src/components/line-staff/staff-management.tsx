@@ -42,6 +42,7 @@ interface StaffMember {
   seminar_repeat_claimed_at?: string | null
   home_station?: string | null
   home_station_pref?: string | null
+  is_test?: boolean | null
 }
 
 /** セミナー2回目以降の申請日時を日本時間で表示（YYYY/MM/DD HH:mm） */
@@ -87,6 +88,8 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
 
   // セミナー2回目以降 ON/OFFトグル処理中のID
   const [togglingId, setTogglingId] = useState<string | null>(null)
+  // テストスタッフ ON/OFFトグル処理中のID
+  const [togglingTestId, setTogglingTestId] = useState<string | null>(null)
 
   /* ---------- データ取得 ---------- */
   const fetchStaff = useCallback(async () => {
@@ -203,6 +206,32 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
     }
   }
 
+  /* ---------- テストスタッフ ON/OFFトグル（保存先分離・集計/通知から除外） ---------- */
+  async function handleToggleTest(member: StaffMember, next: boolean) {
+    setTogglingTestId(member.id)
+    try {
+      const res = await fetch("/api/line-staff", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: member.id, is_test: next }),
+      })
+      if (!res.ok) {
+        const json = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(json.error || "操作に失敗しました")
+      }
+      toast.success(
+        next
+          ? "テストスタッフ（ON）にしました（テストフォルダ保存・集計/通知から除外）"
+          : "テストスタッフを解除（OFF）しました（本番扱いに戻ります）"
+      )
+      fetchStaff()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "操作に失敗しました")
+    } finally {
+      setTogglingTestId(null)
+    }
+  }
+
   /* ---------- 削除 ---------- */
   async function handleDelete(id: string, name: string) {
     if (!confirm(`「${name}」を削除しますか？`)) return
@@ -294,6 +323,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                     <TableHead>LINE登録状況</TableHead>
                     <TableHead>自宅最寄り駅</TableHead>
                     <TableHead>セミナー2回目以降</TableHead>
+                    <TableHead>テスト</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -358,6 +388,24 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                               {formatClaimedAt(member.seminar_repeat_claimed_at)}
                             </span>
                           )}
+                        </div>
+                      </TableCell>
+                      {/* テストスタッフ。ON=テストフォルダ保存＋会計士CSV/集計/院長通知から除外 */}
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Switch
+                            checked={!!member.is_test}
+                            onCheckedChange={(checked) => handleToggleTest(member, checked)}
+                            disabled={togglingTestId === member.id}
+                            aria-label="テストスタッフの切り替え"
+                          />
+                          <span
+                            className="inline-flex items-center gap-1 text-sm font-medium"
+                            style={{ color: member.is_test ? "#d97706" : "var(--dusk-text-muted)" }}
+                          >
+                            {togglingTestId === member.id && <Loader2 className="h-3 w-3 animate-spin" />}
+                            {member.is_test ? "テスト(ON)" : "本番(OFF)"}
+                          </span>
                         </div>
                       </TableCell>
                       <TableCell className="text-right">

@@ -145,16 +145,20 @@ export async function buildStaffReimburse(params: {
     }
   }
 
-  // 3. スタッフ名マップ
-  const { data: staffRaw } = await supabase.from("staff_members").select("id, name")
+  // 3. スタッフ名マップ＋テストスタッフ判別（テストは会計士CSV・集計から除外）
+  const { data: staffRaw } = await supabase.from("staff_members").select("id, name, is_test")
   const staffNameMap = new Map<string, string>()
-  for (const s of (staffRaw ?? []) as { id: string; name: string }[]) {
+  const testStaffIds = new Set<string>()
+  for (const s of (staffRaw ?? []) as { id: string; name: string; is_test?: boolean | null }[]) {
     staffNameMap.set(s.id, s.name)
+    if (s.is_test) testStaffIds.add(s.id)
   }
 
   // 4. 明細を組み立て（申請日で期間フィルタ）
   const details: ReimburseDetail[] = []
   for (const t of txRows) {
+    // テストスタッフの申請は集計・CSVから除外（保存先・通知も別途分離）
+    if (t.staff_member_id && testStaffIds.has(t.staff_member_id)) continue
     const receipt = t.staff_receipt_id ? receiptMap.get(t.staff_receipt_id) : undefined
     // 申請日（アップロード日）: 領収書のcreated_atを優先、無ければ取引のcreated_at
     const applicationDate = toJstDate(receipt?.created_at ?? t.created_at)

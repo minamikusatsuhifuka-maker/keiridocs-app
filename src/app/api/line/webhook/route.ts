@@ -305,16 +305,20 @@ function toJstDateString(date: Date): string {
 
 /**
  * スタッフ領収書用のDropboxパスを生成する（申請日フォルダ）
- * /経理書類/スタッフ領収書/{スタッフ名}/{申請日YYYY-MM-DD}/{ファイル名}
+ * 本番: /経理書類/スタッフ領収書/{スタッフ名}/{申請日YYYY-MM-DD}/{ファイル名}
+ * テスト: /経理書類/テスト/{スタッフ名}/{申請日YYYY-MM-DD}/{ファイル名}（is_test=true）
  * @param applicationDate 申請日（アップロード日）の YYYY-MM-DD 文字列（JST）
+ * @param isTest テストスタッフ（保存先を本番と分離する）
  */
 function getStaffReceiptPath(
   staffName: string,
   applicationDate: string,
-  originalFileName: string
+  originalFileName: string,
+  isTest = false
 ): string {
   const safeName = staffName.replace(/[/\\:*?"<>|]/g, "_")
-  return `/経理書類/スタッフ領収書/${safeName}/${applicationDate}/${originalFileName}`
+  const base = isTest ? "/経理書類/テスト" : "/経理書類/スタッフ領収書"
+  return `${base}/${safeName}/${applicationDate}/${originalFileName}`
 }
 
 /** 金額をフォーマット（3桁区切り） */
@@ -744,9 +748,17 @@ async function handleConfirmPostback(
           "✅ 登録しました。給与支給で処理されます。\nお疲れさまでした！"
         )
 
-        // 院長へpush通知（ADMIN_LINE_USER_ID未設定ならスキップ）
+        // 院長へpush通知（ADMIN_LINE_USER_ID未設定ならスキップ）。テストスタッフは通知しない
+        const { data: testCheck } = await supabase
+          .from("staff_receipts")
+          .select("staff_members!inner(is_test)")
+          .eq("id", receiptId)
+          .single()
+        const isTest = !!(
+          testCheck as unknown as { staff_members?: { is_test?: boolean } } | null
+        )?.staff_members?.is_test
         const adminId = process.env.ADMIN_LINE_USER_ID
-        if (adminId) {
+        if (adminId && !isTest) {
           await pushMessage(
             adminId,
             `🧾 ${result.staffName}さんが ¥${formatAmount(amount)} を立替（${result.storeName || "不明"}）。\n` +
@@ -980,8 +992,13 @@ async function doTransitFinalize(
     return
   }
 
-  const { data: staffRow } = await supabase.from("staff_members").select("name").eq("id", staffId).single()
+  const { data: staffRow } = await supabase
+    .from("staff_members")
+    .select("name, is_test")
+    .eq("id", staffId)
+    .single()
   const staffName = (staffRow as { name?: string } | null)?.name || "スタッフ"
+  const isTest = !!(staffRow as { is_test?: boolean } | null)?.is_test
   const amount = data.amount || 0
   const useDate = data.useDate || toJstDateString(new Date())
 
@@ -1037,8 +1054,9 @@ async function doTransitFinalize(
       "お疲れさまでした！"
   )
 
+  // テストスタッフは院長通知から除外
   const adminId = process.env.ADMIN_LINE_USER_ID
-  if (adminId) {
+  if (adminId && !isTest) {
     await pushMessage(
       adminId,
       `🚃 ${staffName}さんが交通費（領収書なし）¥${formatAmount(amount)} を申請。\n${storeName}\n利用日：${useDate}`
@@ -1917,7 +1935,7 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
   const supabase = createServiceClient()
   const { data: staffMembers, error: staffError } = await supabase
     .from("staff_members")
-    .select("id, name, line_user_id")
+    .select("id, name, line_user_id, is_test")
 
   if (staffError || !staffMembers) {
     console.error("staff_members取得エラー:", staffError)
@@ -1994,11 +2012,13 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     }
 
     // 6. Dropboxに保存（申請日＝アップロード日のフォルダ。JSTで日付を確定）
-    console.log("[LINE Bot] Dropboxアップロード開始")
+    // テストスタッフ（is_test）は保存先をテストフォルダに分離する
+    const isTestStaff = !!staffMembers.find((s) => s.id === matchedStaff!.id)?.is_test
+    console.log("[LINE Bot] Dropboxアップロード開始" + (isTestStaff ? "（テスト）" : ""))
     const applicationDate = toJstDateString(new Date()) // 申請日（YYYY-MM-DD・JST）
     const timestamp = Date.now().toString().slice(-6)
     const fileName = `${matchedStaff.name}_LINE_${timestamp}.jpg`
-    const dropboxPath = getStaffReceiptPath(matchedStaff.name, applicationDate, fileName)
+    const dropboxPath = getStaffReceiptPath(matchedStaff.name, applicationDate, fileName, isTestStaff)
 
     const resultPath = await uploadFile(dropboxPath, imageBuffer)
     console.log(`[LINE Bot] Dropboxアップロード完了: ${resultPath}`)

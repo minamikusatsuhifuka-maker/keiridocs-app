@@ -502,6 +502,8 @@ export interface Database {
           // 033_staff_home_station.sql で追加（領収書なし交通費の電車運賃AI推定に使う自宅最寄り駅）
           home_station: string | null
           home_station_pref: string | null
+          // 035_staff_is_test.sql で追加（テストスタッフ＝保存先分離・集計/通知から除外）
+          is_test: boolean
         }
         Insert: {
           id?: string
@@ -512,6 +514,7 @@ export interface Database {
           seminar_repeat_claimed_at?: string | null
           home_station?: string | null
           home_station_pref?: string | null
+          is_test?: boolean
         }
         Update: {
           id?: string
@@ -522,6 +525,7 @@ export interface Database {
           seminar_repeat_claimed_at?: string | null
           home_station?: string | null
           home_station_pref?: string | null
+          is_test?: boolean
         }
         Relationships: []
       }

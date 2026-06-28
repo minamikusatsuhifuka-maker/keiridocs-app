@@ -167,9 +167,10 @@ export async function PUT(request: NextRequest) {
   }
 }
 
-// スタッフの「セミナー2回目以降」申請状態のトグル（ON=申請済み→初回ATC非表示 / OFF=未申請→初回ATC再表示）
-// 会計履歴（petty_cash_transactions）は書き換えず、staff_members のフラグだけを切り替える（訂正・手動管理用）
-// body: { id, seminar_repeat_claimed: boolean }  ON→申請日時をセット（既存は保持）/ OFF→NULL
+// スタッフのトグル系更新（PATCH）。次のいずれかのbodyを受け付ける:
+//  - { id, is_test: boolean }                … テストスタッフ切替（保存先分離・集計/通知から除外）
+//  - { id, seminar_repeat_claimed: boolean }  … セミナー2回目以降（ON→初回ATC非表示 / OFF→再表示）
+// 会計履歴（petty_cash_transactions）は書き換えず、staff_members のフラグだけを切り替える。
 export async function PATCH(request: NextRequest) {
   const user = await checkAuth()
   if (!user) {
@@ -177,16 +178,44 @@ export async function PATCH(request: NextRequest) {
   }
 
   try {
-    const body = await request.json() as { id?: string; seminar_repeat_claimed?: boolean }
+    const body = await request.json() as {
+      id?: string
+      seminar_repeat_claimed?: boolean
+      is_test?: boolean
+    }
     if (!body.id) {
       return NextResponse.json({ error: "IDは必須です" }, { status: 400 })
     }
+
+    const service = createServiceClient()
+
+    // テストスタッフ切替（ON/OFF）
+    if (typeof body.is_test === "boolean") {
+      const { data, error } = await service
+        .from("staff_members")
+        .update({ is_test: body.is_test })
+        .eq("id", body.id)
+        .select("*")
+        .single()
+      if (error) {
+        console.error("テストスタッフ切替エラー:", error.message, error.code)
+        const isMissingColumn =
+          error.code === "PGRST204" || error.code === "42703" || /is_test/.test(error.message || "")
+        if (isMissingColumn) {
+          return NextResponse.json(
+            { error: "is_test カラムが未適用です。migration 035_staff_is_test.sql を実行してください。" },
+            { status: 400 }
+          )
+        }
+        throw error
+      }
+      return NextResponse.json({ data })
+    }
+
     if (typeof body.seminar_repeat_claimed !== "boolean") {
       return NextResponse.json({ error: "seminar_repeat_claimed（真偽値）は必須です" }, { status: 400 })
     }
     const claimed = body.seminar_repeat_claimed
-
-    const service = createServiceClient()
 
     // ON要求かつ既に申請済みなら、元の申請日時を保持（上書きしない・冪等）
     if (claimed) {
