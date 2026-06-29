@@ -69,6 +69,7 @@ export function subsidyLabel(category: string | null | undefined): string {
 export type ExpenseDetailKey =
   | "ach_first"
   | "ach_repeat"
+  | "bento"
   | "transport"
   | "lodging"
   | "books"
@@ -83,6 +84,11 @@ export interface ExpenseDetailDef {
   fullLabel: string
   buttonLabel: string
   subsidyCategory: SubsidyCategory
+  /**
+   * 第2階層の一覧には出さず、特定の選択の下のサブ選択でのみ表示する区分。
+   * 例: 「弁当代」は「セミナー2回目以降」を選んだ後のサブ選択でのみ提示する。
+   */
+  subOnly?: boolean
 }
 
 /** 第1階層グループのラベル */
@@ -107,6 +113,15 @@ export const STAFF_EXPENSE_DETAILS: ExpenseDetailDef[] = [
     buttonLabel: "セミナー2回目以降",
     subsidyCategory: "achievement_repeat",
   },
+  {
+    // 「セミナー2回目以降」配下の弁当代のみ全額。第2階層には出さずサブ選択でのみ提示する
+    key: "bento",
+    group: "ach",
+    fullLabel: "弁当代",
+    buttonLabel: "弁当代",
+    subsidyCategory: "other",
+    subOnly: true,
+  },
   { key: "transport", group: "other", fullLabel: "交通費", buttonLabel: "交通費", subsidyCategory: "other" },
   { key: "lodging", group: "other", fullLabel: "宿泊費", buttonLabel: "宿泊費", subsidyCategory: "other" },
   { key: "books", group: "other", fullLabel: "書籍代", buttonLabel: "書籍代", subsidyCategory: "other" },
@@ -125,7 +140,7 @@ export function getExpenseDetail(key: string | null | undefined): ExpenseDetailD
   return STAFF_EXPENSE_DETAILS.find((d) => d.key === key)
 }
 
-/** 指定グループの詳細区分一覧 */
+/** 指定グループの詳細区分一覧（サブ選択専用＝subOnly は第2階層に出さない） */
 export function expenseDetailsByGroup(group: ExpenseGroup): ExpenseDetailDef[] {
-  return STAFF_EXPENSE_DETAILS.filter((d) => d.group === group)
+  return STAFF_EXPENSE_DETAILS.filter((d) => d.group === group && !d.subOnly)
 }

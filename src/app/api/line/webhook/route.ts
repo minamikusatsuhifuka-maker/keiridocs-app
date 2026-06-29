@@ -600,6 +600,40 @@ async function handleTier1Postback(
   await sendLineQuickReply(replyToken, source.userId, text, items)
 }
 
+/**
+ * 「セミナー2回目以降」配下のサブ選択（弁当代＝全額 / その他＝半額）を送る。
+ * 弁当代は subOnly のため第2階層には出さず、このサブ選択でのみ提示する。
+ */
+async function sendSeminarRepeatSubChoice(
+  replyToken: string,
+  userId: string,
+  receiptId: string
+): Promise<void> {
+  await sendLineQuickReply(
+    replyToken,
+    userId,
+    "セミナー2回目以降ですね。内訳を選んでください。\n\n" +
+      "・弁当代 … 全額支給\n" +
+      "・その他（参加費・交通費・宿泊費など）… 半額支給",
+    [
+      {
+        type: "postback",
+        label: "弁当代（全額）",
+        // 弁当代は別キー（subsidy_category=other＝全額）。サブ選択は不要なので直接確認へ
+        data: `action=t2&rid=${receiptId}&d=bento`,
+        displayText: "弁当代（全額）",
+      },
+      {
+        type: "postback",
+        label: "その他（半額）",
+        // セミナー2回目以降そのまま（半額）。sub=1 でサブ選択済みとして確認へ進める
+        data: `action=t2&rid=${receiptId}&d=ach_repeat&sub=1`,
+        displayText: "その他（半額）",
+      },
+    ]
+  )
+}
+
 /** 第2階層選択 → 確認画面（OK/修正）を返す */
 async function handleTier2Postback(
   event: LineEvent,
@@ -610,6 +644,12 @@ async function handleTier2Postback(
   const detail = getExpenseDetail(params.get("d"))
   if (!receiptId || !detail) {
     await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
+    return
+  }
+
+  // 「セミナー2回目以降」を選んだ直後は、弁当代（全額）/その他（半額）のサブ選択を挟む
+  if (detail.key === "ach_repeat" && params.get("sub") !== "1") {
+    await sendSeminarRepeatSubChoice(replyToken, source.userId, receiptId)
     return
   }
 
@@ -737,8 +777,9 @@ async function handleConfirmPostback(
         const subsidy = calcSubsidy(amount, detail.subsidyCategory)
         const isHalf = detail.subsidyCategory === "achievement_repeat"
 
-        // 「セミナー2回目以降」が確定したら記録（以降「初回ATC＋アカデミー会員費」をLINEで非表示）
-        if (detail.key === "ach_repeat") {
+        // 「セミナー2回目以降」（その他＝半額／弁当代＝全額のどちらも）が確定したら記録
+        // （以降「初回ATC＋アカデミー会員費」をLINEで非表示）
+        if (detail.key === "ach_repeat" || detail.key === "bento") {
           await markSeminarRepeatClaimed(supabase, receiptId)
         }
 
@@ -864,13 +905,18 @@ async function askArrivalPref(replyToken: string, userId: string): Promise<void>
   )
 }
 
-/** 片道/往復の選択を送る */
+/** 片道/往復の選択を送る（電車代は基本往復のため、往復を既定＝先頭・推奨にする） */
 async function askTrip(replyToken: string, userId: string): Promise<void> {
-  await sendLineQuickReply(replyToken, userId, "片道／往復を選んでください。", [
-    { type: "postback", label: "片道", data: "action=trt&t=one", displayText: "片道" },
-    { type: "postback", label: "往復", data: "action=trt&t=round", displayText: "往復" },
-    transitCancelItem(),
-  ])
+  await sendLineQuickReply(
+    replyToken,
+    userId,
+    "片道／往復を選んでください。\n通常は往復です（往復＝片道×2）。片道のみの場合だけ「片道」を選んでください。",
+    [
+      { type: "postback", label: "往復（おすすめ）", data: "action=trt&t=round", displayText: "往復" },
+      { type: "postback", label: "片道", data: "action=trt&t=one", displayText: "片道" },
+      transitCancelItem(),
+    ]
+  )
 }
 
 /** 利用日の入力を促す（今日ボタン or テキスト日付） */
