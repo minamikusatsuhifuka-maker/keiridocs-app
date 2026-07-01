@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { DocumentTable } from "@/components/documents/document-table"
-import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput, Wallet } from "lucide-react"
+import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput, FolderPlus, Wallet } from "lucide-react"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
@@ -371,6 +371,32 @@ export default function DocumentsPage() {
     month: number
   } | null>(null)
 
+  // 追加分の一括取り込み（月指定不要）
+  const [showAdditionalModal, setShowAdditionalModal] = useState(false)
+  const [isImportingAdditional, setIsImportingAdditional] = useState(false)
+  const [additionalResult, setAdditionalResult] = useState<{
+    months: Array<{
+      year: number
+      month: number
+      toBody: number
+      toAdditional: number
+      skipped: number
+      needsReview: number
+    }>
+    totals: {
+      toBody: number
+      toAdditional: number
+      skipped: number
+      needsReview: number
+    }
+    needsReviewList: Array<{
+      file_name: string
+      path: string
+      source: "db" | "dropbox"
+      reason: string
+    }>
+  } | null>(null)
+
   // フォルダチェックボックス切り替え
   function toggleTaxCopyFolder(folder: string) {
     setTaxCopyFolders((prev) => {
@@ -639,6 +665,75 @@ export default function DocumentsPage() {
     const url = `/api/documents/export-tax-csv?year=${taxCopyResult.year}&month=${taxCopyResult.month}`
     // ブラウザでダウンロード
     window.location.href = url
+  }
+
+  // 追加分の一括取り込みモーダルを開く
+  function openAdditionalModal() {
+    setAdditionalResult(null)
+    setShowAdditionalModal(true)
+  }
+
+  // 追加分の一括取り込み実行（年月指定なし・全期間）
+  async function handleImportAdditional() {
+    setIsImportingAdditional(true)
+    try {
+      const res = await fetch("/api/documents/import-additional-tax", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      })
+
+      const json = await res.json() as {
+        months?: Array<{
+          year: number
+          month: number
+          toBody: number
+          toAdditional: number
+          skipped: number
+          needsReview: number
+        }>
+        totals?: {
+          toBody: number
+          toAdditional: number
+          skipped: number
+          needsReview: number
+        }
+        needsReviewList?: Array<{
+          file_name: string
+          path: string
+          source: "db" | "dropbox"
+          reason: string
+        }>
+        error?: string
+      }
+
+      if (!res.ok) {
+        throw new Error(json.error || "取り込み処理に失敗しました")
+      }
+
+      const totals = json.totals ?? { toBody: 0, toAdditional: 0, skipped: 0, needsReview: 0 }
+      setAdditionalResult({
+        months: json.months ?? [],
+        totals,
+        needsReviewList: json.needsReviewList ?? [],
+      })
+
+      const copiedTotal = totals.toBody + totals.toAdditional
+      if (copiedTotal === 0 && totals.needsReview === 0) {
+        toast("新たに取り込む追加資料はありませんでした")
+      } else if (totals.needsReview > 0) {
+        toast.warning(
+          `✅ 本体 ${totals.toBody}件 / 追加分 ${totals.toAdditional}件 / スキップ ${totals.skipped}件 / 要確認 ${totals.needsReview}件`
+        )
+      } else {
+        toast.success(
+          `✅ 本体 ${totals.toBody}件 / 追加分 ${totals.toAdditional}件 / スキップ ${totals.skipped}件`
+        )
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "取り込み処理に失敗しました")
+    } finally {
+      setIsImportingAdditional(false)
+    }
   }
 
   async function handleExportCsv() {
@@ -912,6 +1007,17 @@ export default function DocumentsPage() {
           >
             {isCopyingToTax ? <Loader2 className="size-3.5 animate-spin" /> : <FolderInput className="size-3.5" />}
             税理士フォルダへ一括コピー
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={openAdditionalModal}
+            disabled={isImportingAdditional}
+            className="btn-float"
+          >
+            {isImportingAdditional ? <Loader2 className="size-3.5 animate-spin" /> : <FolderPlus className="size-3.5" />}
+            追加分をまとめて取り込む
           </Button>
         </div>
       </div>
@@ -1426,6 +1532,140 @@ export default function DocumentsPage() {
                 </Button>
                 <Button onClick={() => setShowTaxCopyModal(false)}>閉じる</Button>
               </>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 追加分の一括取り込み（月指定不要）モーダル */}
+      <Dialog open={showAdditionalModal} onOpenChange={setShowAdditionalModal}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FolderPlus className="size-5" />
+              追加分をまとめて取り込む
+            </DialogTitle>
+            <DialogDescription>
+              後から届いた資料を、AIが対象年月を判定して全期間まとめて税理士提出フォルダにコピーします。
+              既に提出済みの月に加わった資料は「追加分/」フォルダへ「【追加】」を付けて保存します。
+              年月の指定は不要です（コピーのみ・既存ファイルは上書きしません）。
+            </DialogDescription>
+          </DialogHeader>
+
+          {!additionalResult ? (
+            // 入力フェーズ（説明のみ）
+            <div className="space-y-3 overflow-y-auto pr-1 text-sm text-muted-foreground">
+              <ul className="list-disc space-y-1.5 pl-5">
+                <li>請求書／領収書／社会保険料／その他／スタッフ領収書／売上 を再帰的にスキャンします。</li>
+                <li>DB管理の書類は保存済みの日付、手動アップロード分はファイル名またはAIで年月を判定します。</li>
+                <li>年月を判定できない資料は「要確認」として一覧表示します（コピーされません）。</li>
+                <li>資料が多い場合は数分かかることがあります。</li>
+              </ul>
+            </div>
+          ) : (
+            // 結果表示フェーズ
+            <div className="space-y-3 overflow-y-auto pr-1">
+              <div className="rounded-md border bg-muted/40 p-4">
+                <div className="text-base font-semibold">
+                  ✅ 本体 {additionalResult.totals.toBody}件 / 追加分 {additionalResult.totals.toAdditional}件
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  スキップ {additionalResult.totals.skipped}件 / 要確認 {additionalResult.totals.needsReview}件
+                </div>
+              </div>
+
+              {additionalResult.months.length > 0 && (
+                <div className="rounded-md border max-h-[35vh] overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-background border-b">
+                      <tr className="text-left">
+                        <th className="px-3 py-2 font-medium">年月</th>
+                        <th className="px-3 py-2 font-medium text-right">本体へ</th>
+                        <th className="px-3 py-2 font-medium text-right">追加分へ</th>
+                        <th className="px-3 py-2 font-medium text-right">スキップ</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {additionalResult.months.map((m, i) => (
+                        <tr key={i} className="border-t">
+                          <td className="px-3 py-1.5">
+                            {m.year}年{String(m.month).padStart(2, "0")}月
+                          </td>
+                          <td className="px-3 py-1.5 text-right">{m.toBody}</td>
+                          <td className="px-3 py-1.5 text-right">
+                            {m.toAdditional > 0 ? (
+                              <span className="text-amber-700 dark:text-amber-400 font-medium">
+                                {m.toAdditional}
+                              </span>
+                            ) : (
+                              0
+                            )}
+                          </td>
+                          <td className="px-3 py-1.5 text-right text-muted-foreground">{m.skipped}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {additionalResult.needsReviewList.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-400">
+                    <AlertTriangle className="size-4" />
+                    要確認（年月を判定できませんでした）: {additionalResult.needsReviewList.length}件
+                  </div>
+                  <div className="rounded-md border max-h-[30vh] overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-background border-b">
+                        <tr className="text-left">
+                          <th className="px-3 py-2 font-medium">ファイル名</th>
+                          <th className="px-3 py-2 font-medium">理由</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {additionalResult.needsReviewList.map((r, i) => (
+                          <tr key={i} className="border-t">
+                            <td className="px-3 py-1.5 max-w-[220px] truncate" title={r.path}>
+                              {r.file_name}
+                            </td>
+                            <td className="px-3 py-1.5 text-muted-foreground">{r.reason}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            {!additionalResult ? (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowAdditionalModal(false)}
+                  disabled={isImportingAdditional}
+                >
+                  キャンセル
+                </Button>
+                <Button onClick={handleImportAdditional} disabled={isImportingAdditional}>
+                  {isImportingAdditional ? (
+                    <>
+                      <Loader2 className="mr-2 size-4 animate-spin" />
+                      取り込み中...
+                    </>
+                  ) : (
+                    <>
+                      <FolderPlus className="mr-2 size-4" />
+                      取り込みを実行
+                    </>
+                  )}
+                </Button>
+              </>
+            ) : (
+              <Button onClick={() => setShowAdditionalModal(false)}>閉じる</Button>
             )}
           </DialogFooter>
         </DialogContent>
