@@ -390,6 +390,7 @@ export default function DocumentsPage() {
       vendor_name: string
       amount: number | null
       date: string
+      folder: string
       source: "db" | "dropbox"
       status: "copied" | "skipped" | "failed"
       message?: string
@@ -639,6 +640,7 @@ export default function DocumentsPage() {
           vendor_name: string
           amount: number | null
           date: string
+          folder: string
           source: "db" | "dropbox"
           status: "copied" | "skipped" | "failed"
           message?: string
@@ -1513,6 +1515,7 @@ export default function DocumentsPage() {
                         <th className="px-3 py-2 font-medium">取引先</th>
                         <th className="px-3 py-2 font-medium text-right">金額</th>
                         <th className="px-3 py-2 font-medium">日付</th>
+                        <th className="px-3 py-2 font-medium">振り分け先</th>
                         <th className="px-3 py-2 font-medium">結果</th>
                       </tr>
                     </thead>
@@ -1528,6 +1531,7 @@ export default function DocumentsPage() {
                             {d.amount != null ? `¥${d.amount.toLocaleString()}` : "-"}
                           </td>
                           <td className="px-3 py-1.5">{d.date || "-"}</td>
+                          <td className="px-3 py-1.5 max-w-[160px] truncate" title={d.folder}>{d.folder || "-"}</td>
                           <td className="px-3 py-1.5">
                             {d.status === "copied" ? (
                               <span className="inline-flex items-center gap-1 text-green-700 dark:text-green-400">

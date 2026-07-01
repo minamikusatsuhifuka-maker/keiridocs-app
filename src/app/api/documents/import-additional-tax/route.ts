@@ -9,6 +9,14 @@ import {
 } from "@/lib/dropbox"
 import { getCurrentUserRole } from "@/lib/auth"
 import { analyzeDocument } from "@/lib/gemini"
+import {
+  ensureMonthStructure,
+  taxSubfolderForSourceFolder,
+  staffCutoffMonth,
+  staffReceiptFolderName,
+  submitDateStr,
+  STAFF_RECEIPT_SUBFOLDER,
+} from "@/lib/tax-folder-structure"
 
 // Gemini SDK / Dropbox の重い処理を含むため Node ランタイム・最大実行時間を確保
 export const runtime = "nodejs"
@@ -48,6 +56,8 @@ interface CopyDetail {
   year: number
   month: number
   target: CopyTarget
+  /** 振り分け先サブフォルダ（月フォルダ配下の相対パス） */
+  folder: string
   source: "db" | "dropbox"
   status: CopyStatus
   message?: string
@@ -80,6 +90,8 @@ interface MonthState {
   existingNames: Set<string>
   /** 作成済みサブフォルダ（重複ensure回避） */
   ensuredDirs: Set<string>
+  /** 本体の標準サブフォルダ構造を作成済みか */
+  structureEnsured: boolean
   summary: MonthSummary
 }
 
@@ -143,6 +155,7 @@ export async function POST() {
         alreadySubmitted: existing.length > 0,
         existingNames,
         ensuredDirs: new Set<string>(),
+        structureEnsured: false,
         summary: {
           year,
           month,
@@ -158,20 +171,24 @@ export async function POST() {
 
     /**
      * 1ファイルを対象月へコピーする（本体/追加分の振り分け・重複回避を内包）。
-     * @param sourceFolder ソースフォルダ名（売上サブフォルダ判定用）
-     * @param staffName スタッフ名（スタッフ領収書のとき 領収書/{staffName}/ に配置）
+     * @param subfolder 月フォルダ配下の相対サブフォルダ（例: "請求書" / "スタッフ領収書/楠葉_2026-06-25"）
      */
     async function copyToMonth(params: {
       fromPath: string
       fileName: string
       year: number
       month: number
-      sourceFolder: string
+      subfolder: string
       source: "db" | "dropbox"
-      staffName?: string
     }): Promise<void> {
-      const { fromPath, fileName, year, month, sourceFolder, source, staffName } = params
+      const { fromPath, fileName, year, month, subfolder, source } = params
       const state = await getMonthState(year, month)
+
+      // 本体の標準サブフォルダ構造を初回のみ作成（直下に裸ファイルを置かない）
+      if (!state.structureEnsured) {
+        await ensureMonthStructure(state.base, ensureDropboxFolderExists)
+        state.structureEnsured = true
+      }
 
       // 既に税理士提出フォルダ（本体 or 追加分）に存在 → スキップ
       const norm = normalizeName(fileName)
@@ -182,6 +199,7 @@ export async function POST() {
           year,
           month,
           target: state.alreadySubmitted ? "追加分" : "本体",
+          folder: subfolder,
           source,
           status: "skipped",
           message: "既に税理士提出フォルダに存在します",
@@ -191,15 +209,9 @@ export async function POST() {
 
       const isAdditional = state.alreadySubmitted
       const target: CopyTarget = isAdditional ? "追加分" : "本体"
+      // 本体・追加分とも同じサブフォルダ構造に振り分ける
       const baseDir = isAdditional ? `${state.base}/追加分` : state.base
-
-      // 配置先サブフォルダ: スタッフ領収書 → 領収書/{staffName}、売上 → 売上、その他 → 直下
-      let destDir = baseDir
-      if (staffName) {
-        destDir = `${baseDir}/領収書/${staffName}`
-      } else if (sourceFolder === "売上") {
-        destDir = `${baseDir}/売上`
-      }
+      const destDir = `${baseDir}/${subfolder}`
 
       // 追加分は 【追加】 プレフィックスを付与して一目で区別できるようにする
       const destName = isAdditional ? `${ADDITIONAL_PREFIX}${fileName}` : fileName
@@ -230,6 +242,7 @@ export async function POST() {
         year,
         month,
         target,
+        folder: subfolder,
         source,
         status: result.status,
         message: result.message,
@@ -307,7 +320,7 @@ export async function POST() {
         fileName,
         year: ym.year,
         month: ym.month,
-        sourceFolder,
+        subfolder: taxSubfolderForSourceFolder(sourceFolder),
         source: "db",
       })
       processedPaths.add(dropboxPath)
@@ -367,7 +380,7 @@ export async function POST() {
           fileName: file.name,
           year: ym.year,
           month: ym.month,
-          sourceFolder: folderName,
+          subfolder: taxSubfolderForSourceFolder(folderName),
           source: "dropbox",
         })
         processedPaths.add(file.path_display)
@@ -387,16 +400,16 @@ export async function POST() {
       } else {
         const { data: staffRaw } = await supabase
           .from("staff_members")
-          .select("id, name")
-        const staffNameMap = new Map<string, string>()
-        for (const s of (staffRaw ?? []) as { id: string; name: string }[]) {
-          staffNameMap.set(s.id, s.name)
+          .select("id, name, is_test")
+        const staffInfoMap = new Map<string, { name: string; is_test: boolean }>()
+        for (const s of (staffRaw ?? []) as { id: string; name: string; is_test: boolean }[]) {
+          staffInfoMap.set(s.id, { name: s.name, is_test: !!s.is_test })
         }
 
         for (const tx of staffTxRaw ?? []) {
-          const basis =
-            (typeof tx.transaction_date === "string" && tx.transaction_date) ||
-            (typeof tx.created_at === "string" ? tx.created_at.slice(0, 10) : "")
+          // テストスタッフ（is_test）は税理士提出に入れない
+          const staffInfo = tx.staff_member_id ? staffInfoMap.get(tx.staff_member_id) : undefined
+          if (staffInfo?.is_test) continue
 
           const urls = Array.isArray(tx.receipt_urls)
             ? (tx.receipt_urls as unknown[]).filter(
@@ -405,11 +418,12 @@ export async function POST() {
             : []
           if (urls.length === 0) continue
 
-          const staffName =
-            (tx.staff_member_id && staffNameMap.get(tx.staff_member_id)) || "不明なスタッフ"
+          const staffName = staffInfo?.name || "不明なスタッフ"
 
-          const ym = parseYearMonthFromDate(basis)
-          if (!ym) {
+          // 対象月は「提出日（created_at）の20日締め」で判定
+          const submitDate = submitDateStr(tx.created_at)
+          const cutoff = staffCutoffMonth(submitDate)
+          if (!cutoff) {
             for (const fromPath of urls) {
               const fileName = fromPath.split("/").pop() ?? ""
               if (!fileName) continue
@@ -418,12 +432,15 @@ export async function POST() {
                 file_name: fileName,
                 path: fromPath,
                 source: "db",
-                reason: "取引日が未設定のため年月を判定できません",
+                reason: "提出日が未設定のため年月を判定できません",
               })
               processedPaths.add(fromPath)
             }
             continue
           }
+
+          // 収納先: スタッフ領収書/{スタッフ名}_{提出日}/
+          const subfolder = `${STAFF_RECEIPT_SUBFOLDER}/${staffReceiptFolderName(staffName, submitDate)}`
 
           for (const fromPath of urls) {
             const fileName = fromPath.split("/").pop() ?? ""
@@ -433,11 +450,10 @@ export async function POST() {
             await copyToMonth({
               fromPath,
               fileName,
-              year: ym.year,
-              month: ym.month,
-              sourceFolder: "スタッフ領収書",
+              year: cutoff.year,
+              month: cutoff.month,
+              subfolder,
               source: "db",
-              staffName,
             })
             processedPaths.add(fromPath)
           }

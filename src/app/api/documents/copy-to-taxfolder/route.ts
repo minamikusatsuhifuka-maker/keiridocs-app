@@ -10,6 +10,14 @@ import {
 import { getCurrentUserRole } from "@/lib/auth"
 import { buildTaxSubmissionCsv } from "@/lib/tax-submission-csv"
 import { buildStaffSubsidyCsv } from "@/lib/staff-subsidy-csv"
+import {
+  ensureMonthStructure,
+  taxSubfolderForSourceFolder,
+  staffCutoffMonth,
+  staffReceiptFolderName,
+  submitDateStr,
+  STAFF_RECEIPT_SUBFOLDER,
+} from "@/lib/tax-folder-structure"
 
 /** 税理士提出フォルダのコピー対象ソースフォルダ */
 const ALL_SOURCE_FOLDERS = [
@@ -21,19 +29,10 @@ const ALL_SOURCE_FOLDERS = [
   "売上",
 ] as const
 
-/** 税理士提出先フォルダ内でサブフォルダに配置するソースフォルダ */
-const TAX_SUBFOLDER_MAP: Record<string, string> = {
-  "売上": "売上",
-}
-
-/** dropbox_path から税理士提出先サブフォルダ名を判定する */
-function getTaxSubfolderForPath(dropboxPath: string): string | null {
-  for (const [sourceFolder, subfolder] of Object.entries(TAX_SUBFOLDER_MAP)) {
-    if (dropboxPath.startsWith(`/経理書類/${sourceFolder}/`)) {
-      return subfolder
-    }
-  }
-  return null
+/** dropbox_path が属するソースフォルダ名を返す（/経理書類/{folder}/...） */
+function getSourceFolderForPath(dropboxPath: string): string | null {
+  const m = dropboxPath.match(/^\/経理書類\/([^/]+)\//)
+  return m ? m[1] : null
 }
 
 type CopyStatus = "copied" | "skipped" | "failed"
@@ -44,6 +43,8 @@ interface CopyDetail {
   vendor_name: string
   amount: number | null
   date: string
+  /** 振り分け先サブフォルダ（税理士提出/{月}/ 配下） */
+  folder: string
   source: "db" | "dropbox"
   status: CopyStatus
   message?: string
@@ -114,20 +115,12 @@ export async function POST(request: NextRequest) {
 
     const taxFolderBase = `/経理書類/税理士提出/${yearNum}年${monthStr}月`
 
-    // 税理士提出フォルダを事前作成
+    // 税理士提出フォルダ＋標準サブフォルダ構造を事前作成（直下に裸ファイルを置かない）
     try {
       await ensureDropboxFolderExists(taxFolderBase)
+      await ensureMonthStructure(taxFolderBase, ensureDropboxFolderExists)
     } catch (folderError) {
       console.error("税理士提出フォルダ作成エラー:", folderError)
-    }
-
-    // 売上が選択されている場合は売上サブフォルダも作成
-    if (targetFolders.includes("売上")) {
-      try {
-        await ensureDropboxFolderExists(`${taxFolderBase}/売上`)
-      } catch (folderError) {
-        console.error("税理士提出 売上フォルダ作成エラー:", folderError)
-      }
     }
 
     /* --- pass 1: DB 書類のコピー --- */
@@ -198,6 +191,7 @@ export async function POST(request: NextRequest) {
           vendor_name: doc.vendor_name ?? "",
           amount: doc.amount,
           date: doc.issue_date ?? "",
+          folder: "",
           source: "db",
           status: "failed",
           message: "ファイル名が取得できませんでした",
@@ -205,11 +199,10 @@ export async function POST(request: NextRequest) {
         continue
       }
 
-      // 売上書類は税理士提出/売上/ サブフォルダに配置
-      const subfolder = getTaxSubfolderForPath(doc.dropbox_path)
-      const toPath = subfolder
-        ? `${taxFolderBase}/${subfolder}/${fileName}`
-        : `${taxFolderBase}/${fileName}`
+      // 物理配置（ソースフォルダ）に応じたサブフォルダへ振り分け
+      const sourceFolder = getSourceFolderForPath(doc.dropbox_path)
+      const subfolder = taxSubfolderForSourceFolder(sourceFolder ?? "")
+      const toPath = `${taxFolderBase}/${subfolder}/${fileName}`
       const result = await copyOne(doc.dropbox_path, toPath)
       if (result.status === "copied") copied++
       else if (result.status === "skipped") skipped++
@@ -221,6 +214,7 @@ export async function POST(request: NextRequest) {
         vendor_name: doc.vendor_name ?? "",
         amount: doc.amount,
         date: doc.issue_date ?? "",
+        folder: subfolder,
         source: "db",
         status: result.status,
         message: result.message,
@@ -264,11 +258,9 @@ export async function POST(request: NextRequest) {
         // 種別はフォルダ名から推定（売上フォルダは「売上記録」として扱う）
         const inferredType = folderName === "売上" ? "売上記録" : folderName
 
-        // 売上書類は税理士提出/売上/ サブフォルダに配置
-        const subfolder = TAX_SUBFOLDER_MAP[folderName]
-        const toPath = subfolder
-          ? `${taxFolderBase}/${subfolder}/${file.name}`
-          : `${taxFolderBase}/${file.name}`
+        // ソースフォルダに応じたサブフォルダへ振り分け
+        const subfolder = taxSubfolderForSourceFolder(folderName)
+        const toPath = `${taxFolderBase}/${subfolder}/${file.name}`
         const result = await copyOne(file.path_display, toPath)
         if (result.status === "copied") copied++
         else if (result.status === "skipped") skipped++
@@ -280,6 +272,7 @@ export async function POST(request: NextRequest) {
           vendor_name: "",
           amount: null,
           date: file.client_modified ? file.client_modified.split("T")[0] : "",
+          folder: subfolder,
           source: "dropbox",
           status: result.status,
           message: result.message,
@@ -302,25 +295,28 @@ export async function POST(request: NextRequest) {
         if (staffTxError) {
           console.error("スタッフ領収書取得エラー:", staffTxError)
         } else {
-          // スタッフ名マップ
+          // スタッフ情報マップ（名前・テストスタッフ判定）
           const { data: staffRaw } = await supabase
             .from("staff_members")
-            .select("id, name")
-          const staffNameMap = new Map<string, string>()
-          for (const s of (staffRaw ?? []) as { id: string; name: string }[]) {
-            staffNameMap.set(s.id, s.name)
+            .select("id, name, is_test")
+          const staffInfoMap = new Map<string, { name: string; is_test: boolean }>()
+          for (const s of (staffRaw ?? []) as { id: string; name: string; is_test: boolean }[]) {
+            staffInfoMap.set(s.id, { name: s.name, is_test: !!s.is_test })
           }
 
           // 既に作成したスタッフ用サブフォルダを記録（重複ensure回避）
           const ensuredStaffFolders = new Set<string>()
 
           for (const tx of staffTxRaw ?? []) {
-            // 対象月判定（transaction_date 優先、無ければ created_at）
-            const basis =
-              (typeof tx.transaction_date === "string" && tx.transaction_date) ||
-              (typeof tx.created_at === "string" ? tx.created_at.slice(0, 10) : "")
-            if (!basis) continue
-            if (basis < dateFrom || basis >= dateToExclusive) continue
+            // テストスタッフ（is_test）は税理士提出に入れない
+            const staffInfo = tx.staff_member_id ? staffInfoMap.get(tx.staff_member_id) : undefined
+            if (staffInfo?.is_test) continue
+
+            // 対象月判定は「提出日（created_at）の20日締め」で行う（支払年月日ではない）
+            const submitDate = submitDateStr(tx.created_at)
+            const cutoff = staffCutoffMonth(submitDate)
+            if (!cutoff) continue
+            if (cutoff.year !== yearNum || cutoff.month !== monthNum) continue
 
             const urls = Array.isArray(tx.receipt_urls)
               ? (tx.receipt_urls as unknown[]).filter(
@@ -329,16 +325,17 @@ export async function POST(request: NextRequest) {
               : []
             if (urls.length === 0) continue
 
-            const staffName =
-              (tx.staff_member_id && staffNameMap.get(tx.staff_member_id)) || "不明なスタッフ"
-            const staffFolder = `${taxFolderBase}/領収書/${staffName}`
+            const staffName = staffInfo?.name || "不明なスタッフ"
+            // 収納先: スタッフ領収書/{スタッフ名}_{提出日}/
+            const subfolder = `${STAFF_RECEIPT_SUBFOLDER}/${staffReceiptFolderName(staffName, submitDate)}`
+            const staffFolder = `${taxFolderBase}/${subfolder}`
 
             // スタッフ用サブフォルダを作成
             if (!ensuredStaffFolders.has(staffFolder)) {
               try {
                 await ensureDropboxFolderExists(staffFolder)
               } catch (folderError) {
-                console.error(`税理士提出 領収書フォルダ作成エラー (${staffFolder}):`, folderError)
+                console.error(`税理士提出 スタッフ領収書フォルダ作成エラー (${staffFolder}):`, folderError)
               }
               ensuredStaffFolders.add(staffFolder)
             }
@@ -357,7 +354,8 @@ export async function POST(request: NextRequest) {
                 type: "スタッフ領収書",
                 vendor_name: staffName,
                 amount: typeof tx.amount === "number" ? tx.amount : null,
-                date: basis,
+                date: submitDate,
+                folder: subfolder,
                 source: "db",
                 status: result.status,
                 message: result.message,
@@ -371,14 +369,15 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // CSV 文字列を生成（ファイル名,種別,取引先,金額,日付,コピー結果）— UI表示用
-    const csvHeader = ["ファイル名", "種別", "取引先", "金額", "日付", "コピー結果"]
+    // CSV 文字列を生成（ファイル名,種別,取引先,金額,日付,振り分け先,コピー結果）— UI表示用
+    const csvHeader = ["ファイル名", "種別", "取引先", "金額", "日付", "振り分け先", "コピー結果"]
     const csvRows = details.map((d) => [
       d.file_name,
       d.type,
       d.vendor_name,
       d.amount != null ? String(d.amount) : "",
       d.date,
+      d.folder,
       d.status === "copied" ? "成功" : d.status === "skipped" ? "スキップ" : "失敗",
     ])
     const csvBody = [csvHeader, ...csvRows]
@@ -441,8 +440,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // スタッフ立替明細CSV: スタッフ領収書が対象に含まれるとき、領収書サブフォルダ内に保存
-    // 税理士提出/{YYYY年MM月}/領収書/スタッフ立替明細_{YYYY年MM月}.csv
+    // スタッフ立替明細CSV: スタッフ領収書が対象に含まれるとき、スタッフ領収書サブフォルダ内に保存
+    // 税理士提出/{YYYY年MM月}/スタッフ領収書/スタッフ立替明細_{YYYY年MM月}.csv
+    // ※ CSVの集計月ロジック（支払年月日ベース）は buildStaffSubsidyCsv のまま変更しない
     if (targetFolders.includes("スタッフ領収書")) {
       try {
         const builtSubsidy = await buildStaffSubsidyCsv({
@@ -452,11 +452,11 @@ export async function POST(request: NextRequest) {
         })
         // スタッフ返金が1件もなければCSVは作成しない
         if (builtSubsidy.rowCount > 0) {
-          const subsidyFolder = `${taxFolderBase}/領収書`
+          const subsidyFolder = `${taxFolderBase}/${STAFF_RECEIPT_SUBFOLDER}`
           try {
             await ensureDropboxFolderExists(subsidyFolder)
           } catch (folderError) {
-            console.error("税理士提出 領収書フォルダ作成エラー（支給額CSV用）:", folderError)
+            console.error("税理士提出 スタッフ領収書フォルダ作成エラー（立替明細CSV用）:", folderError)
           }
           const targetSubsidyCsvPath = `${subsidyFolder}/${builtSubsidy.fileName}`
           const buffer = Buffer.from(builtSubsidy.csvWithBom, "utf-8")

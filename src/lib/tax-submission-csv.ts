@@ -3,6 +3,7 @@
 
 import { listFilesRecursive } from "@/lib/dropbox"
 import type { createClient } from "@/lib/supabase/server"
+import { SALES_SUBFOLDER, LEGACY_SALES_SUBFOLDER } from "@/lib/tax-folder-structure"
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -57,9 +58,12 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   const scope = opts.scope ?? "all"
   const monthStr = String(month).padStart(2, "0")
   const folderPath = `/経理書類/税理士提出/${year}年${monthStr}月`
-  // 売上書類は税理士提出/{月}/売上/ サブフォルダに配置される。
+  // 売上書類は税理士提出/{月}/売上記録データ/ サブフォルダに配置される（旧: 売上/ も後方互換で判定）。
   // DBに無いファイルでも確実に経費/売上を分離できるよう、パスで判定する。
-  const salesPrefix = `${folderPath}/売上/`
+  const salesPrefixes = [
+    `${folderPath}/${SALES_SUBFOLDER}/`,
+    `${folderPath}/${LEGACY_SALES_SUBFOLDER}/`,
+  ]
 
   // 税理士提出フォルダ内のファイル一覧
   let filesInTaxFolder: Array<{
@@ -84,7 +88,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   // scope による絞り込み（売上サブフォルダ配下かどうかをパスで判定）
   if (scope !== "all") {
     filesInTaxFolder = filesInTaxFolder.filter((f) => {
-      const isSalesFile = f.path_display.startsWith(salesPrefix)
+      const isSalesFile = salesPrefixes.some((p) => f.path_display.startsWith(p))
       return scope === "sales" ? isSalesFile : !isSalesFile
     })
   }
@@ -165,7 +169,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       transferDate: meta?.transfer_date ?? "",
       transferTotal: meta?.transfer_total ?? null,
       // DBに無いファイルでも売上判定できるよう、サブフォルダのパスも見る
-      isSales: file.path_display.startsWith(salesPrefix) || meta?.type === "売上記録",
+      isSales: salesPrefixes.some((p) => file.path_display.startsWith(p)) || meta?.type === "売上記録",
     }
   })
 
@@ -246,7 +250,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   const fileName = scope === "sales"
     ? `売上提出一覧_${year}年${monthStr}月.csv`
     : `提出書類一覧_${year}年${monthStr}月.csv`
-  const saveFolderPath = scope === "sales" ? `${folderPath}/売上` : folderPath
+  const saveFolderPath = scope === "sales" ? `${folderPath}/${SALES_SUBFOLDER}` : folderPath
 
   return {
     fileName,
