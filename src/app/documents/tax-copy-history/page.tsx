@@ -10,8 +10,10 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  FileQuestion,
   History,
   Loader2,
+  Plus,
   XCircle,
 } from "lucide-react"
 
@@ -110,6 +112,20 @@ function summarizeRow(row: TaxCopyRunRow): string {
 /** 提出書類一覧CSVを再ダウンロード（既存のexport-tax-csv APIを再利用） */
 function downloadTaxCsv(year: number, month: number) {
   window.location.href = `/api/documents/export-tax-csv?year=${year}&month=${month}`
+}
+
+/** 行が対象とした年月一覧（重複を除く）を取り出す */
+function monthsTouchedByRow(row: TaxCopyRunRow): Array<{ year: number; month: number }> {
+  const raw = row.run_type === "range_copy"
+    ? ((row.summary as RangeCopyMonthResult[] | undefined) ?? []).map((m) => ({ year: m.year, month: m.month }))
+    : ((row.summary as AdditionalImportSummary | undefined)?.months ?? []).map((m) => ({ year: m.year, month: m.month }))
+  const seen = new Set<string>()
+  return raw.filter((m) => {
+    const key = `${m.year}-${m.month}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 export default function TaxCopyHistoryPage() {
@@ -247,6 +263,8 @@ export default function TaxCopyHistoryPage() {
                         </div>
                       </div>
                     )}
+
+                    <UnclearFilesPanel months={monthsTouchedByRow(row)} />
                   </CardContent>
                 )}
               </Card>
@@ -366,6 +384,125 @@ function AdditionalImportDetail({ summary }: { summary: AdditionalImportSummary 
           ))}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+interface UnclearFile {
+  fileName: string
+  path: string
+  year: number
+  month: number
+}
+
+/**
+ * 内容不明（DB未登録）ファイルと新旧フォルダ構造の重複除外件数を、
+ * 表示時に最新ロジックで再判定して表示する。
+ * 過去の実行履歴（保存済みsummary）にはこの情報が無いため、対象月ごとに
+ * /api/documents/tax-folder-unclear を呼んで都度算出する（展開時のみ）。
+ */
+function UnclearFilesPanel({ months }: { months: Array<{ year: number; month: number }> }) {
+  const [isLoading, setIsLoading] = useState(true)
+  const [files, setFiles] = useState<UnclearFile[]>([])
+  const [duplicatesRemoved, setDuplicatesRemoved] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    async function fetchUnclear() {
+      setIsLoading(true)
+      try {
+        const results = await Promise.all(
+          months.map(async (m) => {
+            const res = await fetch(`/api/documents/tax-folder-unclear?year=${m.year}&month=${m.month}`)
+            if (!res.ok) return { needsReviewFiles: [], duplicatesRemoved: 0 }
+            const json = await res.json() as {
+              data?: { needsReviewFiles: Array<{ fileName: string; path: string }>; duplicatesRemoved: number }
+            }
+            return {
+              needsReviewFiles: (json.data?.needsReviewFiles ?? []).map((f) => ({ ...f, year: m.year, month: m.month })),
+              duplicatesRemoved: json.data?.duplicatesRemoved ?? 0,
+            }
+          })
+        )
+        if (cancelled) return
+        setFiles(results.flatMap((r) => r.needsReviewFiles))
+        setDuplicatesRemoved(results.reduce((n, r) => n + r.duplicatesRemoved, 0))
+      } catch {
+        if (!cancelled) {
+          setFiles([])
+          setDuplicatesRemoved(0)
+        }
+      } finally {
+        if (!cancelled) setIsLoading(false)
+      }
+    }
+    if (months.length > 0) {
+      fetchUnclear()
+    } else {
+      setIsLoading(false)
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [months])
+
+  if (isLoading) {
+    return (
+      <div className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
+        <Loader2 className="size-3.5 animate-spin" />
+        内容不明ファイルを確認中...
+      </div>
+    )
+  }
+
+  if (files.length === 0 && duplicatesRemoved === 0) return null
+
+  return (
+    <div className="mt-4 space-y-2">
+      {duplicatesRemoved > 0 && (
+        <p className="text-xs text-muted-foreground">
+          （新旧フォルダ構造の重複を除外: {duplicatesRemoved}件）
+        </p>
+      )}
+      {files.length > 0 && (
+        <>
+          <div className="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-400">
+            <FileQuestion className="size-4" />
+            内容不明ファイル（{files.length}件） — DBに書類レコードが見つかりません
+          </div>
+          <div className="rounded-md border max-h-[30vh] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-background border-b">
+                <tr className="text-left">
+                  <th className="px-3 py-2 font-medium">ファイル名</th>
+                  <th className="px-3 py-2 font-medium">対象月</th>
+                  <th className="px-3 py-2 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {files.map((f, i) => (
+                  <tr key={i} className="border-t">
+                    <td className="px-3 py-1.5 max-w-[220px] truncate" title={f.path}>
+                      {f.fileName}
+                    </td>
+                    <td className="px-3 py-1.5 whitespace-nowrap text-muted-foreground">
+                      {f.year}年{String(f.month).padStart(2, "0")}月
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <Button variant="ghost" size="sm" asChild className="h-6 gap-1 text-xs">
+                        <Link href="/documents/new">
+                          <Plus className="size-3" />
+                          書類登録へ
+                        </Link>
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </div>
   )
 }

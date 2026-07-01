@@ -28,6 +28,10 @@ interface BuildResult {
   // CSVの実際の保存先フォルダ（売上CSVは売上サブフォルダ）
   saveFolderPath: string
   rowCount: number
+  // DBに一致する書類が無く「要確認」として集計対象外にしたファイル
+  needsReviewFiles: Array<{ fileName: string; path: string }>
+  // 新旧フォルダ構造の重複として除外した件数
+  duplicatesRemoved: number
 }
 
 function escapeCsv(value: string): string {
@@ -40,6 +44,51 @@ function escapeCsv(value: string): string {
 function formatAmount(amount: number | null): string {
   if (amount === null || amount === undefined) return ""
   return `¥${amount.toLocaleString()}`
+}
+
+type TaxFolderFile = { name: string; path_display: string; size: number; client_modified: string }
+
+/** 月フォルダ直下（サブフォルダ無し）に置かれているか＝旧・平坦構造 */
+function isLegacyFlatPath(pathDisplay: string, folderPath: string): boolean {
+  const rest = pathDisplay.slice(folderPath.length + 1)
+  return !rest.includes("/")
+}
+
+/**
+ * 同一ファイル名の重複を除去する。
+ * 新旧フォルダ構造の移行時、平坦構造（月フォルダ直下）と現行のサブフォルダ構造の
+ * 両方に同じファイルが残っているケースがあるため、現行構造（サブフォルダ配下）を
+ * 正としてカウントし、平坦構造側は集計対象から除外する（削除はしない）。
+ */
+function dedupTaxFolderFiles(
+  files: TaxFolderFile[],
+  folderPath: string
+): { deduped: TaxFolderFile[]; duplicatesRemoved: number } {
+  const byName = new Map<string, TaxFolderFile[]>()
+  for (const f of files) {
+    const group = byName.get(f.name)
+    if (group) group.push(f)
+    else byName.set(f.name, [f])
+  }
+
+  const deduped: TaxFolderFile[] = []
+  let duplicatesRemoved = 0
+  for (const group of byName.values()) {
+    if (group.length === 1) {
+      deduped.push(group[0])
+      continue
+    }
+    const nested = group.filter((f) => !isLegacyFlatPath(f.path_display, folderPath))
+    if (nested.length > 0) {
+      deduped.push(nested[0])
+      duplicatesRemoved += group.length - 1
+    } else {
+      // 現行構造側が無い（想定外）場合は平坦構造から1件だけ残す
+      deduped.push(group[0])
+      duplicatesRemoved += group.length - 1
+    }
+  }
+  return { deduped, duplicatesRemoved }
 }
 
 /**
@@ -84,6 +133,10 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     !/^売上提出一覧_.*\.csv$/.test(f.name) &&
     !/^月計表_.*\.csv$/.test(f.name)
   )
+
+  // 新旧フォルダ構造の重複除去（現行のサブフォルダ構造を正としてカウント）
+  const { deduped, duplicatesRemoved } = dedupTaxFolderFiles(filesInTaxFolder, folderPath)
+  filesInTaxFolder = deduped
 
   // scope による絞り込み（売上サブフォルダ配下かどうかをパスで判定）
   if (scope !== "all") {
@@ -170,12 +223,17 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       transferTotal: meta?.transfer_total ?? null,
       // DBに無いファイルでも売上判定できるよう、サブフォルダのパスも見る
       isSales: salesPrefixes.some((p) => file.path_display.startsWith(p)) || meta?.type === "売上記録",
+      // DBに一致する書類が無い＝内容不明（未登録・手動配置等）。集計対象外にする
+      needsReview: !meta,
     }
   })
 
-  // ====== サマリーセクション ======
+  const needsReviewRows = allRows.filter((r) => r.needsReview)
+  const countedRows = allRows.filter((r) => !r.needsReview)
+
+  // ====== サマリーセクション（要確認ファイルは集計に含めない） ======
   const typeMap = new Map<string, { count: number; total: number }>()
-  for (const row of allRows) {
+  for (const row of countedRows) {
     const existing = typeMap.get(row.type) ?? { count: 0, total: 0 }
     typeMap.set(row.type, {
       count: existing.count + 1,
@@ -183,8 +241,8 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     })
   }
 
-  const grandTotal = allRows.reduce((sum, r) => sum + (r.amount ?? 0), 0)
-  const grandCount = allRows.length
+  const grandTotal = countedRows.reduce((sum, r) => sum + (r.amount ?? 0), 0)
+  const grandCount = countedRows.length
 
   const summaryTitle = scope === "sales"
     ? `【${year}年${monthStr}月 売上提出一覧 サマリー】`
@@ -199,6 +257,12 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       formatAmount(total),
       "",
     ]),
+    ...(needsReviewRows.length > 0
+      ? [["要確認（DB未登録・内容不明）", `${needsReviewRows.length}件`, "", "集計対象外"]]
+      : []),
+    ...(duplicatesRemoved > 0
+      ? [["（新旧フォルダ構造の重複を除外）", `${duplicatesRemoved}件`, "", ""]]
+      : []),
     ["", "", "", ""],
     ["合計", `${grandCount}件`, formatAmount(grandTotal), ""],
   ]
@@ -206,7 +270,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   // ====== 詳細セクション ======
   const detailHeaders = [
     "No", "ファイル名", "種別", "取引先 / 振込元", "金額 / 振込金額",
-    "発行日 / 振込日", "税区分", "勘定科目", "コピー先パス",
+    "発行日 / 振込日", "税区分", "勘定科目", "コピー先パス", "ステータス",
   ]
 
   const detailRows = allRows.map((r) => [
@@ -221,13 +285,14 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     r.taxCategory,
     r.accountTitle,
     r.path,
+    r.needsReview ? "要確認：DB未登録" : "",
   ])
 
-  // 合計行
+  // 合計行（要確認ファイルの金額は含まない）
   const totalRow = [
     "合計", "", "", "",
     formatAmount(grandTotal),
-    "", "", "", `${grandCount}件`,
+    "", "", "", `${grandCount}件`, "",
   ]
 
   // CSV組み立て
@@ -259,5 +324,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     folderPath,
     saveFolderPath,
     rowCount: allRows.length,
+    needsReviewFiles: needsReviewRows.map((r) => ({ fileName: r.fileName, path: r.path })),
+    duplicatesRemoved,
   }
 }
