@@ -955,6 +955,25 @@ export interface Database {
         }
         Relationships: []
       }
+      vendor_payment_methods: {
+        // 036_vendor_payment_methods.sql で追加（支払先ごとの支払方法マスタ・AI判定より優先）
+        Row: {
+          vendor_name: string
+          method: string
+          updated_at: string
+        }
+        Insert: {
+          vendor_name: string
+          method?: string
+          updated_at?: string
+        }
+        Update: {
+          vendor_name?: string
+          method?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: Record<string, never>
     Functions: Record<string, never>
