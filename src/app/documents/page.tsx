@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { DocumentTable } from "@/components/documents/document-table"
-import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput, FolderPlus, Wallet, Upload } from "lucide-react"
+import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput, FolderPlus, Wallet, Upload, History } from "lucide-react"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
@@ -393,6 +393,8 @@ export default function DocumentsPage() {
     failed: number
     total: number
     folderBreakdown: Record<string, { copied: number; skipped: number; failed: number }>
+    // 失敗したファイルの内訳（実行履歴の「要確認一覧」用）
+    failedFiles: Array<{ file_name: string; folder: string; reason?: string }>
     error?: string
   }> | null>(null)
 
@@ -657,13 +659,18 @@ export default function DocumentsPage() {
             skipped?: number
             failed?: number
             total?: number
-            details?: Array<{ folder: string; status: "copied" | "skipped" | "failed" }>
+            details?: Array<{
+              file_name: string
+              folder: string
+              status: "copied" | "skipped" | "failed"
+              message?: string
+            }>
             error?: string
           }
           if (!res.ok) {
             results.push({
               year, month, copied: 0, skipped: 0, failed: 0, total: 0,
-              folderBreakdown: {},
+              folderBreakdown: {}, failedFiles: [],
               error: json.error || "コピー処理に失敗しました",
             })
             totalFailed++
@@ -672,12 +679,16 @@ export default function DocumentsPage() {
 
           // フォルダ別の内訳を集計
           const folderBreakdown: Record<string, { copied: number; skipped: number; failed: number }> = {}
+          const failedFiles: Array<{ file_name: string; folder: string; reason?: string }> = []
           for (const d of json.details ?? []) {
             const key = d.folder || "（未分類）"
             if (!folderBreakdown[key]) folderBreakdown[key] = { copied: 0, skipped: 0, failed: 0 }
             if (d.status === "copied") folderBreakdown[key].copied++
             else if (d.status === "skipped") folderBreakdown[key].skipped++
-            else folderBreakdown[key].failed++
+            else {
+              folderBreakdown[key].failed++
+              failedFiles.push({ file_name: d.file_name, folder: key, reason: d.message })
+            }
           }
 
           results.push({
@@ -687,6 +698,7 @@ export default function DocumentsPage() {
             failed: json.failed ?? 0,
             total: json.total ?? 0,
             folderBreakdown,
+            failedFiles,
           })
           totalCopied += json.copied ?? 0
           // 途中経過を随時反映（部分表示）
@@ -694,7 +706,7 @@ export default function DocumentsPage() {
         } catch (monthErr) {
           results.push({
             year, month, copied: 0, skipped: 0, failed: 0, total: 0,
-            folderBreakdown: {},
+            folderBreakdown: {}, failedFiles: [],
             error: monthErr instanceof Error ? monthErr.message : "コピー処理に失敗しました",
           })
           totalFailed++
@@ -707,6 +719,27 @@ export default function DocumentsPage() {
         toast.warning(`コピー完了：${totalCopied}件（${totalFailed}か月でエラー）`)
       } else {
         toast.success(`✅ ${monthsToProcess.length}か月分のコピーが完了しました（合計 ${totalCopied}件）`)
+      }
+
+      // 実行履歴として記録（失敗しても一括コピー自体の結果表示は妨げない）
+      try {
+        const issues = results.flatMap((r) =>
+          r.failedFiles.map((f) => ({ ...f, year: r.year, month: r.month }))
+        )
+        await fetch("/api/documents/tax-copy-runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            run_type: "range_copy",
+            period_start: `${taxCopyStartYear}-${String(taxCopyStartMonth).padStart(2, "0")}`,
+            period_end: `${taxCopyEndYear}-${String(taxCopyEndMonth).padStart(2, "0")}`,
+            target_folders: folders,
+            summary: results,
+            issues,
+          }),
+        })
+      } catch (historyErr) {
+        console.error("実行履歴の記録に失敗しました:", historyErr)
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "コピー処理に失敗しました")
@@ -757,6 +790,13 @@ export default function DocumentsPage() {
           source: "db" | "dropbox"
           reason: string
         }>
+        details?: Array<{
+          file_name: string
+          year: number
+          month: number
+          status: "copied" | "skipped" | "failed"
+          message?: string
+        }>
         error?: string
       }
 
@@ -764,11 +804,13 @@ export default function DocumentsPage() {
         throw new Error(json.error || "取り込み処理に失敗しました")
       }
 
+      const months = json.months ?? []
       const totals = json.totals ?? { toBody: 0, toAdditional: 0, skipped: 0, needsReview: 0 }
+      const needsReviewList = json.needsReviewList ?? []
       setAdditionalResult({
-        months: json.months ?? [],
+        months,
         totals,
-        needsReviewList: json.needsReviewList ?? [],
+        needsReviewList,
       })
 
       const copiedTotal = totals.toBody + totals.toAdditional
@@ -782,6 +824,53 @@ export default function DocumentsPage() {
         toast.success(
           `✅ 本体 ${totals.toBody}件 / 追加分 ${totals.toAdditional}件 / スキップ ${totals.skipped}件`
         )
+      }
+
+      // 実行履歴として記録（months は年月降順のため末尾が最古・先頭が最新）
+      try {
+        const sortedMonths = [...months].sort(
+          (a, b) => (a.year * 12 + a.month) - (b.year * 12 + b.month)
+        )
+        const now = new Date()
+        const fallbackPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+        const periodStart = sortedMonths.length > 0
+          ? `${sortedMonths[0].year}-${String(sortedMonths[0].month).padStart(2, "0")}`
+          : fallbackPeriod
+        const periodEnd = sortedMonths.length > 0
+          ? `${sortedMonths[sortedMonths.length - 1].year}-${String(sortedMonths[sortedMonths.length - 1].month).padStart(2, "0")}`
+          : fallbackPeriod
+
+        const failedFiles = (json.details ?? [])
+          .filter((d) => d.status === "failed")
+          .map((d) => ({
+            file_name: d.file_name,
+            reason: d.message,
+            year: d.year,
+            month: d.month,
+          }))
+        const issues = [
+          ...needsReviewList.map((r) => ({
+            file_name: r.file_name,
+            reason: r.reason,
+            source: r.source,
+          })),
+          ...failedFiles,
+        ]
+
+        await fetch("/api/documents/tax-copy-runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            run_type: "additional_import",
+            period_start: periodStart,
+            period_end: periodEnd,
+            target_folders: [...TAX_SOURCE_FOLDERS],
+            summary: { months, totals },
+            issues,
+          }),
+        })
+      } catch (historyErr) {
+        console.error("実行履歴の記録に失敗しました:", historyErr)
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "取り込み処理に失敗しました")
@@ -1113,6 +1202,13 @@ export default function DocumentsPage() {
             <Link href="/documents/ingest">
               <Upload className="size-3.5" />
               返金・精算機データ取込
+            </Link>
+          </Button>
+
+          <Button variant="outline" size="sm" asChild className="btn-float">
+            <Link href="/documents/tax-copy-history">
+              <History className="size-3.5" />
+              税理士提出の実行履歴
             </Link>
           </Button>
         </div>

@@ -174,6 +174,45 @@ export interface Database {
         }
         Relationships: []
       }
+      tax_folder_copy_runs: {
+        Row: {
+          id: string
+          run_at: string
+          run_by: string | null
+          run_type: string
+          period_start: string
+          period_end: string
+          target_folders: string[]
+          summary: Json
+          issues: Json | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          run_at?: string
+          run_by?: string | null
+          run_type: string
+          period_start: string
+          period_end: string
+          target_folders?: string[]
+          summary: Json
+          issues?: Json | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          run_at?: string
+          run_by?: string | null
+          run_type?: string
+          period_start?: string
+          period_end?: string
+          target_folders?: string[]
+          summary?: Json
+          issues?: Json | null
+          created_at?: string
+        }
+        Relationships: []
+      }
       mail_pending: {
         Row: {
           id: string
