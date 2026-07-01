@@ -97,6 +97,31 @@ function formatAmount(amount: number): string {
   return amount.toLocaleString("ja-JP")
 }
 
+// ツールチップ共通スタイル
+// 従来は `hsl(var(--card))` / `hsl(var(--border))` としていたが、--card は
+// rgba()、--border は hex/oklch の完成値であり hsl() で包むと無効なCSSになって
+// 背景・枠線が透明になってしまっていた（重なって読めない不具合の直接原因）。
+// --popover は不透明な単色として定義されているため、そのまま使用する。
+const TOOLTIP_CONTENT_STYLE: React.CSSProperties = {
+  backgroundColor: "var(--popover)",
+  color: "var(--popover-foreground)",
+  border: "1px solid var(--border)",
+  borderRadius: "8px",
+  fontSize: "12px",
+  padding: "8px 12px",
+  boxShadow: "0 4px 16px rgba(0, 0, 0, 0.18)",
+}
+const TOOLTIP_LABEL_STYLE: React.CSSProperties = {
+  color: "var(--popover-foreground)",
+  fontWeight: 600,
+  marginBottom: 4,
+}
+// 常に最前面に描画し、グラフ領域からはみ出しても切れないようにする
+const TOOLTIP_WRAPPER_STYLE: React.CSSProperties = { zIndex: 50, outline: "none" }
+const TOOLTIP_ESCAPE_VIEWBOX = { x: true, y: true }
+// バーのホバー強調（縁取り）を柔らかくし、ツールチップとの干渉を避ける
+const TOOLTIP_CURSOR_STYLE = { fill: "var(--muted)", opacity: 0.35 }
+
 // 分析ダッシュボードページ
 export default function AnalyticsPage() {
   const [period, setPeriod] = useState("12m")
@@ -230,12 +255,15 @@ export default function AnalyticsPage() {
                       label={{ value: "金額", angle: 90, position: "insideRight", style: { fontSize: 12 } }}
                     />
                     <Tooltip
-                      contentStyle={{
-                        backgroundColor: "hsl(var(--card))",
-                        border: "1px solid hsl(var(--border))",
-                        borderRadius: "8px",
-                        fontSize: "12px",
-                      }}
+                      contentStyle={TOOLTIP_CONTENT_STYLE}
+                      labelStyle={TOOLTIP_LABEL_STYLE}
+                      wrapperStyle={TOOLTIP_WRAPPER_STYLE}
+                      allowEscapeViewBox={TOOLTIP_ESCAPE_VIEWBOX}
+                      cursor={TOOLTIP_CURSOR_STYLE}
+                      // 縦位置をグラフ上部に固定し、バー（下から伸びる）と重ならないようにする。
+                      // 横位置はカーソルに追従させ、どの月かは分かるようにする。
+                      position={{ y: 0 }}
+                      offset={16}
                       // eslint-disable-next-line @typescript-eslint/no-explicit-any
                       formatter={((value: unknown, name: unknown) => {
                         const v = typeof value === "number" ? value : 0
@@ -292,12 +320,11 @@ export default function AnalyticsPage() {
                       ))}
                     </Pie>
                     <Tooltip
-                      contentStyle={{
-                        backgroundColor: "hsl(var(--card))",
-                        border: "1px solid hsl(var(--border))",
-                        borderRadius: "8px",
-                        fontSize: "12px",
-                      }}
+                      contentStyle={TOOLTIP_CONTENT_STYLE}
+                      labelStyle={TOOLTIP_LABEL_STYLE}
+                      wrapperStyle={TOOLTIP_WRAPPER_STYLE}
+                      allowEscapeViewBox={TOOLTIP_ESCAPE_VIEWBOX}
+                      offset={16}
                       // eslint-disable-next-line @typescript-eslint/no-explicit-any
                       formatter={((value: unknown, _name: unknown, entry: any) => {
                         const v = typeof value === "number" ? value : 0
@@ -336,12 +363,11 @@ export default function AnalyticsPage() {
                       ))}
                     </Pie>
                     <Tooltip
-                      contentStyle={{
-                        backgroundColor: "hsl(var(--card))",
-                        border: "1px solid hsl(var(--border))",
-                        borderRadius: "8px",
-                        fontSize: "12px",
-                      }}
+                      contentStyle={TOOLTIP_CONTENT_STYLE}
+                      labelStyle={TOOLTIP_LABEL_STYLE}
+                      wrapperStyle={TOOLTIP_WRAPPER_STYLE}
+                      allowEscapeViewBox={TOOLTIP_ESCAPE_VIEWBOX}
+                      offset={16}
                       // eslint-disable-next-line @typescript-eslint/no-explicit-any
                       formatter={((value: unknown, name: unknown) => [`${value ?? 0} 件`, name ?? ""]) as never}
                     />
@@ -379,12 +405,12 @@ export default function AnalyticsPage() {
                         width={120}
                       />
                       <Tooltip
-                        contentStyle={{
-                          backgroundColor: "hsl(var(--card))",
-                          border: "1px solid hsl(var(--border))",
-                          borderRadius: "8px",
-                          fontSize: "12px",
-                        }}
+                        contentStyle={TOOLTIP_CONTENT_STYLE}
+                        labelStyle={TOOLTIP_LABEL_STYLE}
+                        wrapperStyle={TOOLTIP_WRAPPER_STYLE}
+                        allowEscapeViewBox={TOOLTIP_ESCAPE_VIEWBOX}
+                        cursor={TOOLTIP_CURSOR_STYLE}
+                        offset={20}
                         // eslint-disable-next-line @typescript-eslint/no-explicit-any
                         formatter={((value: unknown, _name: unknown, entry: any) => {
                           const v = typeof value === "number" ? value : 0
