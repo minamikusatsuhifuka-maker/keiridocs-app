@@ -56,6 +56,40 @@ function formatDate(date: string | null): string {
   return new Date(date).toLocaleDateString("ja-JP")
 }
 
+/** 支払い内容（AI要約）セル：長い場合は折りたたみ、クリックで全文展開 */
+function PaymentPurposeCell({ value }: { value: string | null }) {
+  const [expanded, setExpanded] = useState(false)
+
+  // NULL=未生成（遅延生成の待ち）。空=判定不能。
+  if (value == null) {
+    return <span className="text-xs text-muted-foreground/60">—</span>
+  }
+  const text = value.trim()
+  if (text === "") {
+    return <span className="text-xs text-muted-foreground">-</span>
+  }
+
+  const PREVIEW = 12
+  const isLong = text.length > PREVIEW
+  if (!isLong) {
+    return <span className="text-xs">{text}</span>
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setExpanded((v) => !v)}
+      className="text-left text-xs hover:text-foreground transition-colors"
+      title={expanded ? "折りたたむ" : text}
+    >
+      <span>{expanded ? text : `${text.slice(0, PREVIEW)}…`}</span>
+      <span className="ml-1 text-primary underline underline-offset-2">
+        {expanded ? "閉じる" : "もっと見る"}
+      </span>
+    </button>
+  )
+}
+
 export function DocumentTable({
   documents,
   sortField,
@@ -225,6 +259,7 @@ export function DocumentTable({
           <SortableHead field="due_date">支払期日</SortableHead>
           <TableHead className="hidden lg:table-cell">税区分</TableHead>
           <TableHead className="hidden lg:table-cell">勘定科目</TableHead>
+          <TableHead>支払い内容</TableHead>
           <SortableHead field="status">ステータス</SortableHead>
           <TableHead>操作</TableHead>
         </TableRow>
@@ -265,6 +300,9 @@ export function DocumentTable({
             <TableCell>{formatDate(doc.due_date)}</TableCell>
             <TableCell className="hidden lg:table-cell text-xs">{doc.tax_category || "-"}</TableCell>
             <TableCell className="hidden lg:table-cell text-xs">{doc.account_title || "-"}</TableCell>
+            <TableCell className="max-w-[220px] align-top">
+              <PaymentPurposeCell value={doc.payment_purpose} />
+            </TableCell>
             <TableCell>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>

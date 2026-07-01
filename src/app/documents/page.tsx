@@ -176,6 +176,34 @@ export default function DocumentsPage() {
       const json = await res.json() as { data: Document[]; count: number | null }
       setDocuments(json.data ?? [])
       setTotalCount(json.count ?? 0)
+
+      // 「支払い内容」が未生成(NULL)の行をバックグラウンドで遅延生成し、一覧に反映する
+      const missingIds = (json.data ?? []).filter((d) => d.payment_purpose == null).map((d) => d.id)
+      if (missingIds.length > 0) {
+        void (async () => {
+          const chunkSize = 40
+          for (let i = 0; i < missingIds.length; i += chunkSize) {
+            const chunk = missingIds.slice(i, i + chunkSize)
+            try {
+              const pr = await fetch("/api/documents/payment-purpose", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ ids: chunk }),
+              })
+              if (!pr.ok) break
+              const pj = await pr.json() as { results?: Array<{ id: string; payment_purpose: string }> }
+              const map = new Map((pj.results ?? []).map((x) => [x.id, x.payment_purpose]))
+              if (map.size > 0) {
+                setDocuments((prev) =>
+                  prev.map((d) => (map.has(d.id) ? { ...d, payment_purpose: map.get(d.id) ?? "" } : d))
+                )
+              }
+            } catch {
+              break
+            }
+          }
+        })()
+      }
     } catch {
       toast.error("書類データの取得に失敗しました")
       setDocuments([])
@@ -767,8 +795,39 @@ export default function DocumentsPage() {
       const json = await res.json() as { data: Document[] }
       const allDocs = json.data ?? []
 
-      // CSVヘッダー（末尾に保存先のDropboxパスを追加。既存列の順序は変更しない）
-      const headers = ["種別", "取引先名", "金額", "発行日", "支払期日", "ステータス", "摘要", "入力経路", "登録日時", "Dropboxパス"]
+      // 「支払い内容」が未生成(NULL)の行は、CSV出力前にまとめて遅延生成する
+      const purposeMap = new Map<string, string>()
+      const missingIds = allDocs.filter((d) => d.payment_purpose == null).map((d) => d.id)
+      if (missingIds.length > 0) {
+        toast(`支払い内容を生成中…（${missingIds.length}件）`)
+        const chunkSize = 60
+        // 過大件数での長時間実行を避けるため最大600件まで生成（超過分は空欄）
+        const capped = missingIds.slice(0, 600)
+        for (let i = 0; i < capped.length; i += chunkSize) {
+          const chunk = capped.slice(i, i + chunkSize)
+          try {
+            const pr = await fetch("/api/documents/payment-purpose", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ids: chunk }),
+            })
+            if (!pr.ok) break
+            const pj = await pr.json() as { results?: Array<{ id: string; payment_purpose: string }> }
+            for (const r of pj.results ?? []) purposeMap.set(r.id, r.payment_purpose)
+          } catch {
+            break
+          }
+        }
+        // 生成結果を画面の一覧にも反映
+        if (purposeMap.size > 0) {
+          setDocuments((prev) =>
+            prev.map((d) => (purposeMap.has(d.id) ? { ...d, payment_purpose: purposeMap.get(d.id) ?? "" } : d))
+          )
+        }
+      }
+
+      // CSVヘッダー（摘要の隣に支払い内容、末尾にDropboxパス）
+      const headers = ["種別", "取引先名", "金額", "発行日", "支払期日", "ステータス", "摘要", "支払い内容", "入力経路", "登録日時", "Dropboxパス"]
 
       // CSV行を生成
       const rows = allDocs.map((doc) => [
@@ -779,6 +838,8 @@ export default function DocumentsPage() {
         doc.due_date ?? "",
         doc.status,
         doc.description ?? "",
+        // 支払い内容（AI要約・全文）。生成できた分を優先し、無ければ既存値、判定不能は空欄
+        purposeMap.get(doc.id) ?? doc.payment_purpose ?? "",
         doc.input_method,
         doc.created_at ? new Date(doc.created_at).toLocaleString("ja-JP") : "",
         // 保存先の完全パス（現在の保存場所を反映）。未設定の行は空欄

@@ -603,3 +603,72 @@ function parseOcrResponse(responseText: string): OcrResult {
     return FALLBACK_RESULT
   }
 }
+
+/** 支払い内容の要約に使う入力（書類の既存データから組み立てる） */
+export interface PaymentPurposeInput {
+  vendor_name?: string | null
+  type?: string | null
+  amount?: number | null
+  description?: string | null
+  account_title?: string | null
+  items?: Array<{ item_name?: string | null; category?: string | null }>
+}
+
+/**
+ * 書類の既存データ（取引先・種別・摘要・品目など）から、支払い内容をAIで簡潔に要約する。
+ * best-effort。判定不能・失敗時は空文字を返す（無理に埋めない）。
+ * @returns 20〜40字目安の日本語要約（失敗・判定不能時は ""）
+ */
+export async function summarizePaymentPurpose(
+  input: PaymentPurposeInput,
+  options?: { modelId?: string }
+): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY
+  if (!apiKey) return ""
+
+  // 要約の材料を組み立てる（空要素は除外）
+  const itemNames = (input.items ?? [])
+    .map((it) => (typeof it?.item_name === "string" ? it.item_name.trim() : ""))
+    .filter((n) => n.length > 0)
+  const material = [
+    input.vendor_name ? `取引先: ${input.vendor_name}` : "",
+    input.type ? `種別: ${input.type}` : "",
+    input.account_title ? `勘定科目: ${input.account_title}` : "",
+    input.amount != null ? `金額: ${input.amount}円` : "",
+    input.description ? `摘要: ${input.description}` : "",
+    itemNames.length ? `品目: ${itemNames.slice(0, 8).join(" / ")}` : "",
+  ]
+    .filter((s) => s.length > 0)
+    .join("\n")
+
+  // 材料が乏しすぎる場合はAIを呼ばず空を返す
+  if (material.trim().length < 3) return ""
+
+  const modelId = options?.modelId || DEFAULT_GEMINI_MODEL
+  const genAI = new GoogleGenerativeAI(apiKey)
+  const model = genAI.getGenerativeModel({ model: modelId })
+
+  const prompt = `次の経理書類の情報から、この支払いが「何の支払いか（支払い内容）」を日本語で簡潔に要約してください。
+
+条件:
+- 20〜40字程度。区分名（例: セミナー代・講演料・薬剤代・電気料金・消防設備点検 等）が分かる表現にする。
+- 品目が複数ある場合は代表品目＋「ほか」等でまとめる。
+- 要約の一文のみを返す。前置き・記号・引用符・改行・説明は一切付けない。
+- 判定できない場合は空文字だけを返す。
+
+--- 書類情報 ---
+${material}`
+
+  try {
+    const result = await model.generateContent(prompt)
+    let text = result.response.text() ?? ""
+    // 先頭行のみ・前後の引用符/空白を除去（best-effort）
+    text = text.split(/\r?\n/)[0]?.trim() ?? ""
+    text = text.replace(/^["「『]+/, "").replace(/["」』]+$/, "").trim()
+    if (text.length > 60) text = text.slice(0, 60)
+    return text
+  } catch (error) {
+    console.error("支払い内容の要約に失敗:", error)
+    return ""
+  }
+}
