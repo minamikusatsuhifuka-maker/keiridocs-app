@@ -65,13 +65,21 @@ export function WeeklyBarChart({ data }: WeeklyBarChartProps) {
                 }
               />
               <Tooltip
-                cursor={{ fill: "rgba(212, 168, 96, 0.1)" }}
+                cursor={{ fill: "rgba(212, 168, 96, 0.2)" }}
+                // 背景を完全不透明にし、常に最前面・グラフ領域外にはみ出しても
+                // クリップされないようにする（/analytics と同じ修正方針で統一）
                 contentStyle={{
-                  backgroundColor: "rgba(255, 255, 255, 0.95)",
+                  backgroundColor: "#FFFFFF",
+                  color: "#1A1A1A",
                   border: "1px solid #E0CEB8",
                   borderRadius: "8px",
                   fontSize: "12px",
+                  padding: "8px 12px",
+                  boxShadow: "0 4px 16px rgba(0, 0, 0, 0.18)",
                 }}
+                wrapperStyle={{ zIndex: 50, outline: "none" }}
+                allowEscapeViewBox={{ x: true, y: true }}
+                offset={16}
                 formatter={(value) => [
                   `¥${(value as number).toLocaleString()}`,
                   "経費合計",
