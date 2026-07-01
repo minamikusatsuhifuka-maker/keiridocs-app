@@ -27,6 +27,8 @@ const ALL_SOURCE_FOLDERS = [
   "その他",
   "スタッフ領収書",
   "売上",
+  "返金",
+  "自動精算機データ",
 ] as const
 
 /** dropbox_path が属するソースフォルダ名を返す（/経理書類/{folder}/...） */

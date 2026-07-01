@@ -39,6 +39,10 @@ export function taxSubfolderForSourceFolder(folder: string): string {
       return "社会保険料"
     case "売上":
       return SALES_SUBFOLDER
+    case "返金":
+      return "返金"
+    case "自動精算機データ":
+      return "自動精算機データ"
     default:
       return "その他"
   }
@@ -64,6 +68,8 @@ export function taxSubfolderForType(type: string | null | undefined): string {
       return "返金"
     case "月計表":
       return "月計表"
+    case "自動精算機データ":
+      return "自動精算機データ"
     default:
       return "その他"
   }

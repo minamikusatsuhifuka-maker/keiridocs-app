@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { DocumentTable } from "@/components/documents/document-table"
-import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput, FolderPlus, Wallet } from "lucide-react"
+import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput, FolderPlus, Wallet, Upload } from "lucide-react"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
@@ -371,7 +371,7 @@ export default function DocumentsPage() {
 
   // 税理士フォルダへのコピー
   const nowForTaxCopy = new Date()
-  const TAX_SOURCE_FOLDERS = ["請求書", "領収書", "社会保険料", "その他", "スタッフ領収書", "売上"] as const
+  const TAX_SOURCE_FOLDERS = ["請求書", "領収書", "社会保険料", "その他", "スタッフ領収書", "売上", "返金", "自動精算機データ"] as const
   const [showTaxCopyModal, setShowTaxCopyModal] = useState(false)
   const [taxCopyYear, setTaxCopyYear] = useState<number>(nowForTaxCopy.getFullYear())
   const [taxCopyMonth, setTaxCopyMonth] = useState<number>(nowForTaxCopy.getMonth() + 1)
@@ -1083,6 +1083,13 @@ export default function DocumentsPage() {
           >
             {isImportingAdditional ? <Loader2 className="size-3.5 animate-spin" /> : <FolderPlus className="size-3.5" />}
             追加分をまとめて取り込む
+          </Button>
+
+          <Button variant="outline" size="sm" asChild className="btn-float">
+            <Link href="/documents/ingest">
+              <Upload className="size-3.5" />
+              返金・精算機データ取込
+            </Link>
           </Button>
         </div>
       </div>
