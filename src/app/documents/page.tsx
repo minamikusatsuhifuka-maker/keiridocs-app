@@ -373,32 +373,28 @@ export default function DocumentsPage() {
   const nowForTaxCopy = new Date()
   const TAX_SOURCE_FOLDERS = ["請求書", "領収書", "社会保険料", "その他", "スタッフ領収書", "売上", "返金", "自動精算機データ"] as const
   const [showTaxCopyModal, setShowTaxCopyModal] = useState(false)
-  const [taxCopyYear, setTaxCopyYear] = useState<number>(nowForTaxCopy.getFullYear())
-  const [taxCopyMonth, setTaxCopyMonth] = useState<number>(nowForTaxCopy.getMonth() + 1)
+  // 期間指定（開始年月〜終了年月）。単月は開始＝終了
+  const [taxCopyStartYear, setTaxCopyStartYear] = useState<number>(nowForTaxCopy.getFullYear())
+  const [taxCopyStartMonth, setTaxCopyStartMonth] = useState<number>(nowForTaxCopy.getMonth() + 1)
+  const [taxCopyEndYear, setTaxCopyEndYear] = useState<number>(nowForTaxCopy.getFullYear())
+  const [taxCopyEndMonth, setTaxCopyEndMonth] = useState<number>(nowForTaxCopy.getMonth() + 1)
   const [taxCopyFolders, setTaxCopyFolders] = useState<Set<string>>(
     new Set(TAX_SOURCE_FOLDERS)
   )
   const [isCopyingToTax, setIsCopyingToTax] = useState(false)
-  const [taxCopyResult, setTaxCopyResult] = useState<{
+  // 進捗（月単位で逐次処理）
+  const [taxCopyProgress, setTaxCopyProgress] = useState<{ current: number; total: number; label: string } | null>(null)
+  // 月別の結果
+  const [taxCopyResults, setTaxCopyResults] = useState<Array<{
+    year: number
+    month: number
     copied: number
     skipped: number
     failed: number
     total: number
-    details: Array<{
-      file_name: string
-      type: string
-      vendor_name: string
-      amount: number | null
-      date: string
-      folder: string
-      source: "db" | "dropbox"
-      status: "copied" | "skipped" | "failed"
-      message?: string
-    }>
-    csv: string
-    year: number
-    month: number
-  } | null>(null)
+    folderBreakdown: Record<string, { copied: number; skipped: number; failed: number }>
+    error?: string
+  }> | null>(null)
 
   // 追加分の一括取り込み（月指定不要）
   const [showAdditionalModal, setShowAdditionalModal] = useState(false)
@@ -438,7 +434,8 @@ export default function DocumentsPage() {
 
   // モーダルを開くたびに結果をリセット
   function openTaxCopyModal() {
-    setTaxCopyResult(null)
+    setTaxCopyResults(null)
+    setTaxCopyProgress(null)
     setTaxCopyFolders(new Set(TAX_SOURCE_FOLDERS))
     setShowTaxCopyModal(true)
   }
@@ -611,90 +608,117 @@ export default function DocumentsPage() {
     }
   }
 
-  // 税理士フォルダへ一括コピー実行
+  // 税理士フォルダへ一括コピー実行（期間指定：開始年月〜終了年月を月単位で逐次処理）
   async function handleCopyToTaxFolder() {
     if (taxCopyFolders.size === 0) {
       toast.warning("対象フォルダを1つ以上選択してください")
       return
     }
+
+    // 期間の整合性チェック（開始 ≤ 終了）
+    const startIdx = taxCopyStartYear * 12 + (taxCopyStartMonth - 1)
+    const endIdx = taxCopyEndYear * 12 + (taxCopyEndMonth - 1)
+    if (startIdx > endIdx) {
+      toast.warning("開始年月は終了年月以前にしてください")
+      return
+    }
+
+    // 対象月リストを作成
+    const monthsToProcess: Array<{ year: number; month: number }> = []
+    for (let idx = startIdx; idx <= endIdx; idx++) {
+      monthsToProcess.push({ year: Math.floor(idx / 12), month: (idx % 12) + 1 })
+    }
+
     setIsCopyingToTax(true)
+    setTaxCopyResults(null)
+    const folders = Array.from(taxCopyFolders)
+    const results: NonNullable<typeof taxCopyResults> = []
+    let totalCopied = 0
+    let totalFailed = 0
+
     try {
-      const res = await fetch("/api/documents/copy-to-taxfolder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          year: taxCopyYear,
-          month: taxCopyMonth,
-          folders: Array.from(taxCopyFolders),
-        }),
-      })
+      for (let i = 0; i < monthsToProcess.length; i++) {
+        const { year, month } = monthsToProcess[i]
+        setTaxCopyProgress({
+          current: i + 1,
+          total: monthsToProcess.length,
+          label: `${year}年${String(month).padStart(2, "0")}月`,
+        })
 
-      const json = await res.json() as {
-        copied?: number
-        skipped?: number
-        failed?: number
-        total?: number
-        details?: Array<{
-          file_name: string
-          type: string
-          vendor_name: string
-          amount: number | null
-          date: string
-          folder: string
-          source: "db" | "dropbox"
-          status: "copied" | "skipped" | "failed"
-          message?: string
-        }>
-        csv?: string
-        message?: string
-        error?: string
+        try {
+          // 各月ごとに既存の月次コピーAPIを呼ぶ（1リクエスト＝1か月でタイムアウト回避）
+          const res = await fetch("/api/documents/copy-to-taxfolder", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ year, month, folders }),
+          })
+          const json = await res.json() as {
+            copied?: number
+            skipped?: number
+            failed?: number
+            total?: number
+            details?: Array<{ folder: string; status: "copied" | "skipped" | "failed" }>
+            error?: string
+          }
+          if (!res.ok) {
+            results.push({
+              year, month, copied: 0, skipped: 0, failed: 0, total: 0,
+              folderBreakdown: {},
+              error: json.error || "コピー処理に失敗しました",
+            })
+            totalFailed++
+            continue
+          }
+
+          // フォルダ別の内訳を集計
+          const folderBreakdown: Record<string, { copied: number; skipped: number; failed: number }> = {}
+          for (const d of json.details ?? []) {
+            const key = d.folder || "（未分類）"
+            if (!folderBreakdown[key]) folderBreakdown[key] = { copied: 0, skipped: 0, failed: 0 }
+            if (d.status === "copied") folderBreakdown[key].copied++
+            else if (d.status === "skipped") folderBreakdown[key].skipped++
+            else folderBreakdown[key].failed++
+          }
+
+          results.push({
+            year, month,
+            copied: json.copied ?? 0,
+            skipped: json.skipped ?? 0,
+            failed: json.failed ?? 0,
+            total: json.total ?? 0,
+            folderBreakdown,
+          })
+          totalCopied += json.copied ?? 0
+          // 途中経過を随時反映（部分表示）
+          setTaxCopyResults([...results])
+        } catch (monthErr) {
+          results.push({
+            year, month, copied: 0, skipped: 0, failed: 0, total: 0,
+            folderBreakdown: {},
+            error: monthErr instanceof Error ? monthErr.message : "コピー処理に失敗しました",
+          })
+          totalFailed++
+          setTaxCopyResults([...results])
+        }
       }
 
-      if (!res.ok) {
-        throw new Error(json.error || "コピー処理に失敗しました")
-      }
-
-      const total = json.total ?? 0
-      const copied = json.copied ?? 0
-      const skipped = json.skipped ?? 0
-      const failed = json.failed ?? 0
-
-      // 結果を保存（モーダル内に詳細を表示）
-      setTaxCopyResult({
-        copied,
-        skipped,
-        failed,
-        total,
-        details: json.details ?? [],
-        csv: json.csv ?? "",
-        year: taxCopyYear,
-        month: taxCopyMonth,
-      })
-
-      if (total === 0) {
-        toast(json.message || "対象の書類はありませんでした")
-      } else if (failed > 0) {
-        toast.warning(
-          `✅ ${copied}件コピー / スキップ ${skipped}件 / 失敗 ${failed}件`
-        )
+      setTaxCopyResults([...results])
+      if (totalFailed > 0) {
+        toast.warning(`コピー完了：${totalCopied}件（${totalFailed}か月でエラー）`)
       } else {
-        toast.success(
-          `✅ ${copied}件コピー / スキップ ${skipped}件 / 失敗 ${failed}件`
-        )
+        toast.success(`✅ ${monthsToProcess.length}か月分のコピーが完了しました（合計 ${totalCopied}件）`)
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "コピー処理に失敗しました")
     } finally {
       setIsCopyingToTax(false)
+      setTaxCopyProgress(null)
     }
   }
 
-  // 提出書類一覧CSVをダウンロード
-  function handleDownloadTaxCsv() {
-    if (!taxCopyResult) return
-    const url = `/api/documents/export-tax-csv?year=${taxCopyResult.year}&month=${taxCopyResult.month}`
-    // ブラウザでダウンロード
-    window.location.href = url
+  // 提出書類一覧CSVをダウンロード（月指定）
+  function handleDownloadTaxCsv(year: number, month: number) {
+    window.location.href = `/api/documents/export-tax-csv?year=${year}&month=${month}`
   }
 
   // 追加分の一括取り込みモーダルを開く
@@ -1422,8 +1446,8 @@ export default function DocumentsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* 税理士フォルダへの一括コピー 年月・対象フォルダ選択 + 結果表示モーダル */}
-      <Dialog open={showTaxCopyModal} onOpenChange={setShowTaxCopyModal}>
+      {/* 税理士フォルダへの一括コピー 期間・対象フォルダ選択 + 進捗/結果表示モーダル */}
+      <Dialog open={showTaxCopyModal} onOpenChange={(o) => { if (!isCopyingToTax) setShowTaxCopyModal(o) }}>
         <DialogContent className="max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -1431,52 +1455,53 @@ export default function DocumentsPage() {
               税理士フォルダへ一括コピー
             </DialogTitle>
             <DialogDescription>
-              指定した年月の処理済み書類および手動アップロード分をDropboxの税理士提出フォルダ
-              （/経理書類/税理士提出/{taxCopyYear}年{String(taxCopyMonth).padStart(2, "0")}月）にコピーします。
-              既に存在するファイルはスキップされます。
+              指定した期間（開始年月〜終了年月）の処理済み書類および手動アップロード分を、
+              月ごとにDropboxの税理士提出フォルダ（/経理書類/税理士提出/YYYY年MM月/）へ振り分けてコピーします。
+              月単位で順に処理するため、期間が広くてもタイムアウトしません。既に存在するファイルはスキップされます。
             </DialogDescription>
           </DialogHeader>
 
-          {!taxCopyResult ? (
+          {!taxCopyResults && !isCopyingToTax ? (
             // 入力フェーズ
             <div className="space-y-4 overflow-y-auto pr-1">
-              <div className="flex items-end gap-3">
-                <div className="space-y-1">
-                  <label className="text-sm font-medium">年</label>
-                  <Select
-                    value={String(taxCopyYear)}
-                    onValueChange={(v) => setTaxCopyYear(Number(v))}
-                  >
-                    <SelectTrigger className="w-[120px]">
-                      <SelectValue />
-                    </SelectTrigger>
+              <div className="space-y-2">
+                <div className="text-sm font-medium">期間（開始年月 〜 終了年月）</div>
+                <div className="flex flex-wrap items-end gap-2">
+                  <Select value={String(taxCopyStartYear)} onValueChange={(v) => setTaxCopyStartYear(Number(v))}>
+                    <SelectTrigger className="w-[110px]"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {Array.from({ length: 6 }, (_, i) => nowForTaxCopy.getFullYear() - 4 + i).map((y) => (
-                        <SelectItem key={y} value={String(y)}>
-                          {y}年
-                        </SelectItem>
+                        <SelectItem key={y} value={String(y)}>{y}年</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium">月</label>
-                  <Select
-                    value={String(taxCopyMonth)}
-                    onValueChange={(v) => setTaxCopyMonth(Number(v))}
-                  >
-                    <SelectTrigger className="w-[100px]">
-                      <SelectValue />
-                    </SelectTrigger>
+                  <Select value={String(taxCopyStartMonth)} onValueChange={(v) => setTaxCopyStartMonth(Number(v))}>
+                    <SelectTrigger className="w-[90px]"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                        <SelectItem key={m} value={String(m)}>
-                          {m}月
-                        </SelectItem>
+                        <SelectItem key={m} value={String(m)}>{m}月</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <span className="pb-2 text-muted-foreground">〜</span>
+                  <Select value={String(taxCopyEndYear)} onValueChange={(v) => setTaxCopyEndYear(Number(v))}>
+                    <SelectTrigger className="w-[110px]"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {Array.from({ length: 6 }, (_, i) => nowForTaxCopy.getFullYear() - 4 + i).map((y) => (
+                        <SelectItem key={y} value={String(y)}>{y}年</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={String(taxCopyEndMonth)} onValueChange={(v) => setTaxCopyEndMonth(Number(v))}>
+                    <SelectTrigger className="w-[90px]"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                        <SelectItem key={m} value={String(m)}>{m}月</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="text-xs text-muted-foreground">単月の場合は開始と終了を同じにしてください。</div>
               </div>
 
               <div className="space-y-2">
@@ -1501,110 +1526,102 @@ export default function DocumentsPage() {
               </div>
             </div>
           ) : (
-            // 結果表示フェーズ
+            // 進捗・結果表示フェーズ
             <div className="space-y-3 overflow-y-auto pr-1">
-              <div className="rounded-md border bg-muted/40 p-4">
-                <div className="text-base font-semibold">
-                  ✅ {taxCopyResult.copied}件コピー / スキップ {taxCopyResult.skipped}件 / 失敗 {taxCopyResult.failed}件
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  対象: {taxCopyResult.year}年{String(taxCopyResult.month).padStart(2, "0")}月 / 合計 {taxCopyResult.total}件
-                </div>
-              </div>
-
-              {taxCopyResult.details.length > 0 && (
-                <div className="rounded-md border max-h-[40vh] overflow-y-auto">
-                  <table className="w-full text-sm">
-                    <thead className="sticky top-0 bg-background border-b">
-                      <tr className="text-left">
-                        <th className="px-3 py-2 font-medium">ファイル名</th>
-                        <th className="px-3 py-2 font-medium">種別</th>
-                        <th className="px-3 py-2 font-medium">取引先</th>
-                        <th className="px-3 py-2 font-medium text-right">金額</th>
-                        <th className="px-3 py-2 font-medium">日付</th>
-                        <th className="px-3 py-2 font-medium">振り分け先</th>
-                        <th className="px-3 py-2 font-medium">結果</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {taxCopyResult.details.map((d, i) => (
-                        <tr key={i} className="border-t">
-                          <td className="px-3 py-1.5 max-w-[200px] truncate" title={d.file_name}>
-                            {d.file_name}
-                          </td>
-                          <td className="px-3 py-1.5">{d.type}</td>
-                          <td className="px-3 py-1.5">{d.vendor_name || "-"}</td>
-                          <td className="px-3 py-1.5 text-right">
-                            {d.amount != null ? `¥${d.amount.toLocaleString()}` : "-"}
-                          </td>
-                          <td className="px-3 py-1.5">{d.date || "-"}</td>
-                          <td className="px-3 py-1.5 max-w-[160px] truncate" title={d.folder}>{d.folder || "-"}</td>
-                          <td className="px-3 py-1.5">
-                            {d.status === "copied" ? (
-                              <span className="inline-flex items-center gap-1 text-green-700 dark:text-green-400">
-                                <CheckCircle2 className="size-3.5" /> 成功
-                              </span>
-                            ) : d.status === "skipped" ? (
-                              <span className="text-muted-foreground">スキップ</span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-red-600">
-                                <XCircle className="size-3.5" /> 失敗
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+              {isCopyingToTax && taxCopyProgress && (
+                <div className="rounded-md border bg-muted/40 p-4">
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Loader2 className="size-4 animate-spin" />
+                    処理中: {taxCopyProgress.label}（{taxCopyProgress.current}/{taxCopyProgress.total} か月）
+                  </div>
+                  <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-primary transition-all"
+                      style={{ width: `${Math.round((taxCopyProgress.current / taxCopyProgress.total) * 100)}%` }}
+                    />
+                  </div>
                 </div>
               )}
 
-              <Button
-                variant="outline"
-                onClick={handleDownloadTaxCsv}
-                className="w-full"
-              >
-                <Download className="mr-2 size-4" />
-                📄 提出書類一覧CSVをダウンロード
-              </Button>
+              {(taxCopyResults ?? []).map((r) => {
+                const folderEntries = Object.entries(r.folderBreakdown)
+                  .filter(([, c]) => c.copied > 0 || c.failed > 0)
+                  .sort((a, b) => b[1].copied - a[1].copied)
+                return (
+                  <div key={`${r.year}-${r.month}`} className="rounded-md border p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-sm font-semibold">
+                        {r.year}年{String(r.month).padStart(2, "0")}月
+                      </div>
+                      {r.error ? (
+                        <span className="inline-flex items-center gap-1 text-xs text-red-600">
+                          <XCircle className="size-3.5" /> {r.error}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">
+                          コピー {r.copied} / スキップ {r.skipped} / 失敗 {r.failed}
+                        </span>
+                      )}
+                    </div>
+                    {!r.error && folderEntries.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {folderEntries.map(([folder, c]) => (
+                          <span
+                            key={folder}
+                            className="rounded-full bg-muted px-2 py-0.5 text-[11px]"
+                            title={`${folder}: コピー${c.copied} / スキップ${c.skipped} / 失敗${c.failed}`}
+                          >
+                            {folder} {c.copied}
+                            {c.failed > 0 ? <span className="text-red-600">（失敗{c.failed}）</span> : null}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {!r.error && (r.copied > 0 || r.skipped > 0) && (
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadTaxCsv(r.year, r.month)}
+                        className="mt-2 inline-flex items-center gap-1 text-xs text-primary underline underline-offset-2"
+                      >
+                        <Download className="size-3" />
+                        提出書類一覧CSV
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           )}
 
           <DialogFooter className="gap-2 sm:gap-0">
-            {!taxCopyResult ? (
+            {!taxCopyResults && !isCopyingToTax ? (
               <>
                 <Button
                   variant="outline"
                   onClick={() => setShowTaxCopyModal(false)}
-                  disabled={isCopyingToTax}
                 >
                   キャンセル
                 </Button>
-                <Button onClick={handleCopyToTaxFolder} disabled={isCopyingToTax || taxCopyFolders.size === 0}>
-                  {isCopyingToTax ? (
-                    <>
-                      <Loader2 className="mr-2 size-4 animate-spin" />
-                      コピー中...
-                    </>
-                  ) : (
-                    <>
-                      <FolderInput className="mr-2 size-4" />
-                      コピーを実行
-                    </>
-                  )}
+                <Button onClick={handleCopyToTaxFolder} disabled={taxCopyFolders.size === 0}>
+                  <FolderInput className="mr-2 size-4" />
+                  コピーを実行
                 </Button>
               </>
             ) : (
               <>
                 <Button
                   variant="outline"
+                  disabled={isCopyingToTax}
                   onClick={() => {
-                    setTaxCopyResult(null)
+                    setTaxCopyResults(null)
+                    setTaxCopyProgress(null)
                   }}
                 >
-                  別の年月でやり直す
+                  別の期間でやり直す
                 </Button>
-                <Button onClick={() => setShowTaxCopyModal(false)}>閉じる</Button>
+                <Button disabled={isCopyingToTax} onClick={() => setShowTaxCopyModal(false)}>
+                  {isCopyingToTax ? "処理中..." : "閉じる"}
+                </Button>
               </>
             )}
           </DialogFooter>
