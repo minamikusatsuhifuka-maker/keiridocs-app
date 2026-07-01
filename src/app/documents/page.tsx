@@ -767,8 +767,8 @@ export default function DocumentsPage() {
       const json = await res.json() as { data: Document[] }
       const allDocs = json.data ?? []
 
-      // CSVヘッダー
-      const headers = ["種別", "取引先名", "金額", "発行日", "支払期日", "ステータス", "摘要", "入力経路", "登録日時"]
+      // CSVヘッダー（末尾に保存先のDropboxパスを追加。既存列の順序は変更しない）
+      const headers = ["種別", "取引先名", "金額", "発行日", "支払期日", "ステータス", "摘要", "入力経路", "登録日時", "Dropboxパス"]
 
       // CSV行を生成
       const rows = allDocs.map((doc) => [
@@ -781,6 +781,8 @@ export default function DocumentsPage() {
         doc.description ?? "",
         doc.input_method,
         doc.created_at ? new Date(doc.created_at).toLocaleString("ja-JP") : "",
+        // 保存先の完全パス（現在の保存場所を反映）。未設定の行は空欄
+        doc.dropbox_path ?? "",
       ])
 
       // CSVセルをエスケープ（ダブルクォートやカンマを含む場合）
