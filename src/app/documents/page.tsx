@@ -1218,6 +1218,7 @@ export default function DocumentsPage() {
           onStatusChange={handleStatusChange}
           selectedIds={selectedDocIds}
           onSelectionChange={setSelectedDocIds}
+          tab={activeTab}
         />
       )}
 
