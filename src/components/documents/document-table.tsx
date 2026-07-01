@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { StatusBadge } from "@/components/documents/status-badge"
 import { AlertTriangle, ArrowUpDown, Calendar, Check, ChevronDown, Eye, Loader2 } from "lucide-react"
 import type { Database } from "@/types/database"
@@ -56,9 +57,12 @@ function formatDate(date: string | null): string {
   return new Date(date).toLocaleDateString("ja-JP")
 }
 
-/** 支払い内容（AI要約）セル：長い場合は折りたたみ、クリックで全文展開 */
+/**
+ * 支払い内容（AI要約）セル：セル内は省略表示のまま、
+ * ホバー（デスクトップ）／タップ（タッチ端末）で全文をポップアップ表示する。
+ */
 function PaymentPurposeCell({ value }: { value: string | null }) {
-  const [expanded, setExpanded] = useState(false)
+  const [open, setOpen] = useState(false)
 
   // NULL=未生成（遅延生成の待ち）。空=判定不能。
   if (value == null) {
@@ -71,22 +75,39 @@ function PaymentPurposeCell({ value }: { value: string | null }) {
 
   const PREVIEW = 12
   const isLong = text.length > PREVIEW
+  const preview = isLong ? `${text.slice(0, PREVIEW)}…` : text
+
+  // 短文はポップアップ不要でそのまま表示
   if (!isLong) {
     return <span className="text-xs">{text}</span>
   }
 
   return (
-    <button
-      type="button"
-      onClick={() => setExpanded((v) => !v)}
-      className="text-left text-xs hover:text-foreground transition-colors"
-      title={expanded ? "折りたたむ" : text}
-    >
-      <span>{expanded ? text : `${text.slice(0, PREVIEW)}…`}</span>
-      <span className="ml-1 text-primary underline underline-offset-2">
-        {expanded ? "閉じる" : "もっと見る"}
-      </span>
-    </button>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          // デスクトップはホバーで開閉、タッチ端末はタップ（Radixのトリガー/onOpenChange）で開閉
+          onMouseEnter={() => setOpen(true)}
+          onMouseLeave={() => setOpen(false)}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setOpen(false)}
+          className="max-w-[210px] truncate text-left text-xs hover:text-foreground transition-colors cursor-default"
+          aria-label="支払い内容の全文を表示"
+        >
+          {preview}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        side="top"
+        // クリックでフォーカスを奪わない（ホバー表示を安定させる）
+        onOpenAutoFocus={(e) => e.preventDefault()}
+        className="w-auto max-w-sm max-h-60 overflow-y-auto p-3 text-sm leading-relaxed whitespace-pre-wrap break-words"
+      >
+        {text}
+      </PopoverContent>
+    </Popover>
   )
 }
 
