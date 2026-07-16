@@ -17,7 +17,6 @@ import {
   ScanLine,
   Loader2,
   ClipboardList,
-  BookOpen,
   IdCard,
   LineChart,
   Wallet,
@@ -45,7 +44,6 @@ const navItems = [
   { href: "/petty-cash", label: "小口現金", icon: Wallet },
   { href: "/refund", label: "返金管理", icon: RotateCcw },
   { href: "/business-cards", label: "名刺管理", icon: IdCard },
-  { href: "/manuals", label: "マニュアル管理", icon: BookOpen },
   { href: "/mail", label: "メール確認", icon: Mail },
   // 「設定」「LINEスタッフ管理」は /mkadmin（管理画面）に集約したためサイドバーから除外
 ]
@@ -53,7 +51,6 @@ const navItems = [
 // admin専用ナビ項目
 const adminNavItems = [
   { href: "/staff-receipts/admin", label: "スタッフ領収書管理", icon: ClipboardList },
-  { href: "/manuals", label: "マニュアル管理", icon: BookOpen },
   { href: "/settings/users", label: "ユーザー管理", icon: Users },
 ]
 
