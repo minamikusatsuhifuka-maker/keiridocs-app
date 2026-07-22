@@ -32,6 +32,14 @@ interface BuildResult {
   needsReviewFiles: Array<{ fileName: string; path: string }>
   // 新旧フォルダ構造の重複として除外した件数
   duplicatesRemoved: number
+  // xlsx生成用の構造化データ（CSVと同一の行構成。detailRows.path はハイパーリンク化に使う）
+  table: {
+    summaryLines: string[][]
+    detailTitle: string
+    detailHeaders: string[]
+    detailRows: Array<{ cells: string[]; path: string }>
+    totalRow: string[]
+  }
 }
 
 function escapeCsv(value: string): string {
@@ -205,9 +213,43 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     })
   }
 
-  // 書類データを組み立て
+  // スタッフ立替領収書（LINE申請等）は documents ではなく staff_receipts に登録されるため、
+  // documents で一致しないファイルは staff_receipts のファイル名でも照合する。
+  // 表示は 種別「スタッフ領収書」・取引先=スタッフ名・発行日=支払年月日・金額=立替額。
+  const staffReceiptMap = new Map<string, DocMeta>()
+  try {
+    const [{ data: staffReceipts }, { data: staffMembers }] = await Promise.all([
+      supabase
+        .from("staff_receipts")
+        .select("file_name, date, amount, tax_category, account_title, staff_member_id"),
+      supabase.from("staff_members").select("id, name"),
+    ])
+    const staffNameMap = new Map<string, string>()
+    for (const s of staffMembers ?? []) {
+      if (typeof s.id === "string" && typeof s.name === "string") staffNameMap.set(s.id, s.name)
+    }
+    for (const r of staffReceipts ?? []) {
+      if (typeof r.file_name !== "string" || !r.file_name || staffReceiptMap.has(r.file_name)) continue
+      staffReceiptMap.set(r.file_name, {
+        vendor_name: staffNameMap.get(r.staff_member_id ?? "") ?? null,
+        amount: typeof r.amount === "number" ? r.amount : null,
+        type: "スタッフ領収書",
+        issue_date: r.date ?? null,
+        tax_category: r.tax_category ?? null,
+        account_title: r.account_title ?? null,
+        transfer_from: null,
+        transfer_date: null,
+        transfer_total: null,
+      })
+    }
+  } catch (err) {
+    // staff_receipts が読めない場合も CSV 生成自体は継続する（従来どおり要確認扱いになる）
+    console.error("staff_receipts照合エラー:", err)
+  }
+
+  // 書類データを組み立て（documents優先 → staff_receiptsフォールバック）
   const allRows = filesInTaxFolder.map((file, idx) => {
-    const meta = fileNameMap.get(file.name)
+    const meta = fileNameMap.get(file.name) ?? staffReceiptMap.get(file.name)
     return {
       no: idx + 1,
       fileName: file.name,
@@ -273,20 +315,23 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     "発行日 / 振込日", "税区分", "勘定科目", "コピー先パス", "ステータス",
   ]
 
-  const detailRows = allRows.map((r) => [
-    String(r.no),
-    r.fileName,
-    r.type,
-    r.isSales && r.transferFrom ? r.transferFrom : r.vendor,
-    r.isSales && r.transferTotal !== null
-      ? formatAmount(r.transferTotal)
-      : r.amount !== null ? formatAmount(r.amount) : "",
-    r.isSales && r.transferDate ? r.transferDate : r.date,
-    r.taxCategory,
-    r.accountTitle,
-    r.path,
-    r.needsReview ? "要確認：DB未登録" : "",
-  ])
+  const detailRows = allRows.map((r) => ({
+    path: r.path,
+    cells: [
+      String(r.no),
+      r.fileName,
+      r.type,
+      r.isSales && r.transferFrom ? r.transferFrom : r.vendor,
+      r.isSales && r.transferTotal !== null
+        ? formatAmount(r.transferTotal)
+        : r.amount !== null ? formatAmount(r.amount) : "",
+      r.isSales && r.transferDate ? r.transferDate : r.date,
+      r.taxCategory,
+      r.accountTitle,
+      r.path,
+      r.needsReview ? "要確認：DB未登録" : "",
+    ],
+  }))
 
   // 合計行（要確認ファイルの金額は含まない）
   const totalRow = [
@@ -296,12 +341,13 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   ]
 
   // CSV組み立て
+  const detailTitle = "【書類詳細一覧】"
   const allLines: string[][] = [
     ...summaryLines,
     [""],
-    [`【書類詳細一覧】`],
+    [detailTitle],
     detailHeaders,
-    ...detailRows,
+    ...detailRows.map((r) => r.cells),
     [""],
     totalRow,
   ]
@@ -326,5 +372,12 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     rowCount: allRows.length,
     needsReviewFiles: needsReviewRows.map((r) => ({ fileName: r.fileName, path: r.path })),
     duplicatesRemoved,
+    table: {
+      summaryLines,
+      detailTitle,
+      detailHeaders,
+      detailRows,
+      totalRow,
+    },
   }
 }

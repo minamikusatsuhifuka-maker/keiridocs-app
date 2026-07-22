@@ -11,11 +11,14 @@ import {
   ChevronRight,
   Download,
   FileQuestion,
+  FileSpreadsheet,
+  FolderOpen,
   History,
   Loader2,
   Plus,
   XCircle,
 } from "lucide-react"
+import { dropboxFileUrl, dropboxFolderUrl } from "@/lib/dropbox-web-link"
 
 type RunType = "range_copy" | "additional_import"
 
@@ -112,6 +115,32 @@ function summarizeRow(row: TaxCopyRunRow): string {
 /** 提出書類一覧CSVを再ダウンロード（既存のexport-tax-csv APIを再利用） */
 function downloadTaxCsv(year: number, month: number) {
   window.location.href = `/api/documents/export-tax-csv?year=${year}&month=${month}`
+}
+
+/** 提出書類一覧Excel（コピー先リンク付き）をダウンロード */
+function downloadTaxXlsx(year: number, month: number) {
+  window.location.href = `/api/documents/export-tax-xlsx?year=${year}&month=${month}`
+}
+
+/** 税理士提出の月フォルダパス（/経理書類/税理士提出/{YYYY年MM月}） */
+function taxMonthFolderPath(year: number, month: number): string {
+  return `/経理書類/税理士提出/${year}年${String(month).padStart(2, "0")}月`
+}
+
+/** コピー先パスをDropboxウェブで開くリンク（フォルダアイコン付き） */
+function DropboxPathLink({ path, isFolder = false }: { path: string; isFolder?: boolean }) {
+  return (
+    <a
+      href={isFolder ? dropboxFolderUrl(path) : dropboxFileUrl(path)}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex max-w-full items-center gap-1 text-primary underline underline-offset-2 hover:opacity-80"
+      title={`Dropboxで開く: ${path}`}
+    >
+      <FolderOpen className="size-3.5 shrink-0" />
+      <span className="truncate">{path}</span>
+    </a>
+  )
 }
 
 /** 行が対象とした年月一覧（重複を除く）を取り出す */
@@ -244,20 +273,35 @@ export default function TaxCopyHistoryPage() {
                             <thead className="sticky top-0 bg-background border-b">
                               <tr className="text-left">
                                 <th className="px-3 py-2 font-medium">ファイル名</th>
+                                <th className="px-3 py-2 font-medium">コピー先</th>
                                 <th className="px-3 py-2 font-medium">理由</th>
                               </tr>
                             </thead>
                             <tbody>
-                              {row.issues.map((issue, i) => (
-                                <tr key={i} className="border-t">
-                                  <td className="px-3 py-1.5 max-w-[220px] truncate">
-                                    {issue.file_name}
-                                  </td>
-                                  <td className="px-3 py-1.5 text-muted-foreground">
-                                    {issue.reason ?? "-"}
-                                  </td>
-                                </tr>
-                              ))}
+                              {row.issues.map((issue, i) => {
+                                // コピー先フォルダ（年月＋振り分け先サブフォルダ）が分かる場合のみリンク化
+                                const destFolder =
+                                  issue.year && issue.month && issue.folder
+                                    ? `${taxMonthFolderPath(issue.year, issue.month)}/${issue.folder}`
+                                    : null
+                                return (
+                                  <tr key={i} className="border-t">
+                                    <td className="px-3 py-1.5 max-w-[220px] truncate">
+                                      {issue.file_name}
+                                    </td>
+                                    <td className="px-3 py-1.5 max-w-[280px]">
+                                      {destFolder ? (
+                                        <DropboxPathLink path={destFolder} isFolder />
+                                      ) : (
+                                        <span className="text-muted-foreground">-</span>
+                                      )}
+                                    </td>
+                                    <td className="px-3 py-1.5 text-muted-foreground">
+                                      {issue.reason ?? "-"}
+                                    </td>
+                                  </tr>
+                                )
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -306,26 +350,40 @@ function RangeCopyDetail({ months }: { months: RangeCopyMonthResult[] }) {
             {!r.error && folderEntries.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {folderEntries.map(([folder, c]) => (
-                  <span
+                  <a
                     key={folder}
-                    className="rounded-full bg-muted px-2 py-0.5 text-[11px]"
-                    title={`${folder}: コピー${c.copied} / スキップ${c.skipped} / 失敗${c.failed}`}
+                    href={dropboxFolderUrl(`${taxMonthFolderPath(r.year, r.month)}/${folder}`)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] hover:bg-muted/70 hover:underline"
+                    title={`Dropboxで開く — ${folder}: コピー${c.copied} / スキップ${c.skipped} / 失敗${c.failed}`}
                   >
+                    <FolderOpen className="size-3 text-primary" />
                     {folder} {c.copied}
                     {c.failed > 0 ? <span className="text-red-600">（失敗{c.failed}）</span> : null}
-                  </span>
+                  </a>
                 ))}
               </div>
             )}
             {!r.error && (r.copied > 0 || r.skipped > 0) && (
-              <button
-                type="button"
-                onClick={() => downloadTaxCsv(r.year, r.month)}
-                className="mt-2 inline-flex items-center gap-1 text-xs text-primary underline underline-offset-2"
-              >
-                <Download className="size-3" />
-                提出書類一覧CSVを再ダウンロード
-              </button>
+              <div className="mt-2 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => downloadTaxCsv(r.year, r.month)}
+                  className="inline-flex items-center gap-1 text-xs text-primary underline underline-offset-2"
+                >
+                  <Download className="size-3" />
+                  提出書類一覧CSVを再ダウンロード
+                </button>
+                <button
+                  type="button"
+                  onClick={() => downloadTaxXlsx(r.year, r.month)}
+                  className="inline-flex items-center gap-1 text-xs text-primary underline underline-offset-2"
+                >
+                  <FileSpreadsheet className="size-3" />
+                  Excel（リンク付き）を再ダウンロード
+                </button>
+              </div>
             )}
           </div>
         )
@@ -370,14 +428,24 @@ function AdditionalImportDetail({ summary }: { summary: AdditionalImportSummary 
               <td className="px-3 py-1.5 text-right text-muted-foreground">{m.skipped}</td>
               <td className="px-3 py-1.5">
                 {(m.toBody > 0 || m.toAdditional > 0) && (
-                  <button
-                    type="button"
-                    onClick={() => downloadTaxCsv(m.year, m.month)}
-                    className="inline-flex items-center gap-1 text-xs text-primary underline underline-offset-2"
-                  >
-                    <Download className="size-3" />
-                    CSV
-                  </button>
+                  <span className="inline-flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => downloadTaxCsv(m.year, m.month)}
+                      className="inline-flex items-center gap-1 text-xs text-primary underline underline-offset-2"
+                    >
+                      <Download className="size-3" />
+                      CSV
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => downloadTaxXlsx(m.year, m.month)}
+                      className="inline-flex items-center gap-1 text-xs text-primary underline underline-offset-2"
+                    >
+                      <FileSpreadsheet className="size-3" />
+                      Excel
+                    </button>
+                  </span>
                 )}
               </td>
             </tr>
@@ -475,6 +543,7 @@ function UnclearFilesPanel({ months }: { months: Array<{ year: number; month: nu
               <thead className="sticky top-0 bg-background border-b">
                 <tr className="text-left">
                   <th className="px-3 py-2 font-medium">ファイル名</th>
+                  <th className="px-3 py-2 font-medium">コピー先</th>
                   <th className="px-3 py-2 font-medium">対象月</th>
                   <th className="px-3 py-2 font-medium"></th>
                 </tr>
@@ -484,6 +553,9 @@ function UnclearFilesPanel({ months }: { months: Array<{ year: number; month: nu
                   <tr key={i} className="border-t">
                     <td className="px-3 py-1.5 max-w-[220px] truncate" title={f.path}>
                       {f.fileName}
+                    </td>
+                    <td className="px-3 py-1.5 max-w-[280px]">
+                      <DropboxPathLink path={f.path} />
                     </td>
                     <td className="px-3 py-1.5 whitespace-nowrap text-muted-foreground">
                       {f.year}年{String(f.month).padStart(2, "0")}月

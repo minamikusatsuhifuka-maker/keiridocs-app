@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { DocumentTable } from "@/components/documents/document-table"
-import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput, FolderPlus, Wallet, Upload, History } from "lucide-react"
+import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput, FolderPlus, Wallet, Upload, History, FileSpreadsheet } from "lucide-react"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
 import type { DocumentStatus } from "@/types"
@@ -752,6 +752,11 @@ export default function DocumentsPage() {
   // 提出書類一覧CSVをダウンロード（月指定）
   function handleDownloadTaxCsv(year: number, month: number) {
     window.location.href = `/api/documents/export-tax-csv?year=${year}&month=${month}`
+  }
+
+  // 提出書類一覧Excel（コピー先リンク付き）をダウンロード（月指定）
+  function handleDownloadTaxXlsx(year: number, month: number) {
+    window.location.href = `/api/documents/export-tax-xlsx?year=${year}&month=${month}`
   }
 
   // 追加分の一括取り込みモーダルを開く
@@ -1675,14 +1680,24 @@ export default function DocumentsPage() {
                       </div>
                     )}
                     {!r.error && (r.copied > 0 || r.skipped > 0) && (
-                      <button
-                        type="button"
-                        onClick={() => handleDownloadTaxCsv(r.year, r.month)}
-                        className="mt-2 inline-flex items-center gap-1 text-xs text-primary underline underline-offset-2"
-                      >
-                        <Download className="size-3" />
-                        提出書類一覧CSV
-                      </button>
+                      <div className="mt-2 flex flex-wrap gap-3">
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadTaxCsv(r.year, r.month)}
+                          className="inline-flex items-center gap-1 text-xs text-primary underline underline-offset-2"
+                        >
+                          <Download className="size-3" />
+                          提出書類一覧CSV
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadTaxXlsx(r.year, r.month)}
+                          className="inline-flex items-center gap-1 text-xs text-primary underline underline-offset-2"
+                        >
+                          <FileSpreadsheet className="size-3" />
+                          Excel（リンク付き）
+                        </button>
+                      </div>
                     )}
                   </div>
                 )
