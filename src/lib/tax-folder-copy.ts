@@ -11,6 +11,7 @@ import {
   uploadFileOverwrite,
 } from "@/lib/dropbox"
 import { buildTaxSubmissionCsv } from "@/lib/tax-submission-csv"
+import { buildTaxSubmissionXlsxBuffer } from "@/lib/tax-submission-xlsx"
 import { buildStaffSubsidyCsv } from "@/lib/staff-subsidy-csv"
 import {
   ensureMonthStructure,
@@ -399,7 +400,7 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
   let csvSaveError: string | null = null
   let needsReviewCount = 0
 
-  // 経費CSV: 月フォルダ直下に保存（売上行は除外）
+  // 経費CSV: 月フォルダ直下に保存（売上行は除外）。リンク付きxlsxも同じ場所へ併存保存する
   try {
     const built = await buildTaxSubmissionCsv({
       supabase,
@@ -416,6 +417,18 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
     console.log(
       `経費の提出書類一覧CSVを保存しました: ${csvDropboxPath} (${built.rowCount}件)`
     )
+
+    // リンク付きExcel（コピー先パス列＝Dropboxウェブへのハイパーリンク）
+    try {
+      const xlsxBuffer = await buildTaxSubmissionXlsxBuffer(built.table)
+      const targetXlsxPath = targetCsvPath.replace(/\.csv$/, ".xlsx")
+      const savedXlsx = await uploadFileOverwrite(targetXlsxPath, xlsxBuffer)
+      console.log(`経費の提出書類一覧Excelを保存しました: ${savedXlsx}`)
+    } catch (xlsxError) {
+      const msg = xlsxError instanceof Error ? xlsxError.message : String(xlsxError)
+      csvSaveError = csvSaveError ? `${csvSaveError} / Excel: ${msg}` : `Excel: ${msg}`
+      console.error("提出書類一覧Excel保存エラー:", xlsxError)
+    }
   } catch (csvError) {
     csvSaveError = csvError instanceof Error ? csvError.message : String(csvError)
     console.error("提出書類一覧CSV保存エラー:", csvError)
@@ -441,6 +454,18 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
         console.log(
           `売上提出一覧CSVを保存しました: ${salesCsvDropboxPath} (${builtSales.rowCount}件)`
         )
+
+        // 売上一覧もリンク付きExcelを併存保存
+        try {
+          const xlsxBuffer = await buildTaxSubmissionXlsxBuffer(builtSales.table)
+          const targetXlsxPath = targetSalesCsvPath.replace(/\.csv$/, ".xlsx")
+          const savedXlsx = await uploadFileOverwrite(targetXlsxPath, xlsxBuffer)
+          console.log(`売上提出一覧Excelを保存しました: ${savedXlsx}`)
+        } catch (xlsxError) {
+          const msg = xlsxError instanceof Error ? xlsxError.message : String(xlsxError)
+          csvSaveError = csvSaveError ? `${csvSaveError} / 売上Excel: ${msg}` : `売上Excel: ${msg}`
+          console.error("売上提出一覧Excel保存エラー:", xlsxError)
+        }
       }
     } catch (csvError) {
       const msg = csvError instanceof Error ? csvError.message : String(csvError)

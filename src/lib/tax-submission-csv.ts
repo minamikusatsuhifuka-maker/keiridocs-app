@@ -4,6 +4,7 @@
 import { listFilesRecursive } from "@/lib/dropbox"
 import type { createClient } from "@/lib/supabase/server"
 import { SALES_SUBFOLDER, LEGACY_SALES_SUBFOLDER } from "@/lib/tax-folder-structure"
+import { calcSubsidy, subsidyRate } from "@/lib/subsidy"
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -137,10 +138,10 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
 
   // CSVファイル自身（提出書類一覧・売上提出一覧・スタッフ立替明細）・月計表CSVは除外
   filesInTaxFolder = filesInTaxFolder.filter((f) =>
-    !/^提出書類一覧_.*\.csv$/.test(f.name) &&
-    !/^売上提出一覧_.*\.csv$/.test(f.name) &&
-    !/^月計表_.*\.csv$/.test(f.name) &&
-    !/^スタッフ立替明細_.*\.csv$/.test(f.name)
+    !/^提出書類一覧_.*\.(csv|xlsx)$/.test(f.name) &&
+    !/^売上提出一覧_.*\.(csv|xlsx)$/.test(f.name) &&
+    !/^月計表_.*\.(csv|xlsx)$/.test(f.name) &&
+    !/^スタッフ立替明細_.*\.(csv|xlsx)$/.test(f.name)
   )
 
   // 新旧フォルダ構造の重複除去（現行のサブフォルダ構造を正としてカウント）
@@ -176,6 +177,12 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     account_title: string | null
     // 月割り判定に使った基準日（例: "2026-06-15（発行日）"）
     base_date: string
+    // スタッフ領収書専用: 支払先（店名）・目的用途・支給割合・支給額
+    // （支給額の計算は会計士向けスタッフ立替明細CSVと同一の calcSubsidy を使用）
+    store_name: string
+    expense_detail: string
+    subsidy_label: string
+    subsidy_amount: number | null
     // 売上記録専用: 振込元・振込日・振込金額
     transfer_from: string | null
     transfer_date: string | null
@@ -223,6 +230,10 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       tax_category: d.tax_category ?? null,
       account_title: d.account_title ?? null,
       base_date: formatBaseDate(d.issue_date, d.due_date, d.created_at),
+      store_name: "",
+      expense_detail: "",
+      subsidy_label: "",
+      subsidy_amount: null,
       transfer_from: transferFrom,
       transfer_date: transferDate,
       transfer_total: transferTotal,
@@ -231,21 +242,59 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
 
   // スタッフ立替領収書（LINE申請等）は documents ではなく staff_receipts に登録されるため、
   // documents で一致しないファイルは staff_receipts のファイル名でも照合する。
-  // 表示は 種別「スタッフ領収書」・取引先=スタッフ名・発行日=支払年月日・金額=立替額。
+  // 表示は 種別「スタッフ領収書」・取引先=スタッフ名・支払先=店名・発行日=支払年月日・金額=立替額。
+  // 支給割合/支給額は精算確定行（petty_cash_transactions）の subsidy_category / amount から
+  // calcSubsidy で算出し、会計士向けスタッフ立替明細CSVと必ず一致させる。
   const staffReceiptMap = new Map<string, DocMeta>()
   try {
-    const [{ data: staffReceipts }, { data: staffMembers }] = await Promise.all([
+    const [{ data: staffReceipts }, { data: staffMembers }, { data: staffTxs }] = await Promise.all([
       supabase
         .from("staff_receipts")
-        .select("file_name, date, amount, tax_category, account_title, staff_member_id, created_at"),
+        .select("id, file_name, dropbox_path, date, amount, store_name, tax_category, account_title, staff_member_id, created_at"),
       supabase.from("staff_members").select("id, name"),
+      supabase
+        .from("petty_cash_transactions")
+        .select("id, staff_receipt_id, receipt_urls, amount, expense_detail, subsidy_category")
+        .eq("category", "staff_refund"),
     ])
     const staffNameMap = new Map<string, string>()
     for (const s of staffMembers ?? []) {
       if (typeof s.id === "string" && typeof s.name === "string") staffNameMap.set(s.id, s.name)
     }
+
+    // 精算行を staff_receipt_id / receipt_urls（dropbox_path）の両方で引けるようにする
+    type StaffTx = {
+      staff_receipt_id: string | null
+      receipt_urls: unknown
+      amount: number | null
+      expense_detail: string | null
+      subsidy_category: string | null
+    }
+    const txByReceiptId = new Map<string, StaffTx>()
+    const txByUrl = new Map<string, StaffTx>()
+    for (const tx of (staffTxs ?? []) as StaffTx[]) {
+      if (tx.staff_receipt_id && !txByReceiptId.has(tx.staff_receipt_id)) {
+        txByReceiptId.set(tx.staff_receipt_id, tx)
+      }
+      const urls = Array.isArray(tx.receipt_urls) ? tx.receipt_urls : []
+      for (const u of urls) {
+        if (typeof u === "string" && u && !txByUrl.has(u)) txByUrl.set(u, tx)
+      }
+    }
+
     for (const r of staffReceipts ?? []) {
       if (typeof r.file_name !== "string" || !r.file_name || staffReceiptMap.has(r.file_name)) continue
+
+      const tx =
+        (typeof r.id === "string" ? txByReceiptId.get(r.id) : undefined) ??
+        (typeof r.dropbox_path === "string" && r.dropbox_path ? txByUrl.get(r.dropbox_path) : undefined)
+
+      // 支給額の基礎は精算行の金額を優先（立替明細CSVと同一）。未精算は領収書の金額で全額扱い
+      const subsidyBase =
+        typeof tx?.amount === "number" ? tx.amount
+        : typeof r.amount === "number" ? r.amount : null
+      const category = tx?.subsidy_category ?? null
+
       staffReceiptMap.set(r.file_name, {
         vendor_name: staffNameMap.get(r.staff_member_id ?? "") ?? null,
         amount: typeof r.amount === "number" ? r.amount : null,
@@ -255,6 +304,10 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
         account_title: r.account_title ?? null,
         // スタッフ領収書の月割りは提出日（アップロード日）の20日締め
         base_date: r.created_at ? `${r.created_at.slice(0, 10)}（提出日）` : "",
+        store_name: typeof r.store_name === "string" ? r.store_name : "",
+        expense_detail: tx?.expense_detail ?? "",
+        subsidy_label: subsidyBase !== null ? (subsidyRate(category) === 0.5 ? "半額" : "全額") : "",
+        subsidy_amount: subsidyBase !== null ? calcSubsidy(subsidyBase, category) : null,
         transfer_from: null,
         transfer_date: null,
         transfer_total: null,
@@ -276,6 +329,10 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       amount: meta?.amount ?? null,
       date: meta?.issue_date ?? "",
       baseDate: meta?.base_date ?? "",
+      storeName: meta?.store_name ?? "",
+      expenseDetail: meta?.expense_detail ?? "",
+      subsidyLabel: meta?.subsidy_label ?? "",
+      subsidyAmount: meta?.subsidy_amount ?? null,
       taxCategory: meta?.tax_category ?? "",
       accountTitle: meta?.account_title ?? "",
       path: file.path_display,
@@ -293,12 +350,14 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   const countedRows = allRows.filter((r) => !r.needsReview)
 
   // ====== サマリーセクション（要確認ファイルは集計に含めない） ======
-  const typeMap = new Map<string, { count: number; total: number }>()
+  // スタッフ領収書は立替額合計に加えて支給額合計（給与で実際に支給する額）も併記する
+  const typeMap = new Map<string, { count: number; total: number; subsidyTotal: number }>()
   for (const row of countedRows) {
-    const existing = typeMap.get(row.type) ?? { count: 0, total: 0 }
+    const existing = typeMap.get(row.type) ?? { count: 0, total: 0, subsidyTotal: 0 }
     typeMap.set(row.type, {
       count: existing.count + 1,
       total: existing.total + (row.amount ?? 0),
+      subsidyTotal: existing.subsidyTotal + (row.subsidyAmount ?? 0),
     })
   }
 
@@ -312,11 +371,11 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   const summaryLines: string[][] = [
     [summaryTitle, "", "", ""],
     ["種別", "件数", "合計金額", ""],
-    ...Array.from(typeMap.entries()).map(([type, { count, total }]) => [
+    ...Array.from(typeMap.entries()).map(([type, { count, total, subsidyTotal }]) => [
       type,
       `${count}件`,
       formatAmount(total),
-      "",
+      type === "スタッフ領収書" ? `支給額合計 ${formatAmount(subsidyTotal)}` : "",
     ]),
     ...(needsReviewRows.length > 0
       ? [["要確認（DB未登録・内容不明）", `${needsReviewRows.length}件`, "", "集計対象外"]]
@@ -329,8 +388,10 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   ]
 
   // ====== 詳細セクション ======
+  // 支払先（店名）・目的用途・支給割合・支給額はスタッフ領収書行のみ値が入る（通常書類は空欄）
   const detailHeaders = [
-    "No", "ファイル名", "種別", "取引先 / 振込元", "金額 / 振込金額",
+    "No", "ファイル名", "種別", "取引先 / 振込元", "支払先（店名）", "目的・用途",
+    "金額 / 振込金額", "支給割合", "支給額",
     "発行日 / 振込日", "基準日（月割り判定）", "税区分", "勘定科目", "コピー先パス", "ステータス",
   ]
 
@@ -341,9 +402,13 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       r.fileName,
       r.type,
       r.isSales && r.transferFrom ? r.transferFrom : r.vendor,
+      r.storeName,
+      r.expenseDetail,
       r.isSales && r.transferTotal !== null
         ? formatAmount(r.transferTotal)
         : r.amount !== null ? formatAmount(r.amount) : "",
+      r.subsidyLabel,
+      r.subsidyAmount !== null ? formatAmount(r.subsidyAmount) : "",
       r.isSales && r.transferDate ? r.transferDate : r.date,
       r.baseDate,
       r.taxCategory,
@@ -353,10 +418,13 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     ],
   }))
 
-  // 合計行（要確認ファイルの金額は含まない）
+  // 合計行（要確認ファイルの金額は含まない。支給額はスタッフ領収書行の合計）
+  const staffSubsidyTotal = countedRows.reduce((sum, r) => sum + (r.subsidyAmount ?? 0), 0)
   const totalRow = [
-    "合計", "", "", "",
+    "合計", "", "", "", "", "",
     formatAmount(grandTotal),
+    "",
+    staffSubsidyTotal > 0 ? formatAmount(staffSubsidyTotal) : "",
     "", "", "", "", `${grandCount}件`, "",
   ]
 
