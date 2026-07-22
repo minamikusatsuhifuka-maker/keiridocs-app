@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getCurrentUserRole } from "@/lib/auth"
-import { getDocumentPath, moveFile } from "@/lib/dropbox"
 import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
 import type { Database } from "@/types/database"
 
@@ -13,10 +12,11 @@ const ALLOWED_PAYMENT_STATUS = ["未対応", "支払い済み"] as const
 /**
  * 支払状態更新 API
  * PATCH /api/documents/[id]/payment-status   body: { payment_status: "未対応" | "支払い済み" }
- * - 支払管理ページの「支払い完了」「未払いに戻す」から使用
+ * - 支払管理ページ・期限アラートの「支払い完了」「未払いに戻す」から使用
  * - 未払い⇄支払済みの切り替え（取り消しも可能）
- * - 書類ステータスも連動: 支払い完了で 要振込/未処理 → 処理済み、
+ * - 要振込マークも連動: 支払い完了で 要振込 → 処理済み、
  *   未払いに戻すと（要振込判定に該当する場合）処理済み → 要振込 に自動遷移する
+ * - マークはDBのみで管理し、Dropboxのファイル移動は行わない
  */
 export async function PATCH(
   request: NextRequest,
@@ -81,26 +81,9 @@ export async function PATCH(
     }
   }
 
-  // ステータス変更に伴うDropbox移動（既存PATCHと同じロジック・best effort）
-  let movedDropboxPath: string | null = null
-  if (existing && nextDocStatus && existing.dropbox_path) {
-    try {
-      const fileName = existing.dropbox_path.split("/").pop() ?? ""
-      const dateStr = existing.issue_date ?? existing.created_at
-      const newPath = getDocumentPath(existing.type, fileName, new Date(dateStr), nextDocStatus)
-      if (newPath !== existing.dropbox_path) {
-        movedDropboxPath = await moveFile(existing.dropbox_path, newPath)
-      }
-    } catch (moveError) {
-      console.error("Dropboxファイル移動エラー:", moveError)
-      // 移動失敗でもDB更新は続行（dropbox_pathは実際の場所のまま維持）
-    }
-  }
-
-  // 更新（adminは全件、staffは自分の書類のみ）
+  // 更新（adminは全件、staffは自分の書類のみ）。ファイル移動はしない（マークはDBのみ）
   const updatePayload: Record<string, string> = { payment_status: newStatus }
   if (nextDocStatus) updatePayload.status = nextDocStatus
-  if (movedDropboxPath) updatePayload.dropbox_path = movedDropboxPath
 
   let updateQuery = supabase
     .from("documents")

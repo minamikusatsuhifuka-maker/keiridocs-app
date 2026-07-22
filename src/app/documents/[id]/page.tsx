@@ -26,13 +26,10 @@ import {
 import { StatusBadge } from "@/components/documents/status-badge"
 import { ArrowLeft, Loader2, Pencil, Trash2, Save, X, RefreshCw, AlertTriangle, Upload } from "lucide-react"
 import type { Database } from "@/types/database"
-import type { DocumentStatus } from "@/types"
 import { TAX_CATEGORIES, ACCOUNT_TITLES } from "@/lib/gemini"
 import { toast } from "sonner"
 
 type Document = Database["public"]["Tables"]["documents"]["Row"]
-
-const statuses: DocumentStatus[] = ["未処理", "処理済み", "アーカイブ"]
 
 const typeOptions = ["請求書", "領収書", "契約書", "売上記録"]
 
@@ -84,7 +81,6 @@ export default function DocumentDetailPage() {
   const [editIssueDate, setEditIssueDate] = useState("")
   const [editDueDate, setEditDueDate] = useState("")
   const [editDescription, setEditDescription] = useState("")
-  const [editStatus, setEditStatus] = useState<DocumentStatus>("未処理")
   const [editTaxCategory, setEditTaxCategory] = useState("")
   const [editAccountTitle, setEditAccountTitle] = useState("")
 
@@ -178,7 +174,6 @@ export default function DocumentDetailPage() {
     setEditIssueDate(doc.issue_date ?? "")
     setEditDueDate(doc.due_date ?? "")
     setEditDescription(doc.description ?? "")
-    setEditStatus(doc.status as DocumentStatus)
     setEditTaxCategory(doc.tax_category ?? "")
     setEditAccountTitle(doc.account_title ?? "")
     setIsEditing(true)
@@ -196,7 +191,6 @@ export default function DocumentDetailPage() {
         issue_date: editIssueDate || null,
         due_date: editDueDate || null,
         description: editDescription || null,
-        status: editStatus,
         tax_category: editTaxCategory,
         account_title: editAccountTitle,
       }
@@ -440,7 +434,8 @@ export default function DocumentDetailPage() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             {doc.type}
-            <StatusBadge status={doc.status as DocumentStatus} />
+            {/* 銀行振込が必要な請求書だけにマークを表示（ステータス管理は廃止） */}
+            {doc.status === "要振込" && <StatusBadge status="要振込" />}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -466,19 +461,6 @@ export default function DocumentDetailPage() {
               <div className="space-y-2">
                 <Label>金額</Label>
                 <Input type="number" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} />
-              </div>
-              <div className="space-y-2">
-                <Label>ステータス</Label>
-                <Select value={editStatus} onValueChange={(v) => setEditStatus(v as DocumentStatus)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {statuses.map((s) => (
-                      <SelectItem key={s} value={s}>{s}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
               </div>
               <div className="space-y-2">
                 <Label>発行日</Label>

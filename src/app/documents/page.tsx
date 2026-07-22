@@ -24,7 +24,6 @@ import { DocumentTable } from "@/components/documents/document-table"
 import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput, FolderPlus, Wallet, Upload, History, FileSpreadsheet } from "lucide-react"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
-import type { DocumentStatus } from "@/types"
 
 type Document = Database["public"]["Tables"]["documents"]["Row"] & {
   registrant?: { id: string; name: string } | null
@@ -69,13 +68,6 @@ const DEFAULT_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "売上記録", label: "売上記録" },
 ]
 
-const statusOptions: { value: string; label: string }[] = [
-  { value: "all", label: "すべてのステータス" },
-  { value: "要振込", label: "要振込" },
-  { value: "未処理", label: "未処理" },
-  { value: "処理済み", label: "処理済み" },
-  { value: "アーカイブ", label: "アーカイブ" },
-]
 
 export default function DocumentsPage() {
   const [documents, setDocuments] = useState<Document[]>([])
@@ -122,7 +114,6 @@ export default function DocumentsPage() {
   // フィルタ
   const [search, setSearch] = useState("")
   const [typeFilter, setTypeFilter] = useState("all")
-  const [statusFilter, setStatusFilter] = useState("all")
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo] = useState("")
   // 要振込（未払い）フィルタ
@@ -162,7 +153,6 @@ export default function DocumentsPage() {
         params.set("exclude_type", "売上記録")
       }
 
-      if (statusFilter !== "all") params.set("status", statusFilter)
       if (dateFrom) params.set("date_from", dateFrom)
       if (dateTo) params.set("date_to", dateTo)
 
@@ -212,7 +202,7 @@ export default function DocumentsPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [search, typeFilter, statusFilter, dateFrom, dateTo, sortField, sortDirection, page, activeTab, transferUnpaidOnly])
+  }, [search, typeFilter, dateFrom, dateTo, sortField, sortDirection, page, activeTab, transferUnpaidOnly])
 
   useEffect(() => {
     fetchDocuments()
@@ -229,13 +219,6 @@ export default function DocumentsPage() {
     setPage(0)
   }
 
-  // ステータス変更をローカルに反映
-  function handleStatusChange(id: string, newStatus: DocumentStatus) {
-    setDocuments((prev) =>
-      prev.map((doc) => (doc.id === id ? { ...doc, status: newStatus } : doc))
-    )
-  }
-
   // 検索実行
   function handleSearchSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -247,45 +230,16 @@ export default function DocumentsPage() {
   function handleReset() {
     setSearch("")
     setTypeFilter("all")
-    setStatusFilter("all")
     setDateFrom("")
     setDateTo("")
     setTransferUnpaidOnly(false)
     setPage(0)
   }
 
-  // 一覧チェックボックス選択（一括削除・一括ステータス変更で共用）
+  // 一覧チェックボックス選択（一括削除・一括再解析で共用）
   const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set())
   const [isBulkDeleting, setIsBulkDeleting] = useState(false)
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false)
-
-  // 一括ステータス変更
-  const [isBulkStatusUpdating, setIsBulkStatusUpdating] = useState(false)
-
-  // 選択中の書類のステータスを一括変更（未処理/処理済み/アーカイブ）
-  async function handleBulkStatusChange(newStatus: DocumentStatus) {
-    if (selectedDocIds.size === 0) return
-    setIsBulkStatusUpdating(true)
-    try {
-      const ids = Array.from(selectedDocIds)
-      const res = await fetch("/api/documents", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids, status: newStatus }),
-      })
-      const json = await res.json().catch(() => ({})) as { updated?: number; error?: string }
-      if (!res.ok) {
-        throw new Error(json.error || "ステータスの一括変更に失敗しました")
-      }
-      toast.success(`${json.updated ?? ids.length}件を「${newStatus}」にしました`)
-      setSelectedDocIds(new Set())
-      fetchDocuments()
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "ステータスの一括変更に失敗しました")
-    } finally {
-      setIsBulkStatusUpdating(false)
-    }
-  }
 
   // 一括再解析（選択した書類をDropboxから取得し直してAI再解析）
   const [showReanalyzeConfirm, setShowReanalyzeConfirm] = useState(false)
@@ -907,7 +861,6 @@ export default function DocumentsPage() {
         params.set("exclude_type", "売上記録")
       }
 
-      if (statusFilter !== "all") params.set("status", statusFilter)
       if (dateFrom) params.set("date_from", dateFrom)
       if (dateTo) params.set("date_to", dateTo)
 
@@ -948,7 +901,7 @@ export default function DocumentsPage() {
       }
 
       // CSVヘッダー（摘要の隣に支払い内容、末尾にDropboxパス）
-      const headers = ["種別", "取引先名", "金額", "発行日", "支払期日", "ステータス", "摘要", "支払い内容", "入力経路", "登録日時", "Dropboxパス"]
+      const headers = ["種別", "取引先名", "金額", "発行日", "支払期日", "要振込", "摘要", "支払い内容", "入力経路", "登録日時", "Dropboxパス"]
 
       // CSV行を生成
       const rows = allDocs.map((doc) => [
@@ -957,7 +910,8 @@ export default function DocumentsPage() {
         doc.amount != null ? String(doc.amount) : "",
         doc.issue_date ?? "",
         doc.due_date ?? "",
-        doc.status,
+        // ステータス管理の廃止に伴い、要振込マークの有無のみ出力
+        doc.status === "要振込" ? "要振込" : "",
         doc.description ?? "",
         // 支払い内容（AI要約・全文）。生成できた分を優先し、無ければ既存値、判定不能は空欄
         purposeMap.get(doc.id) ?? doc.payment_purpose ?? "",
@@ -1009,7 +963,7 @@ export default function DocumentsPage() {
     }
   }
 
-  const hasFilters = search || typeFilter !== "all" || statusFilter !== "all" || dateFrom || dateTo || transferUnpaidOnly
+  const hasFilters = search || typeFilter !== "all" || dateFrom || dateTo || transferUnpaidOnly
 
   // タブ切り替えハンドラ（ページネーション・選択もリセット）
   function handleTabChange(tab: "expense" | "sales") {
@@ -1118,19 +1072,6 @@ export default function DocumentsPage() {
             </SelectContent>
           </Select>
 
-          <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(0) }}>
-            <SelectTrigger className="w-[180px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {statusOptions.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
           <div className="flex items-center gap-1">
             <Input
               type="date"
@@ -1232,35 +1173,10 @@ export default function DocumentsPage() {
             variant="ghost"
             size="sm"
             onClick={() => setSelectedDocIds(new Set())}
-            disabled={isBulkStatusUpdating || isBulkDeleting || isReanalyzing}
+            disabled={isBulkDeleting || isReanalyzing}
           >
             選択を解除
           </Button>
-
-          <span className="text-muted-foreground/40 select-none">|</span>
-
-          {/* ステータス一括変更（ドロップダウン）— 要振込/処理済み/アーカイブ */}
-          <Select
-            value=""
-            onValueChange={(v) => handleBulkStatusChange(v as DocumentStatus)}
-            disabled={isBulkStatusUpdating || isBulkDeleting || isReanalyzing}
-          >
-            <SelectTrigger className="h-8 w-[180px] btn-float bg-background" aria-label="ステータス一括変更">
-              {isBulkStatusUpdating ? (
-                <span className="flex items-center gap-1.5 text-sm">
-                  <Loader2 className="size-3.5 animate-spin" />
-                  ステータス変更中…
-                </span>
-              ) : (
-                <SelectValue placeholder="📋 ステータス変更" />
-              )}
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="要振込">要振込にする</SelectItem>
-              <SelectItem value="処理済み">処理済みにする</SelectItem>
-              <SelectItem value="アーカイブ">アーカイブにする</SelectItem>
-            </SelectContent>
-          </Select>
 
           <span className="text-muted-foreground/40 select-none">|</span>
 
@@ -1270,7 +1186,7 @@ export default function DocumentsPage() {
               variant="outline"
               size="sm"
               className="btn-float"
-              disabled={isBulkStatusUpdating || isBulkDeleting || isReanalyzing}
+              disabled={isBulkDeleting || isReanalyzing}
               onClick={() => setShowReanalyzeConfirm(true)}
             >
               {isReanalyzing ? (
@@ -1295,7 +1211,7 @@ export default function DocumentsPage() {
               variant="destructive"
               size="sm"
               onClick={() => setShowBulkDeleteConfirm(true)}
-              disabled={isBulkStatusUpdating || isBulkDeleting || isReanalyzing}
+              disabled={isBulkDeleting || isReanalyzing}
               className="btn-float-danger"
             >
               <Trash2 className="mr-1.5 size-3.5" />
@@ -1317,7 +1233,6 @@ export default function DocumentsPage() {
           sortField={sortField}
           sortDirection={sortDirection}
           onSort={handleSort}
-          onStatusChange={handleStatusChange}
           selectedIds={selectedDocIds}
           onSelectionChange={setSelectedDocIds}
           tab={activeTab}

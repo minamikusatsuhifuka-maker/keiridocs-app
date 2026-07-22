@@ -10,12 +10,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -27,7 +21,6 @@ import {
   ArrowUpDown,
   Calendar,
   Check,
-  ChevronDown,
   Eye,
   GripVertical,
   Loader2,
@@ -51,7 +44,6 @@ import {
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
 import type { Database } from "@/types/database"
-import type { DocumentStatus } from "@/types"
 import { toast } from "sonner"
 
 type Document = Database["public"]["Tables"]["documents"]["Row"] & {
@@ -72,6 +64,7 @@ type SortField =
 type SortDirection = "asc" | "desc"
 
 // 並べ替え可能なカラムのID（先頭のチェックボックスと右端の「操作」は固定＝対象外）
+// ※ ステータス管理の廃止に伴い status 列は削除（保存済み列順に含まれていても正規化で除外される）
 type ColumnId =
   | "type"
   | "vendor_name"
@@ -83,7 +76,6 @@ type ColumnId =
   | "tax_category"
   | "account_title"
   | "payment_purpose"
-  | "status"
 
 // 既定の列順（正規化・「既定に戻す」の基準）
 const DEFAULT_COLUMN_ORDER: ColumnId[] = [
@@ -97,7 +89,6 @@ const DEFAULT_COLUMN_ORDER: ColumnId[] = [
   "tax_category",
   "account_title",
   "payment_purpose",
-  "status",
 ]
 
 // カラム定義（ヘッダーラベル・ソート対象・セル描画）
@@ -115,14 +106,11 @@ interface DocumentTableProps {
   sortField: SortField
   sortDirection: SortDirection
   onSort: (field: SortField) => void
-  onStatusChange: (id: string, newStatus: DocumentStatus) => void
   selectedIds?: Set<string>
   onSelectionChange?: (ids: Set<string>) => void
   /** 列順をタブごとに保存するためのキー（経費書類 / 売上 で別々に保持） */
   tab?: string
 }
-
-const statuses: DocumentStatus[] = ["要振込", "処理済み", "アーカイブ"]
 
 /** localStorage の保存キー（ブラウザ単位・タブごと） */
 function columnOrderStorageKey(tab: string): string {
@@ -310,12 +298,10 @@ export function DocumentTable({
   sortField,
   sortDirection,
   onSort,
-  onStatusChange,
   selectedIds,
   onSelectionChange,
   tab = "default",
 }: DocumentTableProps) {
-  const [updatingId, setUpdatingId] = useState<string | null>(null)
   const [calendarLoadingId, setCalendarLoadingId] = useState<string | null>(null)
   // カレンダー登録済みIDをローカル管理（DBの calendar_event_id 更新を即時反映）
   const [registeredEventIds, setRegisteredEventIds] = useState<Record<string, string>>({})
@@ -444,30 +430,6 @@ export function DocumentTable({
     onSelectionChange(next)
   }
 
-  // ステータス変更ハンドラ
-  async function handleStatusChange(doc: Document, newStatus: DocumentStatus) {
-    if (doc.status === newStatus) return
-    setUpdatingId(doc.id)
-    try {
-      const res = await fetch(`/api/documents?id=${doc.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
-      })
-      if (!res.ok) {
-        const data = await res.json() as { error?: string }
-        throw new Error(data.error ?? "ステータス変更に失敗しました")
-      }
-      onStatusChange(doc.id, newStatus)
-      toast.success(`ステータスを「${newStatus}」に変更しました`)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "ステータス変更に失敗しました"
-      toast.error(message)
-    } finally {
-      setUpdatingId(null)
-    }
-  }
-
   // カラム定義マップ（ヘッダーラベル・ソート対象・セル描画）
   // ※ ハンドラ／状態をクロージャで参照するためコンポーネント内で定義
   const columnMap: Record<ColumnId, ColumnDef> = {
@@ -481,8 +443,14 @@ export function DocumentTable({
       id: "vendor_name",
       label: "取引先",
       sortField: "vendor_name",
-      cellClassName: "max-w-[200px] truncate",
-      renderCell: (doc) => doc.vendor_name,
+      cellClassName: "max-w-[240px]",
+      // 銀行振込が必要な請求書（要振込）だけにマークを付ける（それ以外は表示なし）
+      renderCell: (doc) => (
+        <span className="flex items-center gap-1.5">
+          <span className="truncate">{doc.vendor_name}</span>
+          {doc.status === "要振込" && <StatusBadge status="要振込" className="shrink-0" />}
+        </span>
+      ),
     },
     amount: {
       id: "amount",
@@ -547,36 +515,6 @@ export function DocumentTable({
       label: "支払い内容",
       cellClassName: "max-w-[220px] align-top",
       renderCell: (doc) => <PaymentPurposeCell value={doc.payment_purpose} />,
-    },
-    status: {
-      id: "status",
-      label: "ステータス",
-      sortField: "status",
-      renderCell: (doc) => (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              className="flex items-center gap-1 focus:outline-none"
-              disabled={updatingId === doc.id}
-            >
-              <StatusBadge status={doc.status as DocumentStatus} />
-              <ChevronDown className="size-3 text-muted-foreground" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start">
-            {statuses.map((s) => (
-              <DropdownMenuItem
-                key={s}
-                onClick={() => handleStatusChange(doc, s)}
-                disabled={doc.status === s}
-              >
-                <StatusBadge status={s} />
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      ),
     },
   }
 

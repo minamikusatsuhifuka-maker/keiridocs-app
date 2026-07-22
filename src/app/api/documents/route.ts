@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { getDocumentPath, moveFile, deleteFile } from "@/lib/dropbox"
+import { deleteFile } from "@/lib/dropbox"
 import { getCurrentUserRole } from "@/lib/auth"
 import { normalizePaymentMethod, normalizeBankInfo } from "@/lib/gemini"
 import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
@@ -235,29 +235,16 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ステータス自動判定: 手動振込が必要な請求書のみ「要振込」、それ以外は「処理済み」
+    // ステータス自動判定: 手動振込が必要な請求書のみ「要振込」マーク、それ以外は「処理済み」。
+    // ファイルはアップロード時点で処理済みフォルダに保存済みのため移動しない
+    // （要振込マークはDBのみで管理。DBのパスは常に実際の保存場所を指す）。
     const masterMethod = await fetchVendorMasterMethod(supabase, vendor_name)
     const autoStatus = resolveAutoDocumentStatus({
       type,
       paymentMethod: paymentMethod,
       masterMethod,
     })
-
-    // 自動で処理済みになる書類は、アップロード先が未処理フォルダなら処理済みフォルダへ移動する
-    // （要振込は物理フォルダとしては未処理を使うため移動不要）
-    let finalDropboxPath = typeof dropbox_path === "string" ? dropbox_path : null
-    if (autoStatus === "処理済み" && finalDropboxPath && finalDropboxPath.includes("/未処理/")) {
-      try {
-        const movedPath = await moveFile(
-          finalDropboxPath,
-          finalDropboxPath.replace("/未処理/", "/処理済み/")
-        )
-        finalDropboxPath = movedPath
-      } catch (moveError) {
-        // 移動失敗時は元のパスのまま登録する（DBのパスは常に実際の保存場所を指す）
-        console.error("処理済みフォルダへの移動エラー:", moveError)
-      }
-    }
+    const finalDropboxPath = typeof dropbox_path === "string" ? dropbox_path : null
 
     const { data, error } = await supabase
       .from("documents")
@@ -400,26 +387,9 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json({ error: "ステータスの一括更新に失敗しました" }, { status: 500 })
       }
 
-      // ステータスが変わった書類はDropboxフォルダも移動（単一更新と同じロジック・best effort）
-      let movedCount = 0
-      for (const row of rows) {
-        if (row.status === newStatus || !row.dropbox_path) continue
-        try {
-          const fileName = row.dropbox_path.split("/").pop() ?? ""
-          const dateStr = row.issue_date ?? row.created_at
-          const newPath = getDocumentPath(row.type, fileName, new Date(dateStr), newStatus)
-          if (newPath !== row.dropbox_path) {
-            const movedPath = await moveFile(row.dropbox_path, newPath)
-            await supabase.from("documents").update({ dropbox_path: movedPath }).eq("id", row.id)
-            movedCount++
-          }
-        } catch (moveError) {
-          // ファイル移動が失敗してもDB更新は維持する
-          console.error(`一括ステータス変更: Dropbox移動失敗 (id=${row.id}):`, moveError)
-        }
-      }
-
-      return NextResponse.json({ updated: scopedIds.length, moved: movedCount })
+      // ステータス管理の廃止に伴い、ステータス変更でのDropboxファイル移動は行わない
+      // （要振込マークはDBのみで管理。dropbox_path は常に実際の保存場所を指す）
+      return NextResponse.json({ updated: scopedIds.length, moved: 0 })
     } catch (error) {
       console.error("一括ステータス変更エラー:", error)
       return NextResponse.json({ error: "ステータスの一括更新に失敗しました" }, { status: 500 })
@@ -450,8 +420,6 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: "書類が見つかりません" }, { status: 404 })
     }
 
-    const existing = existingData as DocumentRow
-
     // 更新可能なフィールドを構築
     const update: DocumentUpdate = {}
     if (typeof body.type === "string") update.type = body.type
@@ -470,25 +438,8 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: "更新するフィールドがありません" }, { status: 400 })
     }
 
-    // ステータス変更時にDropboxファイルを移動
-    const newStatus = update.status
-    if (newStatus && newStatus !== existing.status && existing.dropbox_path) {
-      try {
-        const newType = update.type ?? existing.type
-        const fileName = existing.dropbox_path.split("/").pop() ?? ""
-        const dateStr = existing.issue_date ?? existing.created_at
-        const date = new Date(dateStr)
-        const newPath = getDocumentPath(newType, fileName, date, newStatus)
-
-        if (newPath !== existing.dropbox_path) {
-          const movedPath = await moveFile(existing.dropbox_path, newPath)
-          update.dropbox_path = movedPath
-        }
-      } catch (moveError) {
-        console.error("Dropboxファイル移動エラー:", moveError)
-        // ファイル移動が失敗してもDB更新は続行する
-      }
-    }
+    // ステータス管理の廃止に伴い、ステータス変更でのDropboxファイル移動は行わない
+    // （dropbox_path は常に実際の保存場所を指す）
 
     let updateQuery = supabase
       .from("documents")

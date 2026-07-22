@@ -123,9 +123,9 @@ export function getDocumentPath(
   const year = `${date.getFullYear()}年`
   const month = `${String(date.getMonth() + 1).padStart(2, "0")}月`
 
-  // 「要振込」は物理フォルダとしては従来の「未処理」を使う
-  // （フォルダ構造は 未処理/処理済み/アーカイブ のまま増やさない）
-  const statusFolder = status === "要振込" ? "未処理" : status
+  // ステータス管理の廃止に伴い、新規保存は常に「処理済み」フォルダを使う
+  // （未処理フォルダを新規には使わない。要振込マークはDBのみで管理しファイルは動かさない）
+  const statusFolder = status === "要振込" || status === "未処理" ? "処理済み" : status
 
   return `${base}/${type}/${year}/${month}/${statusFolder}/${fileName}`
 }

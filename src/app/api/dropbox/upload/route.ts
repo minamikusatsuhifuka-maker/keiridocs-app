@@ -71,7 +71,10 @@ export async function POST(request: NextRequest) {
 
     // 日付パース（未指定なら今日）
     const dateObj = typeof date === "string" ? new Date(date) : new Date()
-    const statusStr = typeof status === "string" ? status : "未処理"
+    // ステータス管理の廃止に伴い、クライアント指定にかかわらず常に処理済みフォルダへ保存する
+    // （body.status は後方互換のため受け取るだけで使用しない）
+    void status
+    const statusStr = "処理済み"
 
     // 一意なファイル名を生成
     const vendorStr = typeof vendorName === "string" ? vendorName : undefined
