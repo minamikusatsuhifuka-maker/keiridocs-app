@@ -3,13 +3,14 @@ import { createClient } from "@/lib/supabase/server"
 import { getDocumentPath, moveFile, deleteFile } from "@/lib/dropbox"
 import { getCurrentUserRole } from "@/lib/auth"
 import { normalizePaymentMethod, normalizeBankInfo } from "@/lib/gemini"
+import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
 import type { Database, Json } from "@/types/database"
 
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"]
 type DocumentUpdate = Database["public"]["Tables"]["documents"]["Update"]
 
 /** 一括ステータス変更で許可する値（単一更新のドロップダウンと同一） */
-const BULK_ALLOWED_STATUSES = ["未処理", "処理済み", "アーカイブ"] as const
+const BULK_ALLOWED_STATUSES = ["要振込", "未処理", "処理済み", "アーカイブ"] as const
 
 // 書類一覧取得 / 単一取得
 export async function GET(request: NextRequest) {
@@ -232,6 +233,30 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // ステータス自動判定: 手動振込が必要な請求書のみ「要振込」、それ以外は「処理済み」
+    const masterMethod = await fetchVendorMasterMethod(supabase, vendor_name)
+    const autoStatus = resolveAutoDocumentStatus({
+      type,
+      paymentMethod: paymentMethod,
+      masterMethod,
+    })
+
+    // 自動で処理済みになる書類は、アップロード先が未処理フォルダなら処理済みフォルダへ移動する
+    // （要振込は物理フォルダとしては未処理を使うため移動不要）
+    let finalDropboxPath = typeof dropbox_path === "string" ? dropbox_path : null
+    if (autoStatus === "処理済み" && finalDropboxPath && finalDropboxPath.includes("/未処理/")) {
+      try {
+        const movedPath = await moveFile(
+          finalDropboxPath,
+          finalDropboxPath.replace("/未処理/", "/処理済み/")
+        )
+        finalDropboxPath = movedPath
+      } catch (moveError) {
+        // 移動失敗時は元のパスのまま登録する（DBのパスは常に実際の保存場所を指す）
+        console.error("処理済みフォルダへの移動エラー:", moveError)
+      }
+    }
+
     const { data, error } = await supabase
       .from("documents")
       .insert({
@@ -242,8 +267,8 @@ export async function POST(request: NextRequest) {
         due_date: typeof due_date === "string" ? due_date : null,
         description: typeof description === "string" ? description : null,
         input_method,
-        status: "未処理",
-        dropbox_path: typeof dropbox_path === "string" ? dropbox_path : null,
+        status: autoStatus,
+        dropbox_path: finalDropboxPath,
         ocr_raw: (ocr_raw ?? null) as import("@/types/database").Json | null,
         tax_category: typeof tax_category === "string" ? tax_category : "未判定",
         account_title: typeof account_title === "string" ? account_title : "",

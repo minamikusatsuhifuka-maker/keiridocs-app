@@ -61,13 +61,13 @@ export async function POST() {
 
   const results: Record<string, { sent: boolean; count?: number; error?: string }> = {}
 
-  // 1. 支払期限アラート（3日以内の未処理書類）
+  // 1. 支払期限アラート（3日以内の要対応書類＝要振込 + 旧運用の未処理）
   if (flags.due_date_notify) {
     const { data: dueDocs } = await supabase
       .from("documents")
       .select("vendor_name, type, amount, due_date")
       .eq("user_id", user.id)
-      .eq("status", "未処理")
+      .in("status", ["要振込", "未処理"])
       .gte("due_date", today)
       .lte("due_date", threeDaysLater)
       .order("due_date", { ascending: true })
@@ -109,7 +109,7 @@ export async function POST() {
       const docs = monthDocs ?? []
       const totalCount = docs.length
       const totalAmount = docs.reduce((sum, d) => sum + (d.amount ?? 0), 0)
-      const pendingCount = docs.filter((d) => d.status === "未処理").length
+      const pendingCount = docs.filter((d) => d.status === "未処理" || d.status === "要振込").length
       const processedCount = docs.filter((d) => d.status === "処理済み").length
 
       // 種別ごとの集計

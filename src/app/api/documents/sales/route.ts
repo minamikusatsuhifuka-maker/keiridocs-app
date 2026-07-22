@@ -445,7 +445,8 @@ export async function POST(request: NextRequest) {
       due_date: null,
       description: finalDescription || null,
       input_method: "upload",
-      status: "未処理",
+      // 売上記録は要振込の対象外なので自動で処理済みにする
+      status: "処理済み",
       dropbox_path: resultPath,
       ocr_raw: ocrResult as unknown as import("@/types/database").Json,
       tax_category: ocrResult.tax_category || "未判定",

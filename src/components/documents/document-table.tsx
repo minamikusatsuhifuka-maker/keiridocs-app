@@ -111,7 +111,7 @@ interface DocumentTableProps {
   tab?: string
 }
 
-const statuses: DocumentStatus[] = ["未処理", "処理済み", "アーカイブ"]
+const statuses: DocumentStatus[] = ["要振込", "処理済み", "アーカイブ"]
 
 /** localStorage の保存キー（ブラウザ単位・タブごと） */
 function columnOrderStorageKey(tab: string): string {

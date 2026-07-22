@@ -31,10 +31,10 @@ export function StatsCards({
       highlight: false,
     },
     {
-      title: "未処理件数",
+      title: "要振込件数",
       value: `${pendingCount} 件`,
       icon: AlertCircle,
-      description: "処理待ちの書類",
+      description: "手動振込が必要な請求書",
       highlight: pendingCount > 0,
     },
     {

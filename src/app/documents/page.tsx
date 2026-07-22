@@ -71,6 +71,7 @@ const DEFAULT_TYPE_OPTIONS: { value: string; label: string }[] = [
 
 const statusOptions: { value: string; label: string }[] = [
   { value: "all", label: "すべてのステータス" },
+  { value: "要振込", label: "要振込" },
   { value: "未処理", label: "未処理" },
   { value: "処理済み", label: "処理済み" },
   { value: "アーカイブ", label: "アーカイブ" },
@@ -1238,7 +1239,7 @@ export default function DocumentsPage() {
 
           <span className="text-muted-foreground/40 select-none">|</span>
 
-          {/* ステータス一括変更（ドロップダウン）— 仕様: [ステータス変更 ▾(未処理/処理済み/アーカイブ)] */}
+          {/* ステータス一括変更（ドロップダウン）— 要振込/処理済み/アーカイブ */}
           <Select
             value=""
             onValueChange={(v) => handleBulkStatusChange(v as DocumentStatus)}
@@ -1255,7 +1256,7 @@ export default function DocumentsPage() {
               )}
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="未処理">未処理にする</SelectItem>
+              <SelectItem value="要振込">要振込にする</SelectItem>
               <SelectItem value="処理済み">処理済みにする</SelectItem>
               <SelectItem value="アーカイブ">アーカイブにする</SelectItem>
             </SelectContent>
@@ -1557,7 +1558,7 @@ export default function DocumentsPage() {
               税理士フォルダへ一括コピー
             </DialogTitle>
             <DialogDescription>
-              指定した期間（開始年月〜終了年月）の処理済み書類および手動アップロード分を、
+              指定した期間（開始年月〜終了年月）の書類（アーカイブを除く全ステータス）および手動アップロード分を、
               月ごとにDropboxの税理士提出フォルダ（/経理書類/税理士提出/YYYY年MM月/）へ振り分けてコピーします。
               月単位で順に処理するため、期間が広くてもタイムアウトしません。既に存在するファイルはスキップされます。
             </DialogDescription>

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createHash } from "crypto"
 import { uploadFile, getDocumentPath } from "@/lib/dropbox"
+import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
 import { analyzeDocument, analyzeDocumentFromText, applyAutoClassifyRules, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
 import type { OcrResult, AutoClassifyRule } from "@/lib/gemini"
 import mammoth from "mammoth"
@@ -290,7 +291,15 @@ export async function POST(request: NextRequest) {
     const docType = ocrResult.type || "その他"
     const dateObj = ocrResult.issue_date ? new Date(ocrResult.issue_date) : new Date()
     const uniqueFileName = generateUniqueFileName(ocrResult.vendor_name, docType, dateObj, filename)
-    const dropboxPath = getDocumentPath(docType, uniqueFileName, dateObj, "未処理")
+
+    // ステータス自動判定（手動振込が必要な請求書のみ要振込、それ以外は処理済み）
+    const masterMethod = await fetchVendorMasterMethod(supabase, ocrResult.vendor_name)
+    const autoStatus = resolveAutoDocumentStatus({
+      type: docType,
+      paymentMethod: ocrResult.payment_method || "unknown",
+      masterMethod,
+    })
+    const dropboxPath = getDocumentPath(docType, uniqueFileName, dateObj, autoStatus)
 
     const resultPath = await uploadFile(dropboxPath, fileBuffer)
 
@@ -305,7 +314,7 @@ export async function POST(request: NextRequest) {
         due_date: ocrResult.due_date,
         description: ocrResult.description,
         input_method: "upload",
-        status: "未処理",
+        status: autoStatus,
         dropbox_path: resultPath,
         ocr_raw: ocrResult as unknown as import("@/types/database").Json,
         tax_category: ocrResult.tax_category || "未判定",

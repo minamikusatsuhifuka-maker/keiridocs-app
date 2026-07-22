@@ -21,8 +21,8 @@ import {
 import { format, differenceInDays } from "date-fns"
 import { toast } from "sonner"
 
-// カードの表示ステータス（3値）
-type CardStatus = "未処理" | "処理済み" | "支払済み"
+// カードの表示ステータス（3値）。要振込 = 手動での銀行振込が必要（旧・未処理も同扱い）
+type CardStatus = "要振込" | "処理済み" | "支払済み"
 
 interface DueDocument {
   id: string
@@ -41,21 +41,21 @@ interface DueAlertsProps {
 // ドキュメントの status + payment_status から3値のカードステータスを算出
 function toCardStatus(doc: DueDocument): CardStatus {
   if ((doc.payment_status ?? "") === "支払い済み") return "支払済み"
-  if ((doc.status ?? "未処理") === "処理済み") return "処理済み"
-  return "未処理"
+  if ((doc.status ?? "") === "処理済み") return "処理済み"
+  return "要振込"
 }
 
 // カードステータスごとの配色
 function getStyle(cardStatus: CardStatus) {
   switch (cardStatus) {
-    case "未処理":
+    case "要振込":
       return {
         borderColor: "#DC2626",
         bgColor: "rgba(254, 226, 226, 0.7)", // 赤背景
         accentColor: "#DC2626",
         badgeBg: "#DC2626",
         badgeFg: "#FFFFFF",
-        badgeLabel: "⚠️ 未処理",
+        badgeLabel: "⚠️ 要振込",
       }
     case "処理済み":
       return {
@@ -90,8 +90,8 @@ export function DueAlerts({ documents }: DueAlertsProps) {
 
     // 3値を status + payment_status にマッピング
     const body: Record<string, string> =
-      newStatus === "未処理"
-        ? { status: "未処理", payment_status: "未対応" }
+      newStatus === "要振込"
+        ? { status: "要振込", payment_status: "未対応" }
         : newStatus === "処理済み"
         ? { status: "処理済み", payment_status: "未対応" }
         : { status: "処理済み", payment_status: "支払い済み" }
@@ -280,11 +280,11 @@ export function DueAlerts({ documents }: DueAlertsProps) {
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem
-                      onClick={() => handleChangeStatus(doc, "未処理")}
-                      disabled={cardStatus === "未処理"}
+                      onClick={() => handleChangeStatus(doc, "要振込")}
+                      disabled={cardStatus === "要振込"}
                     >
                       <AlertTriangle className="mr-2 size-4 text-red-600" />
-                      未処理にする
+                      要振込にする
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       onClick={() => handleChangeStatus(doc, "処理済み")}

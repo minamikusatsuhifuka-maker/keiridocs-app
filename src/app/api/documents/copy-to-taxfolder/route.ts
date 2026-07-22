@@ -126,10 +126,12 @@ export async function POST(request: NextRequest) {
     }
 
     /* --- pass 1: DB 書類のコピー --- */
+    // ステータスにかかわらずコピーする（要振込・未処理のままでも税理士提出から漏らさない）。
+    // アーカイブのみ手動除外の意思を尊重して対象外とする。
     let dbQuery = supabase
       .from("documents")
       .select("id, dropbox_path, vendor_name, amount, type, issue_date, status")
-      .eq("status", "処理済み")
+      .neq("status", "アーカイブ")
       .gte("issue_date", dateFrom)
       .lt("issue_date", dateToExclusive)
       .not("dropbox_path", "is", null)

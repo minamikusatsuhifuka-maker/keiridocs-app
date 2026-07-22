@@ -57,12 +57,12 @@ export default async function DashboardPage() {
       .eq("user_id", user.id)
       .gte("created_at", monthStart),
 
-    // 未処理件数
+    // 要対応件数（要振込 + 旧運用の未処理）
     supabase
       .from("documents")
       .select("id", { count: "exact", head: true })
       .eq("user_id", user.id)
-      .eq("status", "未処理"),
+      .in("status", ["要振込", "未処理"]),
 
     // 支払期日が近い書類TOP5（7日以内・期日超過含む）
     // 未処理・処理済み・支払済み すべて表示

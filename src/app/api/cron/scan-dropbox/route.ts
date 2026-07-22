@@ -3,6 +3,7 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/server"
 import { createHash } from "crypto"
 import { listFiles, downloadFile, moveFile, getDocumentPath } from "@/lib/dropbox"
+import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
 import { analyzeDocument, analyzeDocumentFromText, applyAutoClassifyRules, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
 import type { OcrResult, AutoClassifyRule } from "@/lib/gemini"
 import type { Database } from "@/types/database"
@@ -446,7 +447,15 @@ async function processFile(
   const docType = ocrResult.type || "その他"
   const dateObj = ocrResult.issue_date ? new Date(ocrResult.issue_date) : new Date()
   const uniqueFileName = generateUniqueFileName(ocrResult.vendor_name, docType, dateObj, fileName)
-  const newPath = getDocumentPath(docType, uniqueFileName, dateObj, "未処理")
+
+  // ステータス自動判定（手動振込が必要な請求書のみ要振込、それ以外は処理済み）
+  const masterMethod = await fetchVendorMasterMethod(supabase, ocrResult.vendor_name)
+  const autoStatus = resolveAutoDocumentStatus({
+    type: docType,
+    paymentMethod: ocrResult.payment_method || "unknown",
+    masterMethod,
+  })
+  const newPath = getDocumentPath(docType, uniqueFileName, dateObj, autoStatus)
 
   // Dropbox上のファイルを正しいフォルダに移動
   const movedPath = await moveFile(dropboxPath, newPath)
@@ -463,7 +472,7 @@ async function processFile(
       due_date: ocrResult.due_date,
       description: ocrResult.description,
       input_method: "scan",
-      status: "未処理",
+      status: autoStatus,
       dropbox_path: movedPath,
       ocr_raw: ocrResult as unknown as import("@/types/database").Json,
       tax_category: ocrResult.tax_category || "未判定",

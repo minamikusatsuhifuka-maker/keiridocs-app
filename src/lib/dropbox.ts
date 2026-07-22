@@ -123,7 +123,11 @@ export function getDocumentPath(
   const year = `${date.getFullYear()}年`
   const month = `${String(date.getMonth() + 1).padStart(2, "0")}月`
 
-  return `${base}/${type}/${year}/${month}/${status}/${fileName}`
+  // 「要振込」は物理フォルダとしては従来の「未処理」を使う
+  // （フォルダ構造は 未処理/処理済み/アーカイブ のまま増やさない）
+  const statusFolder = status === "要振込" ? "未処理" : status
+
+  return `${base}/${type}/${year}/${month}/${statusFolder}/${fileName}`
 }
 
 /* ---------- フォルダ作成 ---------- */

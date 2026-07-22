@@ -270,16 +270,17 @@ export async function POST() {
     // この実行内で処理済みのパス
     const processedPaths = new Set<string>()
 
-    /* ---------- pass 1: DBの処理済み書類（全期間） ---------- */
+    /* ---------- pass 1: DB書類（全期間・アーカイブ除く） ---------- */
     // スタッフ領収書は petty_cash_transactions 起点で pass 3 にて処理するため、
     // 汎用フォルダ（請求書/領収書/社会保険料/その他/売上）のみを対象にする
     const dbSourceFolders = ALL_SOURCE_FOLDERS.filter((f) => f !== "スタッフ領収書")
     const dbSourcePrefixes = dbSourceFolders.map((f) => `/経理書類/${f}/`)
 
+    // ステータスにかかわらず対象にする（要振込・未処理でも税理士提出から漏らさない。アーカイブのみ除外）
     let dbQuery = supabase
       .from("documents")
       .select("id, dropbox_path, issue_date, status")
-      .eq("status", "処理済み")
+      .neq("status", "アーカイブ")
       .not("dropbox_path", "is", null)
     if (auth.role !== "admin") {
       dbQuery = dbQuery.eq("user_id", user.id)

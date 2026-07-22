@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { analyzeDocument, type OcrResult } from "@/lib/gemini"
 import { moveFile, getDocumentPath } from "@/lib/dropbox"
+import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
 import type { Database, Json } from "@/types/database"
 
 type MailPendingRow = Database["public"]["Tables"]["mail_pending"]["Row"]
@@ -77,10 +78,19 @@ export async function POST(request: NextRequest) {
             docType = type ?? ocrResult.type ?? item.ai_type ?? "請求書"
           }
 
-          // Dropbox正式フォルダへ移動
+          // ステータス自動判定（手動振込が必要な請求書のみ要振込、それ以外は処理済み）
+          const vendorNameForDoc = ocrResult?.vendor_name || item.sender
+          const masterMethod = await fetchVendorMasterMethod(supabase, vendorNameForDoc)
+          const autoStatus = resolveAutoDocumentStatus({
+            type: docType,
+            paymentMethod: ocrResult?.payment_method || "unknown",
+            masterMethod,
+          })
+
+          // Dropbox正式フォルダへ移動（要振込は物理フォルダとしては未処理を使う）
           const now = new Date()
           const fileName = item.file_name
-          const newPath = getDocumentPath(docType, fileName, now, "未処理")
+          const newPath = getDocumentPath(docType, fileName, now, autoStatus)
 
           let movedPath = newPath
           try {
@@ -102,7 +112,7 @@ export async function POST(request: NextRequest) {
               due_date: ocrResult?.due_date ?? null,
               description: ocrResult?.description ?? `メール添付: ${item.file_name}`,
               input_method: "email",
-              status: "未処理",
+              status: autoStatus,
               dropbox_path: movedPath,
               ocr_raw: ocrResult ? (JSON.parse(JSON.stringify(ocrResult)) as Json) : null,
               payment_method: ocrResult?.payment_method || "unknown",
