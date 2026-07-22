@@ -21,6 +21,32 @@ interface BuildOpts {
   scope?: "all" | "expense" | "sales"
 }
 
+/** 明細1行の構造化データ（xlsxのシート分割・小計計算に使う） */
+export interface TaxListRow {
+  no: number
+  fileName: string
+  type: string
+  vendor: string
+  storeName: string
+  expenseDetail: string
+  amount: number | null
+  subsidyLabel: string
+  subsidyAmount: number | null
+  /** 発行日（スタッフ領収書は支払年月日） */
+  date: string
+  /** 取り込み日（スタッフ領収書は提出日）YYYY-MM-DD */
+  createdDate: string
+  baseDate: string
+  taxCategory: string
+  accountTitle: string
+  path: string
+  isSales: boolean
+  transferFrom: string
+  transferDate: string
+  transferTotal: number | null
+  needsReview: boolean
+}
+
 interface BuildResult {
   fileName: string
   csvWithBom: string
@@ -33,13 +59,14 @@ interface BuildResult {
   needsReviewFiles: Array<{ fileName: string; path: string }>
   // 新旧フォルダ構造の重複として除外した件数
   duplicatesRemoved: number
-  // xlsx生成用の構造化データ（CSVと同一の行構成。detailRows.path はハイパーリンク化に使う）
+  // xlsx生成用の構造化データ（detailRows はCSVと同一の行構成、rows はシート分割用の構造化行）
   table: {
     summaryLines: string[][]
     detailTitle: string
     detailHeaders: string[]
     detailRows: Array<{ cells: string[]; path: string }>
     totalRow: string[]
+    rows: TaxListRow[]
   }
 }
 
@@ -177,6 +204,8 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     account_title: string | null
     // 月割り判定に使った基準日（例: "2026-06-15（発行日）"）
     base_date: string
+    // 取り込み日（スタッフ領収書は提出日）YYYY-MM-DD
+    created_date: string
     // スタッフ領収書専用: 支払先（店名）・目的用途・支給割合・支給額
     // （支給額の計算は会計士向けスタッフ立替明細CSVと同一の calcSubsidy を使用）
     store_name: string
@@ -230,6 +259,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       tax_category: d.tax_category ?? null,
       account_title: d.account_title ?? null,
       base_date: formatBaseDate(d.issue_date, d.due_date, d.created_at),
+      created_date: typeof d.created_at === "string" ? d.created_at.slice(0, 10) : "",
       store_name: "",
       expense_detail: "",
       subsidy_label: "",
@@ -304,6 +334,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
         account_title: r.account_title ?? null,
         // スタッフ領収書の月割りは提出日（アップロード日）の20日締め
         base_date: r.created_at ? `${r.created_at.slice(0, 10)}（提出日）` : "",
+        created_date: r.created_at ? r.created_at.slice(0, 10) : "",
         store_name: typeof r.store_name === "string" ? r.store_name : "",
         expense_detail: tx?.expense_detail ?? "",
         subsidy_label: subsidyBase !== null ? (subsidyRate(category) === 0.5 ? "半額" : "全額") : "",
@@ -328,6 +359,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       vendor: meta?.vendor_name ?? "",
       amount: meta?.amount ?? null,
       date: meta?.issue_date ?? "",
+      createdDate: meta?.created_date ?? "",
       baseDate: meta?.base_date ?? "",
       storeName: meta?.store_name ?? "",
       expenseDetail: meta?.expense_detail ?? "",
@@ -466,6 +498,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       detailHeaders,
       detailRows,
       totalRow,
+      rows: allRows,
     },
   }
 }
