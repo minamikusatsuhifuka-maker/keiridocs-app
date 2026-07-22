@@ -15,6 +15,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { StatusBadge } from "@/components/documents/status-badge"
 import {
+  AlertCircle,
   AlertTriangle,
   ArrowDown,
   ArrowUp,
@@ -26,6 +27,7 @@ import {
   Loader2,
   RotateCcw,
 } from "lucide-react"
+import { cn } from "@/lib/utils"
 import {
   DndContext,
   KeyboardSensor,
@@ -554,6 +556,8 @@ export function DocumentTable({
         <Table>
           <TableHeader>
             <TableRow>
+              {/* 固定列：要振込マーク（最左端・列D&Dの対象外） */}
+              <TableHead className="w-6 min-w-6 p-0" aria-label="要振込マーク" />
               {/* 固定列：選択（先頭） */}
               {hasSelection && (
                 <TableHead className="w-[40px]">
@@ -581,11 +585,30 @@ export function DocumentTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {documents.map((doc) => (
+            {documents.map((doc) => {
+              // 要振込（銀行振込が必要な請求書）は行頭マーク＋行全体の色分けで強調する
+              const isTransfer = doc.status === "要振込"
+              const isSelected = hasSelection && !!selectedIds?.has(doc.id)
+              return (
               <TableRow
                 key={doc.id}
-                className={hasSelection && selectedIds?.has(doc.id) ? "bg-muted/50" : undefined}
+                className={cn(
+                  isTransfer && "bg-red-50/70 hover:bg-red-100/60 dark:bg-red-950/25 dark:hover:bg-red-950/40",
+                  isSelected && (isTransfer ? "bg-red-100/80 dark:bg-red-950/50" : "bg-muted/50")
+                )}
               >
+                {/* 固定列：要振込マーク（最左端・列D&Dの対象外） */}
+                <TableCell className="relative w-6 min-w-6 p-0 text-center">
+                  {isTransfer && (
+                    <>
+                      {/* 行の左端の赤帯（行高いっぱい） */}
+                      <span className="absolute inset-y-0 left-0 w-1 bg-red-500" aria-hidden="true" />
+                      <span title="要振込：銀行振込が必要な請求書です">
+                        <AlertCircle className="mx-auto size-3.5 text-red-600" aria-label="要振込" />
+                      </span>
+                    </>
+                  )}
+                </TableCell>
                 {/* 固定列：選択（先頭） */}
                 {hasSelection && (
                   <TableCell>
@@ -640,7 +663,8 @@ export function DocumentTable({
                   </div>
                 </TableCell>
               </TableRow>
-            ))}
+              )
+            })}
           </TableBody>
         </Table>
       </DndContext>
