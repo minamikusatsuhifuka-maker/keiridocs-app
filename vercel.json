@@ -15,6 +15,10 @@
     {
       "path": "/api/cron/remind-missing",
       "schedule": "0 1 25 * *"
+    },
+    {
+      "path": "/api/cron/tax-folder-copy",
+      "schedule": "0 13 * * *"
     }
   ]
 }

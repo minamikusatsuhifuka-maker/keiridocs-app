@@ -20,7 +20,7 @@ import {
 } from "lucide-react"
 import { dropboxFileUrl, dropboxFolderUrl } from "@/lib/dropbox-web-link"
 
-type RunType = "range_copy" | "additional_import"
+type RunType = "range_copy" | "additional_import" | "auto_copy"
 
 /** range_copy の summary（月別・フォルダ別のコピー結果） */
 interface RangeCopyMonthResult {
@@ -76,6 +76,8 @@ interface TaxCopyRunRow {
 const RUN_TYPE_LABEL: Record<RunType, string> = {
   range_copy: "単月/期間指定コピー",
   additional_import: "追加分の一括取り込み",
+  // 自動実行（毎月20日・月末の22時）。20日分/月末分の別は run_by に記録される
+  auto_copy: "自動コピー（cron）",
 }
 
 /** 実行日時をわかりやすい表記でフォーマット */
@@ -98,7 +100,7 @@ function formatPeriod(row: TaxCopyRunRow): string {
 
 /** 行全体の件数サマリー（合計コピー数など）を run_type ごとに集計 */
 function summarizeRow(row: TaxCopyRunRow): string {
-  if (row.run_type === "range_copy") {
+  if (row.run_type === "range_copy" || row.run_type === "auto_copy") {
     const months = (row.summary as RangeCopyMonthResult[] | undefined) ?? []
     const copied = months.reduce((n, m) => n + (m.copied ?? 0), 0)
     const failed = months.reduce((n, m) => n + (m.failed ?? 0), 0)
@@ -145,9 +147,9 @@ function DropboxPathLink({ path, isFolder = false }: { path: string; isFolder?: 
 
 /** 行が対象とした年月一覧（重複を除く）を取り出す */
 function monthsTouchedByRow(row: TaxCopyRunRow): Array<{ year: number; month: number }> {
-  const raw = row.run_type === "range_copy"
-    ? ((row.summary as RangeCopyMonthResult[] | undefined) ?? []).map((m) => ({ year: m.year, month: m.month }))
-    : ((row.summary as AdditionalImportSummary | undefined)?.months ?? []).map((m) => ({ year: m.year, month: m.month }))
+  const raw = row.run_type === "additional_import"
+    ? ((row.summary as AdditionalImportSummary | undefined)?.months ?? []).map((m) => ({ year: m.year, month: m.month }))
+    : ((row.summary as RangeCopyMonthResult[] | undefined) ?? []).map((m) => ({ year: m.year, month: m.month }))
   const seen = new Set<string>()
   return raw.filter((m) => {
     const key = `${m.year}-${m.month}`
@@ -249,7 +251,7 @@ export default function TaxCopyHistoryPage() {
 
                 {isExpanded && (
                   <CardContent className="border-t pt-4">
-                    {row.run_type === "range_copy" ? (
+                    {row.run_type !== "additional_import" ? (
                       <RangeCopyDetail months={(row.summary as RangeCopyMonthResult[] | undefined) ?? []} />
                     ) : (
                       <AdditionalImportDetail
