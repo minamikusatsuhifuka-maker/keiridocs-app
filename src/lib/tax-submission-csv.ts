@@ -135,11 +135,12 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     console.error("税理士フォルダ取得エラー:", err)
   }
 
-  // CSVファイル自身（提出書類一覧・売上提出一覧）・月計表CSVは除外
+  // CSVファイル自身（提出書類一覧・売上提出一覧・スタッフ立替明細）・月計表CSVは除外
   filesInTaxFolder = filesInTaxFolder.filter((f) =>
     !/^提出書類一覧_.*\.csv$/.test(f.name) &&
     !/^売上提出一覧_.*\.csv$/.test(f.name) &&
-    !/^月計表_.*\.csv$/.test(f.name)
+    !/^月計表_.*\.csv$/.test(f.name) &&
+    !/^スタッフ立替明細_.*\.csv$/.test(f.name)
   )
 
   // 新旧フォルダ構造の重複除去（現行のサブフォルダ構造を正としてカウント）
