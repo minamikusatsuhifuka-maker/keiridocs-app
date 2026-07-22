@@ -75,6 +75,33 @@ export function taxSubfolderForType(type: string | null | undefined): string {
   }
 }
 
+/**
+ * 基準日（YYYY-MM-DD / ISO）→ 経理処理月（＝基準月の翌月）。
+ * 「YYYY年MM月」フォルダ＝その月に経理処理すべき資料のまとまり、という定義に基づき、
+ * 前月1日〜末日の資料を当月フォルダへ割り当てるための変換。
+ * 例: 2026-06-15 → {2026, 7} / 2025-12-20 → {2026, 1}
+ */
+export function processingMonthOfDate(
+  dateStr: string | null | undefined
+): { year: number; month: number } | null {
+  if (typeof dateStr !== "string") return null
+  const m = dateStr.match(/^(\d{4})-(\d{2})/)
+  if (!m) return null
+  const year = Number(m[1])
+  const month = Number(m[2])
+  if (year < 2000 || year > 2100 || month < 1 || month > 12) return null
+  return processingMonthOf(year, month)
+}
+
+/** 基準年月 → 経理処理月（＝翌月）。例: (2026, 6) → {2026, 7} / (2025, 12) → {2026, 1} */
+export function processingMonthOf(
+  year: number,
+  month: number
+): { year: number; month: number } {
+  if (month === 12) return { year: year + 1, month: 1 }
+  return { year, month: month + 1 }
+}
+
 /** ISO日時/日付文字列（YYYY-MM-DD...）から提出日 YYYY-MM-DD を取り出す */
 export function submitDateStr(iso: string | null | undefined): string {
   if (typeof iso !== "string") return ""

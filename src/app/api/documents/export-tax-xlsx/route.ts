@@ -88,8 +88,8 @@ export async function GET(request: NextRequest) {
   const total = sheet.addRow(totalRow)
   total.font = { bold: true }
 
-  // 列幅（No, ファイル名, 種別, 取引先, 金額, 発行日, 税区分, 勘定科目, コピー先パス, ステータス）
-  const widths = [6, 32, 14, 20, 14, 14, 12, 14, 60, 18]
+  // 列幅（No, ファイル名, 種別, 取引先, 金額, 発行日, 基準日, 税区分, 勘定科目, コピー先パス, ステータス）
+  const widths = [6, 32, 14, 20, 14, 14, 22, 12, 14, 60, 18]
   widths.forEach((w, i) => {
     sheet.getColumn(i + 1).width = w
   })

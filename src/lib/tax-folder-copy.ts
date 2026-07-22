@@ -18,6 +18,7 @@ import {
   staffCutoffMonth,
   staffReceiptFolderName,
   submitDateStr,
+  processingMonthOfDate,
   STAFF_RECEIPT_SUBFOLDER,
 } from "@/lib/tax-folder-structure"
 import type { createClient } from "@/lib/supabase/server"
@@ -87,9 +88,14 @@ interface RunOpts {
 /**
  * 指定した年月の書類を税理士提出フォルダに一括コピーする。
  *
+ * 月割りルール:「YYYY年MM月」フォルダ＝その月に経理処理すべき資料のまとまり。
+ *   - 通常書類: 基準日（①発行日 issue_date → ②支払期日 due_date → ③取込日 created_at）が
+ *     前月1日〜末日の資料を当月フォルダへ入れる（processingMonthOfDate で判定）。
+ *   - スタッフ領収書: 提出日の20日締め（前月21日〜当月20日提出分 → 当月フォルダ。従来どおり）。
+ *
  * 処理フロー:
- *   a. DBの書類（指定年月・選択フォルダ範囲内・アーカイブ除く）をコピー
- *   b. DBに無いファイルもDropboxを再帰スキャン → 年月判定 → コピー
+ *   a. DBの書類（基準日が前月・選択フォルダ範囲内・アーカイブ除く）をコピー
+ *   b. DBに無いファイルもDropboxを再帰スキャン → 年月判定（前月分のみ） → コピー
  *   c. スタッフ領収書は petty_cash_transactions 起点で 20日締めで振り分け
  *   d. 既に存在する場合はスキップ（fileExists or to/conflict）
  *   e. 提出書類一覧CSV（経費/売上）・スタッフ立替明細CSVを生成してDropboxへ保存
@@ -102,13 +108,7 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
     ? requestedFolders.filter((f) => (ALL_SOURCE_FOLDERS as readonly string[]).includes(f))
     : [...ALL_SOURCE_FOLDERS]
 
-  // 対象月の範囲（issue_date 基準）
   const monthStr = String(monthNum).padStart(2, "0")
-  const dateFrom = `${yearNum}-${monthStr}-01`
-  const nextYear = monthNum === 12 ? yearNum + 1 : yearNum
-  const nextMonth = monthNum === 12 ? 1 : monthNum + 1
-  const dateToExclusive = `${nextYear}-${String(nextMonth).padStart(2, "0")}-01`
-
   const taxFolderBase = `/経理書類/税理士提出/${yearNum}年${monthStr}月`
 
   // 税理士提出フォルダ＋標準サブフォルダ構造を事前作成（直下に裸ファイルを置かない）
@@ -122,12 +122,11 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
   /* --- pass 1: DB 書類のコピー --- */
   // ステータスにかかわらずコピーする（要振込・未処理のままでも税理士提出から漏らさない）。
   // アーカイブのみ手動除外の意思を尊重して対象外とする。
+  // 月割りは基準日（発行日→支払期日→取込日）ベースのためJS側で判定する（DBの範囲絞り込みはしない）。
   let dbQuery = supabase
     .from("documents")
-    .select("id, dropbox_path, vendor_name, amount, type, issue_date, status")
+    .select("id, dropbox_path, vendor_name, amount, type, issue_date, due_date, created_at, status")
     .neq("status", "アーカイブ")
-    .gte("issue_date", dateFrom)
-    .lt("issue_date", dateToExclusive)
     .not("dropbox_path", "is", null)
 
   if (!isAdmin) {
@@ -163,7 +162,7 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
   let skipped = 0
   let failed = 0
 
-  // pass 1: DB書類を、選択フォルダに該当するものだけコピー
+  // pass 1: DB書類を、選択フォルダに該当し「基準日の処理月＝対象月」のものだけコピー
   const targetFolderPrefixes = targetFolders.map((f) => `/経理書類/${f}/`)
   const dbDocsForCopy = (dbDocs ?? []).filter((d): d is {
     id: string
@@ -172,11 +171,17 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
     amount: number | null
     type: string
     issue_date: string | null
+    due_date: string | null
+    created_at: string
     status: string
   } => {
     if (typeof d.dropbox_path !== "string" || d.dropbox_path.length === 0) return false
     // 選択フォルダ配下のみ
-    return targetFolderPrefixes.some((prefix) => d.dropbox_path!.startsWith(prefix))
+    if (!targetFolderPrefixes.some((prefix) => d.dropbox_path!.startsWith(prefix))) return false
+    // 基準日（発行日→支払期日→取込日）の処理月（＝基準月の翌月）が対象月のものだけ
+    const baseDate = d.issue_date ?? d.due_date ?? d.created_at
+    const processing = processingMonthOfDate(baseDate)
+    return processing?.year === yearNum && processing?.month === monthNum
   })
 
   for (const doc of dbDocsForCopy) {
@@ -226,6 +231,10 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
     dbDocsForCopy.map((d) => d.dropbox_path)
   )
 
+  // 対象月フォルダに入るのは「基準月＝前月」の資料（例: 2026年07月フォルダ ← 2026年06月の資料）
+  const prevYear = monthNum === 1 ? yearNum - 1 : yearNum
+  const prevMonth = monthNum === 1 ? 12 : monthNum - 1
+
   for (const folderName of targetFolders) {
     // スタッフ領収書はDB(petty_cash_transactions)起点で 領収書/{スタッフ名}/ に整理してコピーするため、
     // ここの汎用フラットコピーからは除外する（下の専用パスで処理）
@@ -248,10 +257,10 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
       if (processedPaths.has(file.path_display)) continue
       if (dbPathSet.has(file.path_display)) continue
 
-      // ファイル名 or 更新日時から年月を判定
+      // ファイル名 or 更新日時から基準年月を判定し、基準月＝前月の資料のみ対象とする
       const fileMonth = extractYearMonth(file.name, file.client_modified)
       if (!fileMonth) continue
-      if (fileMonth.year !== yearNum || fileMonth.month !== monthNum) continue
+      if (fileMonth.year !== prevYear || fileMonth.month !== prevMonth) continue
 
       // 種別はフォルダ名から推定（売上フォルダは「売上記録」として扱う）
       const inferredType = folderName === "売上" ? "売上記録" : folderName

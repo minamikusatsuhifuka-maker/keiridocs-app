@@ -15,6 +15,8 @@ import {
   staffCutoffMonth,
   staffReceiptFolderName,
   submitDateStr,
+  processingMonthOf,
+  processingMonthOfDate,
   STAFF_RECEIPT_SUBFOLDER,
 } from "@/lib/tax-folder-structure"
 
@@ -100,9 +102,11 @@ interface MonthState {
 /**
  * 追加分の一括取り込み（月指定不要）
  *
- * 後から届いた資料を、AIが対象年月を判断して全期間まとめて1回でコピーする。
- *  - DB管理の処理済み書類 → 保存済みの issue_date から年月を決定
- *  - DBに無い手動アップロード分 → ファイル名の日付、無ければAIが日付を読み取り年月を決定
+ * 後から届いた資料を、対象年月を判断して全期間まとめて1回でコピーする。
+ * 月割りは一括コピーと同じ「処理月」ルール:
+ *   フォルダ「YYYY年MM月」＝その月に経理処理すべき資料 ＝ 基準日が前月1日〜末日の資料。
+ *  - DB管理の書類 → 基準日（発行日→支払期日→取込日）の翌月フォルダへ
+ *  - DBに無い手動アップロード分 → ファイル名の日付、無ければAIが日付を読み取り、その翌月フォルダへ
  *  - 判定不能は「要確認」に振り分けてスキップ
  *  - 未提出かつその月が未提出 → 本体（/YYYY年MM月/ 直下）へコピー（初回提出扱い）
  *  - 未提出かつその月が提出済み → 追加分（/YYYY年MM月/追加分/）へ【追加】付きでコピー
@@ -279,7 +283,7 @@ export async function POST() {
     // ステータスにかかわらず対象にする（要振込・未処理でも税理士提出から漏らさない。アーカイブのみ除外）
     let dbQuery = supabase
       .from("documents")
-      .select("id, dropbox_path, issue_date, status")
+      .select("id, dropbox_path, issue_date, due_date, created_at, status")
       .neq("status", "アーカイブ")
       .not("dropbox_path", "is", null)
     if (auth.role !== "admin") {
@@ -305,14 +309,15 @@ export async function POST() {
 
       const sourceFolder = matchedPrefix.replace("/経理書類/", "").replace(/\/$/, "")
 
-      // issue_date から年月を決定
-      const ym = parseYearMonthFromDate(doc.issue_date)
+      // 基準日（発行日→支払期日→取込日）の処理月（＝翌月フォルダ）を決定
+      const baseDate = doc.issue_date ?? doc.due_date ?? doc.created_at
+      const ym = processingMonthOfDate(baseDate)
       if (!ym) {
         needsReviewList.push({
           file_name: fileName,
           path: dropboxPath,
           source: "db",
-          reason: "発行日が未設定のため年月を判定できません",
+          reason: "基準日（発行日・支払期日・取込日）から年月を判定できません",
         })
         processedPaths.add(dropboxPath)
         continue
@@ -347,13 +352,13 @@ export async function POST() {
         if (processedPaths.has(file.path_display)) continue
         if (dbPathSet.has(file.path_display)) continue
 
-        // 年月判定: ①ファイル名の日付 → ②AI（画像/PDFのみ） → ③要確認
-        let ym = parseYearMonthFromFileName(file.name)
+        // 基準年月の判定: ①ファイル名の日付 → ②AI（画像/PDFのみ） → ③要確認
+        let baseYm = parseYearMonthFromFileName(file.name)
 
-        if (!ym) {
+        if (!baseYm) {
           const mime = aiMimeType(file.name)
           if (mime && Date.now() - startTime < AI_DEADLINE_MS) {
-            ym = await detectYearMonthByAI(file.path_display, mime)
+            baseYm = await detectYearMonthByAI(file.path_display, mime)
           } else if (mime) {
             // 時間制限のためAI判定を見送り
             needsReviewList.push({
@@ -367,7 +372,7 @@ export async function POST() {
           }
         }
 
-        if (!ym) {
+        if (!baseYm) {
           needsReviewList.push({
             file_name: file.name,
             path: file.path_display,
@@ -377,6 +382,9 @@ export async function POST() {
           processedPaths.add(file.path_display)
           continue
         }
+
+        // 基準年月 → 処理月（＝翌月フォルダ）
+        const ym = processingMonthOf(baseYm.year, baseYm.month)
 
         await copyToMonth({
           fromPath: file.path_display,

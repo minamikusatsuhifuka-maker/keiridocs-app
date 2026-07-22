@@ -158,7 +158,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   // DBからメタデータ取得
   let dbQuery = supabase
     .from("documents")
-    .select("dropbox_path, vendor_name, amount, type, issue_date, tax_category, account_title, ocr_raw")
+    .select("dropbox_path, vendor_name, amount, type, issue_date, due_date, created_at, tax_category, account_title, ocr_raw")
     .not("dropbox_path", "is", null)
 
   if (!isAdmin) {
@@ -174,10 +174,24 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     issue_date: string | null
     tax_category: string | null
     account_title: string | null
+    // 月割り判定に使った基準日（例: "2026-06-15（発行日）"）
+    base_date: string
     // 売上記録専用: 振込元・振込日・振込金額
     transfer_from: string | null
     transfer_date: string | null
     transfer_total: number | null
+  }
+
+  /** 基準日表示: 発行日 → 支払期日 → 取込日 の優先で「YYYY-MM-DD（種別）」形式にする */
+  function formatBaseDate(
+    issueDate: string | null | undefined,
+    dueDate: string | null | undefined,
+    createdAt: string | null | undefined
+  ): string {
+    if (issueDate) return `${issueDate.slice(0, 10)}（発行日）`
+    if (dueDate) return `${dueDate.slice(0, 10)}（支払期日）`
+    if (createdAt) return `${createdAt.slice(0, 10)}（取込日）`
+    return ""
   }
 
   const fileNameMap = new Map<string, DocMeta>()
@@ -208,6 +222,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       issue_date: d.issue_date ?? null,
       tax_category: d.tax_category ?? null,
       account_title: d.account_title ?? null,
+      base_date: formatBaseDate(d.issue_date, d.due_date, d.created_at),
       transfer_from: transferFrom,
       transfer_date: transferDate,
       transfer_total: transferTotal,
@@ -222,7 +237,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     const [{ data: staffReceipts }, { data: staffMembers }] = await Promise.all([
       supabase
         .from("staff_receipts")
-        .select("file_name, date, amount, tax_category, account_title, staff_member_id"),
+        .select("file_name, date, amount, tax_category, account_title, staff_member_id, created_at"),
       supabase.from("staff_members").select("id, name"),
     ])
     const staffNameMap = new Map<string, string>()
@@ -238,6 +253,8 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
         issue_date: r.date ?? null,
         tax_category: r.tax_category ?? null,
         account_title: r.account_title ?? null,
+        // スタッフ領収書の月割りは提出日（アップロード日）の20日締め
+        base_date: r.created_at ? `${r.created_at.slice(0, 10)}（提出日）` : "",
         transfer_from: null,
         transfer_date: null,
         transfer_total: null,
@@ -258,6 +275,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       vendor: meta?.vendor_name ?? "",
       amount: meta?.amount ?? null,
       date: meta?.issue_date ?? "",
+      baseDate: meta?.base_date ?? "",
       taxCategory: meta?.tax_category ?? "",
       accountTitle: meta?.account_title ?? "",
       path: file.path_display,
@@ -313,7 +331,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   // ====== 詳細セクション ======
   const detailHeaders = [
     "No", "ファイル名", "種別", "取引先 / 振込元", "金額 / 振込金額",
-    "発行日 / 振込日", "税区分", "勘定科目", "コピー先パス", "ステータス",
+    "発行日 / 振込日", "基準日（月割り判定）", "税区分", "勘定科目", "コピー先パス", "ステータス",
   ]
 
   const detailRows = allRows.map((r) => ({
@@ -327,6 +345,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
         ? formatAmount(r.transferTotal)
         : r.amount !== null ? formatAmount(r.amount) : "",
       r.isSales && r.transferDate ? r.transferDate : r.date,
+      r.baseDate,
       r.taxCategory,
       r.accountTitle,
       r.path,
@@ -338,7 +357,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   const totalRow = [
     "合計", "", "", "",
     formatAmount(grandTotal),
-    "", "", "", `${grandCount}件`, "",
+    "", "", "", "", `${grandCount}件`, "",
   ]
 
   // CSV組み立て
