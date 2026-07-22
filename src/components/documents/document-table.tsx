@@ -22,6 +22,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { StatusBadge } from "@/components/documents/status-badge"
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   ArrowUpDown,
   Calendar,
   Check,
@@ -57,7 +59,16 @@ type Document = Database["public"]["Tables"]["documents"]["Row"] & {
 }
 
 // ソート可能なカラム
-type SortField = "type" | "vendor_name" | "amount" | "issue_date" | "due_date" | "status" | "created_at"
+type SortField =
+  | "type"
+  | "vendor_name"
+  | "amount"
+  | "issue_date"
+  | "due_date"
+  | "status"
+  | "created_at"
+  | "tax_category"
+  | "account_title"
 type SortDirection = "asc" | "desc"
 
 // 並べ替え可能なカラムのID（先頭のチェックボックスと右端の「操作」は固定＝対象外）
@@ -208,7 +219,7 @@ function PaymentPurposeCell({ value }: { value: string | null }) {
   )
 }
 
-/** ソートインジケーター */
+/** ソートインジケーター（アクティブ列は ▲/▼ をはっきり表示、非アクティブは薄い ⇅） */
 function SortIcon({
   active,
   direction,
@@ -216,17 +227,20 @@ function SortIcon({
   active: boolean
   direction: SortDirection
 }) {
-  return (
-    <ArrowUpDown
-      className={`ml-1 inline size-3.5 ${active ? "text-foreground" : "text-muted-foreground/50"}`}
-      style={active ? { transform: direction === "desc" ? "scaleY(-1)" : undefined } : undefined}
-    />
+  if (!active) {
+    return <ArrowUpDown className="ml-1 inline size-3.5 shrink-0 text-muted-foreground/50" />
+  }
+  return direction === "asc" ? (
+    <ArrowUp className="ml-1 inline size-3.5 shrink-0 text-primary" strokeWidth={2.5} />
+  ) : (
+    <ArrowDown className="ml-1 inline size-3.5 shrink-0 text-primary" strokeWidth={2.5} />
   )
 }
 
 /**
  * 並べ替え可能なヘッダーセル。
- * グリップ（⋮⋮）でドラッグして列順を変更。ソート対象列はラベルクリックで従来通りソート。
+ * グリップ（⋮⋮）でドラッグして列順を変更。ソート対象列はグリップ以外の
+ * ヘッダーセル全体をクリックで昇順/降順トグル（クリック領域を最大化）。
  */
 function SortableHeaderCell({
   column,
@@ -253,13 +267,19 @@ function SortableHeaderCell({
   const isActive = sortField === column.sortField
 
   return (
-    <TableHead ref={setNodeRef} style={style} className={column.headClassName}>
+    <TableHead
+      ref={setNodeRef}
+      style={style}
+      className={column.headClassName}
+      aria-sort={isActive ? (sortDirection === "asc" ? "ascending" : "descending") : undefined}
+    >
       <div className="flex items-center gap-1">
-        {/* ドラッグ用グリップ（列順の変更） */}
+        {/* ドラッグ用グリップ（列順の変更）。クリックはソートに伝播させない */}
         <button
           type="button"
           className="cursor-grab touch-none text-muted-foreground/40 hover:text-foreground active:cursor-grabbing"
           aria-label={`${column.label}列を並べ替え`}
+          onClick={(e) => e.stopPropagation()}
           {...attributes}
           {...listeners}
         >
@@ -268,8 +288,11 @@ function SortableHeaderCell({
         {column.sortField ? (
           <button
             type="button"
-            className="flex items-center hover:text-foreground transition-colors"
+            className={`flex flex-1 items-center py-1 pr-2 text-left transition-colors cursor-pointer select-none hover:text-foreground ${
+              isActive ? "font-semibold text-foreground" : ""
+            }`}
             onClick={() => onSort(column.sortField!)}
+            title={`${column.label}で並べ替え（クリックで昇順/降順を切り替え・全件対象）`}
           >
             {column.label}
             <SortIcon active={isActive} direction={sortDirection} />
@@ -506,6 +529,7 @@ export function DocumentTable({
     tax_category: {
       id: "tax_category",
       label: "税区分",
+      sortField: "tax_category",
       headClassName: "hidden lg:table-cell",
       cellClassName: "hidden lg:table-cell text-xs",
       renderCell: (doc) => doc.tax_category || "-",
@@ -513,6 +537,7 @@ export function DocumentTable({
     account_title: {
       id: "account_title",
       label: "勘定科目",
+      sortField: "account_title",
       headClassName: "hidden lg:table-cell",
       cellClassName: "hidden lg:table-cell text-xs",
       renderCell: (doc) => doc.account_title || "-",

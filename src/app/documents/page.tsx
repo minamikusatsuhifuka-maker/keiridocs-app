@@ -29,7 +29,7 @@ import type { DocumentStatus } from "@/types"
 type Document = Database["public"]["Tables"]["documents"]["Row"] & {
   registrant?: { id: string; name: string } | null
 }
-type SortField = "type" | "vendor_name" | "amount" | "issue_date" | "due_date" | "status" | "created_at"
+type SortField = "type" | "vendor_name" | "amount" | "issue_date" | "due_date" | "status" | "created_at" | "tax_category" | "account_title"
 type SortDirection = "asc" | "desc"
 
 /** 重複グループ（3段階対応） */

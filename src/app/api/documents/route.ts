@@ -62,14 +62,16 @@ export async function GET(request: NextRequest) {
   const offset = parseInt(searchParams.get("offset") ?? "0", 10)
 
   // ソート可能なカラムを制限
-  const allowedSortFields = ["type", "vendor_name", "amount", "issue_date", "due_date", "status", "created_at"]
+  const allowedSortFields = ["type", "vendor_name", "amount", "issue_date", "due_date", "status", "created_at", "tax_category", "account_title"]
   const safeSort = allowedSortFields.includes(sortField) ? sortField : "created_at"
   const ascending = sortDirection === "asc"
 
   let query = supabase
     .from("documents")
     .select("*, registrant:registrants(id, name)", { count: "exact" })
-    .order(safeSort, { ascending })
+    // 空値（NULL）は昇順・降順にかかわらず末尾に寄せる（既定のDESC=NULLS FIRSTだと
+    // 発行日・支払期日の降順で「-」の行が先頭に並び、ソートが効いていないように見える）
+    .order(safeSort, { ascending, nullsFirst: false })
     .range(offset, offset + limit - 1)
 
   // admin以外は自分の書類のみ
