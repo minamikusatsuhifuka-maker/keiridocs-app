@@ -3,8 +3,58 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/staff-refund-core"
 import { getCurrentUserRole } from "@/lib/auth"
 import { MASTER_METHODS } from "@/lib/payment-methods"
+import { resolveAutoDocumentStatus } from "@/lib/document-status"
 
 export const runtime = "nodejs"
+
+/**
+ * 支払先マスタの変更にあわせて、その支払先の請求書の要振込マーク（documents.status）を再計算する。
+ * - 対象は種別「請求書」かつ アーカイブ以外
+ * - masterMethod に null を渡すとマスタ登録解除後（＝AI判定にフォールバック）の再計算になる
+ * @returns 更新した件数の内訳
+ */
+async function syncVendorDocumentStatus(
+  service: ReturnType<typeof createServiceClient>,
+  vendorName: string,
+  masterMethod: string | null
+): Promise<{ transferRequired: number; done: number }> {
+  const { data, error } = await service
+    .from("documents")
+    .select("id, type, payment_method, payment_status, status")
+    .eq("vendor_name", vendorName)
+    .eq("type", "請求書")
+    .neq("status", "アーカイブ")
+
+  if (error || !data) {
+    if (error) console.error("要振込マーク再計算: 対象取得エラー:", error)
+    return { transferRequired: 0, done: 0 }
+  }
+
+  const toTransfer: string[] = []
+  const toDone: string[] = []
+  for (const row of data) {
+    const next = resolveAutoDocumentStatus({
+      type: row.type,
+      paymentMethod: row.payment_method,
+      masterMethod,
+      paymentStatus: row.payment_status,
+    })
+    if (next === row.status) continue
+    if (next === "要振込") toTransfer.push(row.id)
+    else toDone.push(row.id)
+  }
+
+  if (toTransfer.length > 0) {
+    const { error: e1 } = await service.from("documents").update({ status: "要振込" }).in("id", toTransfer)
+    if (e1) console.error("要振込マーク再計算（要振込）エラー:", e1)
+  }
+  if (toDone.length > 0) {
+    const { error: e2 } = await service.from("documents").update({ status: "処理済み" }).in("id", toDone)
+    if (e2) console.error("要振込マーク再計算（処理済み）エラー:", e2)
+  }
+
+  return { transferRequired: toTransfer.length, done: toDone.length }
+}
 
 /** 認証・権限チェック（admin/staff のみ書込み可） */
 async function requireStaff() {
@@ -87,7 +137,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "支払先マスタの更新に失敗しました" }, { status: 500 })
     }
 
-    return NextResponse.json({ vendor: data })
+    // 書類一覧の⚠要振込マークもマスタの判定に合わせて更新する
+    const synced = await syncVendorDocumentStatus(service, vendorName, method)
+
+    return NextResponse.json({ vendor: data, synced })
   } catch (error) {
     console.error("支払先マスタ更新エラー:", error)
     return NextResponse.json({ error: "支払先マスタの更新に失敗しました" }, { status: 500 })
@@ -123,7 +176,10 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: "支払先マスタの削除に失敗しました" }, { status: 500 })
     }
 
-    return NextResponse.json({ ok: true })
+    // マスタ解除後はAI判定にフォールバックするため、⚠要振込マークを再計算する
+    const synced = await syncVendorDocumentStatus(service, vendorName, null)
+
+    return NextResponse.json({ ok: true, synced })
   } catch (error) {
     console.error("支払先マスタ削除エラー:", error)
     return NextResponse.json({ error: "支払先マスタの削除に失敗しました" }, { status: 500 })

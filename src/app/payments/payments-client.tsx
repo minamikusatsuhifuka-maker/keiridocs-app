@@ -1,6 +1,7 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
+import { useRouter } from "next/navigation"
 import Link from "next/link"
 import {
   Wallet,
@@ -17,6 +18,7 @@ import {
   ChevronRight,
   Trash2,
   ListChecks,
+  Wand2,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -26,6 +28,7 @@ import type { BankInfo } from "@/lib/gemini"
 import {
   codeToCategory,
   requiresTransfer,
+  isUnconfirmed,
   type PaymentCategory,
 } from "@/lib/payment-methods"
 
@@ -52,10 +55,20 @@ export interface VendorMaster {
 }
 
 interface PaymentsClientProps {
+  /** 要振込（都度振込）の請求書 */
   payDocs: PaymentDoc[]
+  /** 口座振替（振込不要）の請求書 */
   debitDocs: PaymentDoc[]
+  /** 支払方法が未確定（要確認）の請求書 */
+  unknownDocs: PaymentDoc[]
   vendorMasters: VendorMaster[]
 }
+
+/** カードを表示しているセクション */
+type Section = "pay" | "debit" | "unknown"
+
+/** 一括再判定の1リクエストあたりの件数（Vercelの実行時間上限に収まるよう小さめに分割する） */
+const RECHECK_CHUNK_SIZE = 8
 
 /** 振込先情報を1行の文字列に整形する */
 function formatBankInfo(info: BankInfo | null): string {
@@ -84,18 +97,38 @@ function categoryBadge(category: PaymentCategory): { label: string; bg: string; 
   }
 }
 
-export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsClientProps) {
+export function PaymentsClient({
+  payDocs,
+  debitDocs,
+  unknownDocs,
+  vendorMasters,
+}: PaymentsClientProps) {
+  const router = useRouter()
+
   const [payItems, setPayItems] = useState<PaymentDoc[]>(payDocs)
   const [debitItems, setDebitItems] = useState<PaymentDoc[]>(debitDocs)
+  const [unknownItems, setUnknownItems] = useState<PaymentDoc[]>(unknownDocs)
   const [vendorRows, setVendorRows] = useState<VendorMaster[]>(vendorMasters)
+
+  // サーバー側の再取得（router.refresh）結果を画面に反映する
+  useEffect(() => setPayItems(payDocs), [payDocs])
+  useEffect(() => setDebitItems(debitDocs), [debitDocs])
+  useEffect(() => setUnknownItems(unknownDocs), [unknownDocs])
+  useEffect(() => setVendorRows(vendorMasters), [vendorMasters])
 
   const [tab, setTab] = useState<"invoices" | "vendors">("invoices")
   const [debitOpen, setDebitOpen] = useState(false)
+  const [unknownOpen, setUnknownOpen] = useState(false)
 
   const [updatingId, setUpdatingId] = useState<string | null>(null)
   const [reanalyzingId, setReanalyzingId] = useState<string | null>(null)
   // 支払先マスタ操作中の支払先名（ボタンのローディング表示用）
   const [vendorBusy, setVendorBusy] = useState<string | null>(null)
+
+  // 一括再判定：確認パネルの表示 / 進捗 / 結果サマリー
+  const [recheckConfirm, setRecheckConfirm] = useState(false)
+  const [recheckProgress, setRecheckProgress] = useState<{ done: number; total: number } | null>(null)
+  const [recheckSummary, setRecheckSummary] = useState<string | null>(null)
 
   // 要振込（未払い）を支払期限が近い順に並べる（支払済みは後ろ）
   const sortedPay = useMemo(() => {
@@ -119,6 +152,16 @@ export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsCl
     })
   }, [debitItems])
 
+  // 支払方法が未確定のもの（支払期限が古い順）
+  const sortedUnknown = useMemo(() => {
+    return [...unknownItems].sort((a, b) => {
+      if (!a.due_date && !b.due_date) return 0
+      if (!a.due_date) return 1
+      if (!b.due_date) return -1
+      return new Date(a.due_date).getTime() - new Date(b.due_date).getTime()
+    })
+  }, [unknownItems])
+
   // 要振込の未払い合計・件数
   const unpaidTotal = useMemo(
     () =>
@@ -129,8 +172,19 @@ export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsCl
   )
   const unpaidCount = payItems.filter((d) => d.payment_status !== "支払い済み").length
 
+  /**
+   * 1件の請求書を、判定し直したカテゴリに応じて 要振込 / 口座振替 / 未確定 のリストへ移し替える。
+   * 「その他」（カード払い等）はどのリストにも載せない。
+   */
+  function placeDoc(next: PaymentDoc) {
+    const remove = (prev: PaymentDoc[]) => prev.filter((d) => d.id !== next.id)
+    setPayItems((prev) => (next.category === "都度振込" ? [...remove(prev), next] : remove(prev)))
+    setDebitItems((prev) => (next.category === "口座振替" ? [...remove(prev), next] : remove(prev)))
+    setUnknownItems((prev) => (next.category === "要確認" ? [...remove(prev), next] : remove(prev)))
+  }
+
   // 支払状態を切り替え（未払い⇄支払済み）
-  async function togglePaid(doc: PaymentDoc, section: "pay" | "debit") {
+  async function togglePaid(doc: PaymentDoc, section: Section) {
     const next = doc.payment_status === "支払い済み" ? "未対応" : "支払い済み"
     setUpdatingId(doc.id)
     try {
@@ -143,7 +197,8 @@ export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsCl
         const json = (await res.json().catch(() => ({}))) as { error?: string }
         throw new Error(json.error ?? "支払状態の更新に失敗しました")
       }
-      const setter = section === "pay" ? setPayItems : setDebitItems
+      const setter =
+        section === "pay" ? setPayItems : section === "debit" ? setDebitItems : setUnknownItems
       setter((prev) =>
         prev.map((d) => (d.id === doc.id ? { ...d, payment_status: next } : d))
       )
@@ -155,13 +210,14 @@ export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsCl
     }
   }
 
-  // 不明な書類を再解析して支払方法・振込先を判定し直す（要振込リスト内のみ）
+  // 1件を再解析して支払方法・振込先を判定し直す
   async function reanalyze(doc: PaymentDoc) {
     setReanalyzingId(doc.id)
     try {
       const res = await fetch(`/api/documents/${doc.id}/reanalyze`, { method: "POST" })
       const json = (await res.json().catch(() => ({}))) as {
         data?: { payment_method?: string | null; bank_info?: BankInfo | null }
+        result?: { payment_category?: PaymentCategory }
         error?: string
         reason?: string
       }
@@ -171,39 +227,84 @@ export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsCl
       const newMethod = json.data?.payment_method ?? "unknown"
       const newBank = (json.data?.bank_info as BankInfo | null) ?? null
 
-      // マスタ優先で最終カテゴリを再判定（マスタ登録があればAI結果より優先）
-      const newCategory = doc.master_method
-        ? doc.category
-        : codeToCategory(newMethod)
+      // サーバー側でマスタ優先の最終カテゴリを返す。無い場合はAIコードから判定（マスタ登録があればそちら優先）
+      const newCategory =
+        json.result?.payment_category ?? (doc.master_method ? doc.category : codeToCategory(newMethod))
+
+      placeDoc({ ...doc, payment_method: newMethod, bank_info: newBank, category: newCategory })
 
       if (newCategory === "口座振替") {
-        // 口座振替と判定 → 口座振替セクションへ移動
-        setPayItems((prev) => prev.filter((d) => d.id !== doc.id))
-        setDebitItems((prev) => [
-          ...prev,
-          { ...doc, payment_method: newMethod, bank_info: newBank, category: "口座振替" },
-        ])
         toast.success("口座振替と判定されました（口座振替セクションへ移動）")
-        return
-      }
-      if (newCategory === "その他") {
-        // その他（現金・カード等）→ 要振込・口座振替のどちらにも載せない
-        setPayItems((prev) => prev.filter((d) => d.id !== doc.id))
+      } else if (newCategory === "その他") {
         toast.success("カード払い等と判定されました（支払管理から除外）")
-        return
+      } else if (newCategory === "都度振込") {
+        toast.success("都度振込が必要と判定されました（要振込リストへ）")
+      } else {
+        toast.warning("再解析しましたが支払方法は判定できませんでした")
       }
-      setPayItems((prev) =>
-        prev.map((d) =>
-          d.id === doc.id
-            ? { ...d, payment_method: newMethod, bank_info: newBank, category: newCategory }
-            : d
-        )
-      )
-      toast.success(newCategory === "都度振込" ? "都度振込が必要と判定されました" : "再解析しました")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "再解析に失敗しました")
     } finally {
       setReanalyzingId(null)
+    }
+  }
+
+  /**
+   * 支払方法が未確定の請求書をまとめて再判定する。
+   * Geminiのレート制限・実行時間上限に配慮して数件ずつに分割して逐次実行する。
+   */
+  async function recheckAllUnknown() {
+    const targets = unknownItems.map((d) => d.id)
+    if (targets.length === 0) return
+
+    setRecheckConfirm(false)
+    setRecheckSummary(null)
+    setRecheckProgress({ done: 0, total: targets.length })
+
+    const totals = { 都度振込: 0, 口座振替: 0, その他: 0, 要確認: 0 }
+    let successCount = 0
+    let failCount = 0
+
+    try {
+      for (let i = 0; i < targets.length; i += RECHECK_CHUNK_SIZE) {
+        const chunk = targets.slice(i, i + RECHECK_CHUNK_SIZE)
+        try {
+          const res = await fetch("/api/documents/reanalyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: chunk }),
+          })
+          const json = (await res.json().catch(() => ({}))) as {
+            successCount?: number
+            failCount?: number
+            categoryCounts?: Record<string, number>
+            error?: string
+          }
+          if (!res.ok) throw new Error(json.error ?? "再判定に失敗しました")
+
+          successCount += json.successCount ?? 0
+          failCount += json.failCount ?? 0
+          for (const key of Object.keys(totals) as (keyof typeof totals)[]) {
+            totals[key] += json.categoryCounts?.[key] ?? 0
+          }
+        } catch (error) {
+          // 1チャンク失敗しても残りは続行する
+          console.error("一括再判定エラー:", error)
+          failCount += chunk.length
+        }
+        setRecheckProgress({ done: Math.min(i + chunk.length, targets.length), total: targets.length })
+      }
+
+      setRecheckSummary(
+        `${targets.length}件を再判定しました（成功 ${successCount}件 / 失敗 ${failCount}件）。` +
+          `内訳: 口座振替 ${totals.口座振替}件 / 都度振込 ${totals.都度振込}件 / ` +
+          `その他 ${totals.その他}件 / 未確定のまま ${totals.要確認}件`
+      )
+      toast.success(`一括再判定が完了しました（口座振替 ${totals.口座振替}件 / 都度振込 ${totals.都度振込}件）`)
+      // サーバー側の最新状態（要振込マークを含む）を取り直す
+      router.refresh()
+    } finally {
+      setRecheckProgress(null)
     }
   }
 
@@ -229,31 +330,28 @@ export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsCl
       }
       const updatedAt = json.vendor?.updated_at ?? new Date().toISOString()
 
+      // 当該支払先の請求書（要振込・口座振替・未確定のどこにあっても）をマスタの支払方法へ集約する
+      const moved = [...payItems, ...debitItems, ...unknownItems]
+        .filter((d) => d.vendor_name === vendorName)
+        .map((d) => ({ ...d, category: method as PaymentCategory, master_method: method }))
+      const others = (prev: PaymentDoc[]) => prev.filter((d) => d.vendor_name !== vendorName)
+
+      setUnknownItems(others)
       if (method === "口座振替") {
-        // 当該支払先の請求書を要振込 → 口座振替へすべて移動
-        const moved = payItems.filter((d) => d.vendor_name === vendorName)
-        setPayItems((prev) => prev.filter((d) => d.vendor_name !== vendorName))
-        setDebitItems((prev) => [
-          ...prev,
-          ...moved.map((d) => ({ ...d, category: "口座振替" as PaymentCategory, master_method: "口座振替" })),
-        ])
+        setPayItems(others)
+        setDebitItems((prev) => [...others(prev), ...moved])
         // 支払先マスタ一覧を更新
-        setVendorRows((prev) => {
-          const others = prev.filter((v) => v.vendor_name !== vendorName)
-          return [{ vendor_name: vendorName, method: "口座振替", updated_at: updatedAt }, ...others]
-        })
+        setVendorRows((prev) => [
+          { vendor_name: vendorName, method: "口座振替", updated_at: updatedAt },
+          ...prev.filter((v) => v.vendor_name !== vendorName),
+        ])
         toast.success(`「${vendorName}」を口座振替に設定しました（要振込リストから除外）`)
       } else {
-        // 都度振込に戻す: 当該支払先の請求書を口座振替 → 要振込へすべて移動
-        const moved = debitItems.filter((d) => d.vendor_name === vendorName)
-        setDebitItems((prev) => prev.filter((d) => d.vendor_name !== vendorName))
-        setPayItems((prev) => [
-          ...prev,
-          ...moved.map((d) => ({ ...d, category: "都度振込" as PaymentCategory, master_method: "都度振込" })),
-        ])
+        setDebitItems(others)
+        setPayItems((prev) => [...others(prev), ...moved])
         // 口座振替一覧からは外す
         setVendorRows((prev) => prev.filter((v) => v.vendor_name !== vendorName))
-        toast.success(`「${vendorName}」を都度振込に戻しました`)
+        toast.success(`「${vendorName}」を都度振込に設定しました（要振込リストへ）`)
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "支払先マスタの更新に失敗しました")
@@ -275,25 +373,25 @@ export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsCl
         throw new Error(json.error ?? "支払先マスタの削除に失敗しました")
       }
 
-      // 当該支払先の口座振替書類を、AI判定に基づき再配置する
-      const affected = debitItems.filter((d) => d.vendor_name === vendorName)
-      const stayDebit: PaymentDoc[] = []
+      // 当該支払先の請求書を、AI判定に基づき再配置する（マスタ優先が外れるため）
+      const affected = [...payItems, ...debitItems, ...unknownItems].filter(
+        (d) => d.vendor_name === vendorName
+      )
+      const toDebit: PaymentDoc[] = []
       const toPay: PaymentDoc[] = []
+      const toUnknown: PaymentDoc[] = []
       for (const d of affected) {
         const cat = codeToCategory(d.payment_method)
         const updated = { ...d, master_method: null, category: cat }
-        if (cat === "口座振替") stayDebit.push(updated)
+        if (cat === "口座振替") toDebit.push(updated)
         else if (requiresTransfer(cat)) toPay.push(updated)
-        // その他は両リストから除外
+        else if (isUnconfirmed(cat)) toUnknown.push(updated)
+        // その他はどのリストにも載せない
       }
-      setDebitItems((prev) =>
-        prev
-          .filter((d) => d.vendor_name !== vendorName)
-          .concat(stayDebit)
-      )
-      if (toPay.length > 0) {
-        setPayItems((prev) => [...prev, ...toPay])
-      }
+      const others = (prev: PaymentDoc[]) => prev.filter((d) => d.vendor_name !== vendorName)
+      setDebitItems((prev) => [...others(prev), ...toDebit])
+      setPayItems((prev) => [...others(prev), ...toPay])
+      setUnknownItems((prev) => [...others(prev), ...toUnknown])
       setVendorRows((prev) => prev.filter((v) => v.vendor_name !== vendorName))
       toast.success(`「${vendorName}」の登録を解除しました`)
     } catch (error) {
@@ -304,7 +402,7 @@ export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsCl
   }
 
   /** 請求書カード1件を描画 */
-  function renderCard(doc: PaymentDoc, section: "pay" | "debit") {
+  function renderCard(doc: PaymentDoc, section: Section) {
     const isPaid = doc.payment_status === "支払い済み"
     const isUpdating = updatingId === doc.id
     const isReanalyzing = reanalyzingId === doc.id
@@ -412,8 +510,8 @@ export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsCl
               </div>
             )}
 
-            {/* 要確認の注意表示 + 導線（要振込リストのみ） */}
-            {section === "pay" && isUnknown && (
+            {/* 要確認の注意表示 + 導線（未確定セクションのみ） */}
+            {section === "unknown" && isUnknown && (
               <div
                 className="mt-1.5 flex flex-wrap items-center gap-2 rounded-md px-2.5 py-1.5 text-xs"
                 style={{ backgroundColor: "#FEF3C7", color: "#92400E" }}
@@ -443,9 +541,9 @@ export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsCl
               </div>
             )}
 
-            {/* 支払方法の切り替えアクション */}
+            {/* 支払方法の切り替えアクション（支払先マスタに登録して以降を自動で仕分ける） */}
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              {section === "pay" ? (
+              {section !== "debit" && (
                 <Button
                   variant="outline"
                   size="sm"
@@ -454,7 +552,7 @@ export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsCl
                   onClick={() => setVendorMethod(doc.vendor_name, "口座振替")}
                   title={
                     doc.vendor_name
-                      ? "この支払先を口座振替として登録し、要振込リストから除外します"
+                      ? "この支払先を口座振替として登録し、要振込リストから除外します（以降の請求書も自動で除外）"
                       : "取引先が不明なため設定できません"
                   }
                 >
@@ -465,21 +563,26 @@ export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsCl
                   )}
                   口座振替に設定
                 </Button>
-              ) : (
+              )}
+              {section !== "pay" && (
                 <Button
                   variant="outline"
                   size="sm"
                   className="h-7 px-2.5 text-xs"
                   disabled={isVendorBusy || !doc.vendor_name}
                   onClick={() => setVendorMethod(doc.vendor_name, "都度振込")}
-                  title="この支払先を都度振込に戻し、要振込リストに再表示します"
+                  title={
+                    doc.vendor_name
+                      ? "この支払先を都度振込として登録し、要振込リストに表示します（以降の請求書も自動で表示）"
+                      : "取引先が不明なため設定できません"
+                  }
                 >
                   {isVendorBusy ? (
                     <Loader2 className="mr-1 size-3 animate-spin" />
                   ) : (
                     <RotateCcw className="mr-1 size-3" />
                   )}
-                  都度振込に戻す
+                  {section === "debit" ? "都度振込に戻す" : "都度振込に設定"}
                 </Button>
               )}
               <Link
@@ -554,7 +657,7 @@ export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsCl
           支払管理
         </h1>
         <p className="mt-1 text-sm" style={{ color: "#4A4A4A" }}>
-          都度振込が必要な請求書だけを要振込リストに表示します（口座振替・自動引落は除外）
+          手動で都度振込が必要な請求書だけを要振込リストに表示します（口座振替・自動引落・支払方法が未確定のものは除外）
         </p>
       </div>
 
@@ -629,6 +732,118 @@ export function PaymentsClient({ payDocs, debitDocs, vendorMasters }: PaymentsCl
                 <div className="space-y-3">{sortedPay.map((doc) => renderCard(doc, "pay"))}</div>
               )}
             </CardContent>
+          </Card>
+
+          {/* 支払方法が未確定の請求書（要振込には載せず、ここで仕分ける） */}
+          <Card>
+            <CardHeader
+              className="cursor-pointer"
+              onClick={() => setUnknownOpen((v) => !v)}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <CardTitle className="flex items-center gap-2 text-base" style={{ color: "#1A1A1A" }}>
+                  {unknownOpen ? (
+                    <ChevronDown className="size-5" style={{ color: "#B45309" }} />
+                  ) : (
+                    <ChevronRight className="size-5" style={{ color: "#B45309" }} />
+                  )}
+                  <HelpCircle className="size-5" style={{ color: "#B45309" }} />
+                  支払方法が未確定の請求書 — {unknownItems.length}件
+                </CardTitle>
+                {unknownItems.length > 0 && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 px-3 text-xs"
+                    disabled={recheckProgress !== null}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setRecheckConfirm(true)
+                      setUnknownOpen(true)
+                    }}
+                    title="未確定の請求書をまとめてAIで再判定します"
+                  >
+                    {recheckProgress ? (
+                      <Loader2 className="mr-1 size-3.5 animate-spin" />
+                    ) : (
+                      <Wand2 className="mr-1 size-3.5" />
+                    )}
+                    まとめて再判定
+                  </Button>
+                )}
+              </div>
+              <p className="mt-1 text-xs" style={{ color: "#6B7280" }}>
+                口座振替か都度振込かをAIが判別できなかった請求書です。要振込リストには含めていません。
+                「口座振替に設定」「都度振込に設定」で支払先ごとに登録すると、以降は自動で仕分けされます。
+              </p>
+            </CardHeader>
+
+            {/* 一括再判定の確認 / 進捗 / 結果（折りたたみ状態に関わらず表示する） */}
+            {(recheckConfirm || recheckProgress || recheckSummary) && (
+              <CardContent className="pt-0">
+                {recheckConfirm && (
+                  <div
+                    className="rounded-md border p-3 text-sm"
+                    style={{ borderColor: "#F59E0B", backgroundColor: "#FFFBEB", color: "#92400E" }}
+                  >
+                    <p className="font-semibold">
+                      {unknownItems.length}件の請求書をAIで再判定します。よろしいですか？
+                    </p>
+                    <p className="mt-1 text-xs">
+                      各書類の原本をDropboxから取得してAI解析をやり直し、支払方法（口座振替／都度振込／カード払い）を判定し直します。
+                      支払先マスタに登録済みの支払先はマスタの設定が優先されます。金額・取引先などの抽出結果も最新のAIで更新されます。
+                      件数によっては数分かかります。
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <Button size="sm" className="h-7 px-3 text-xs" onClick={recheckAllUnknown}>
+                        {unknownItems.length}件を再判定する
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-3 text-xs"
+                        onClick={() => setRecheckConfirm(false)}
+                      >
+                        キャンセル
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {recheckProgress && (
+                  <div
+                    className="flex items-center gap-2 rounded-md border p-3 text-sm"
+                    style={{ borderColor: "#E5DCC8", backgroundColor: "#FAF6EC", color: "#5A4A30" }}
+                  >
+                    <Loader2 className="size-4 animate-spin" />
+                    再判定中… {recheckProgress.done} / {recheckProgress.total}件
+                  </div>
+                )}
+
+                {!recheckProgress && recheckSummary && (
+                  <div
+                    className="rounded-md border p-3 text-sm"
+                    style={{ borderColor: "#A7F3D0", backgroundColor: "#ECFDF5", color: "#065F46" }}
+                  >
+                    {recheckSummary}
+                  </div>
+                )}
+              </CardContent>
+            )}
+
+            {unknownOpen && (
+              <CardContent>
+                {sortedUnknown.length === 0 ? (
+                  <p className="py-8 text-center text-sm" style={{ color: "#4A4A4A" }}>
+                    支払方法が未確定の請求書はありません
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {sortedUnknown.map((doc) => renderCard(doc, "unknown"))}
+                  </div>
+                )}
+              </CardContent>
+            )}
           </Card>
 
           {/* 口座振替（振込不要）の折りたたみセクション */}

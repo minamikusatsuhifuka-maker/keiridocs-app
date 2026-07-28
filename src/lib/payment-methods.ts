@@ -39,7 +39,15 @@ export function resolvePaymentCategory(
   return codeToCategory(paymentMethod)
 }
 
-/** 要振込リスト（都度振込＋要確認）に載せるカテゴリか */
+/**
+ * 要振込リスト（＝人が都度手動で振り込む必要があるもの）に載せるカテゴリか。
+ * 「要確認（未確定）」は含めない。未確定のものは専用セクションで仕分けする。
+ */
 export function requiresTransfer(category: PaymentCategory): boolean {
-  return category === "都度振込" || category === "要確認"
+  return category === "都度振込"
+}
+
+/** 支払方法が未確定（AI判定も支払先マスタも付いていない）か */
+export function isUnconfirmed(category: PaymentCategory): boolean {
+  return category === "要確認"
 }

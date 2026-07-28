@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getCurrentUserRole } from "@/lib/auth"
 import { DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
-import { reanalyzeDocument, type ReanalyzeResult } from "@/lib/sales-reanalyze"
-import type { Database } from "@/types/database"
-
-type DocumentRow = Database["public"]["Tables"]["documents"]["Row"]
+import {
+  reanalyzeDocument,
+  type ReanalyzeResult,
+  type ReanalyzeTargetDoc,
+} from "@/lib/sales-reanalyze"
 
 /** 一括再解析は逐次処理のため長めのタイムアウトを確保 */
 export const maxDuration = 300
@@ -48,7 +49,7 @@ export async function POST(request: NextRequest) {
   // 対象書類を取得（adminは全件、staffは自分の書類のみ）
   let listQuery = supabase
     .from("documents")
-    .select("id, dropbox_path, type")
+    .select("id, dropbox_path, type, status, payment_status, vendor_name")
     .in("id", ids)
   if (auth.role !== "admin") {
     listQuery = listQuery.eq("user_id", user.id)
@@ -59,7 +60,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "対象書類の取得に失敗しました" }, { status: 500 })
   }
 
-  const targets = (docs ?? []) as Pick<DocumentRow, "id" | "dropbox_path" | "type">[]
+  const targets = (docs ?? []) as ReanalyzeTargetDoc[]
   if (targets.length === 0) {
     return NextResponse.json({ results: [], successCount: 0, failCount: 0 })
   }
@@ -89,5 +90,13 @@ export async function POST(request: NextRequest) {
   const fileNotFoundCount = results.filter((r) => r.reason === "file_not_found").length
   const failCount = results.length - successCount
 
-  return NextResponse.json({ results, successCount, failCount, fileNotFoundCount })
+  // 再判定でどのカテゴリに振り分けられたかの内訳（支払管理の一括再判定の結果報告に使う）
+  const categoryCounts = {
+    都度振込: results.filter((r) => r.payment_category === "都度振込").length,
+    口座振替: results.filter((r) => r.payment_category === "口座振替").length,
+    その他: results.filter((r) => r.payment_category === "その他").length,
+    要確認: results.filter((r) => r.payment_category === "要確認").length,
+  }
+
+  return NextResponse.json({ results, successCount, failCount, fileNotFoundCount, categoryCounts })
 }

@@ -2,10 +2,11 @@ import { createClient } from "@/lib/supabase/server"
 import { getCurrentUserRole } from "@/lib/auth"
 import { PaymentsClient, type PaymentDoc, type VendorMaster } from "./payments-client"
 import type { BankInfo } from "@/lib/gemini"
-import { resolvePaymentCategory, requiresTransfer } from "@/lib/payment-methods"
+import { resolvePaymentCategory, requiresTransfer, isUnconfirmed } from "@/lib/payment-methods"
 
 // 支払管理ページ
-// 要振込リスト = 支払方法カテゴリが「都度振込」「要確認」のもののみ（口座振替は除外）。
+// 要振込リスト = 支払方法カテゴリが「都度振込」のもののみ（手動で都度振込が必要なもの）。
+// 「要確認（未確定）」は要振込に含めず、専用セクションで仕分けする。
 // 口座振替の請求書は別セクション/タブで確認できる（記録は消さない）。
 // 支払方法は AI判定（documents.payment_method）に支払先マスタ（vendor_payment_methods）を重ねて最終判定する（マスタ優先）。
 export default async function PaymentsPage() {
@@ -64,9 +65,10 @@ export default async function PaymentsPage() {
     }
   }
 
-  // 各請求書の最終カテゴリを判定して、要振込 / 口座振替 に振り分ける
+  // 各請求書の最終カテゴリを判定して、要振込 / 口座振替 / 未確定 に振り分ける
   const payDocs: PaymentDoc[] = []
   const debitDocs: PaymentDoc[] = []
+  const unknownDocs: PaymentDoc[] = []
 
   for (const doc of data ?? []) {
     const vendorName = doc.vendor_name ?? ""
@@ -89,6 +91,9 @@ export default async function PaymentsPage() {
       debitDocs.push(mapped)
     } else if (requiresTransfer(category)) {
       payDocs.push(mapped)
+    } else if (isUnconfirmed(category)) {
+      // 支払方法が未確定 → 要振込には載せず、仕分け用の専用セクションへ
+      unknownDocs.push(mapped)
     }
     // 「その他」（現金・カード等）は要振込にも口座振替にも載せない（従来どおり除外）
   }
@@ -106,6 +111,7 @@ export default async function PaymentsPage() {
     <PaymentsClient
       payDocs={payDocs}
       debitDocs={debitDocs}
+      unknownDocs={unknownDocs}
       vendorMasters={vendorMasters}
     />
   )

@@ -7,13 +7,21 @@ import {
   SALES_ANALYSIS_DOCUMENT_TYPES,
   SALES_ANALYSIS_EXTRA_HINT,
 } from "@/lib/gemini"
+import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
+import { resolvePaymentCategory, type PaymentCategory } from "@/lib/payment-methods"
 import type { Database, Json } from "@/types/database"
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"]
 
-/** 再解析に必要な最小限のドキュメント情報 */
-export type ReanalyzeTargetDoc = Pick<DocumentRow, "id" | "dropbox_path" | "type">
+/**
+ * 再解析に必要な最小限のドキュメント情報。
+ * status / payment_status / vendor_name は再解析後の要振込マーク再計算に使う。
+ */
+export type ReanalyzeTargetDoc = Pick<
+  DocumentRow,
+  "id" | "dropbox_path" | "type" | "status" | "payment_status" | "vendor_name"
+>
 
 /** 再解析の失敗理由（ファイル欠損を他の失敗と区別する） */
 export type ReanalyzeFailReason = "file_not_found" | "empty" | "unsupported" | "error"
@@ -24,6 +32,10 @@ export interface ReanalyzeResult {
   success: boolean
   amount: number | null
   vendor_name: string | null
+  /** 再解析後の支払方法（AIコード）。失敗時は undefined */
+  payment_method?: string
+  /** 再解析後の支払方法カテゴリ（支払先マスタ優先で確定した最終区分）。失敗時は undefined */
+  payment_category?: PaymentCategory
   error?: string
   /** 失敗時の理由区分（成功時は undefined） */
   reason?: ReanalyzeFailReason
@@ -118,8 +130,25 @@ export async function reanalyzeDocument(
     if (result.tax_category) update.tax_category = result.tax_category
     if (result.account_title) update.account_title = result.account_title
     // 支払方法・振込先は再解析で常に更新（不明→振込判定への更新を可能にする）
-    update.payment_method = result.payment_method || "unknown"
+    const newPaymentMethod = result.payment_method || "unknown"
+    update.payment_method = newPaymentMethod
     update.bank_info = (result.bank_info ?? null) as unknown as Json
+
+    // 支払方法が変わると要振込マークの判定も変わるため、ここで status を再計算する。
+    // 支払先マスタの登録がある支払先はマスタ優先（resolveAutoDocumentStatus 内で解決）。
+    // 手動の「アーカイブ」だけは尊重して触らない。
+    const vendorNameForMaster = result.vendor_name || doc.vendor_name
+    const masterMethod = await fetchVendorMasterMethod(supabase, vendorNameForMaster)
+    const paymentCategory = resolvePaymentCategory(newPaymentMethod, masterMethod)
+    // 要振込マークは請求書だけの概念なので、他の種別のstatusには一切触らない
+    if (doc.type === "請求書" && doc.status !== "アーカイブ") {
+      update.status = resolveAutoDocumentStatus({
+        type: doc.type,
+        paymentMethod: newPaymentMethod,
+        masterMethod,
+        paymentStatus: doc.payment_status,
+      })
+    }
 
     const { error: updateError } = await supabase
       .from("documents")
@@ -135,6 +164,8 @@ export async function reanalyzeDocument(
       success: true,
       amount: result.amount,
       vendor_name: result.vendor_name || null,
+      payment_method: newPaymentMethod,
+      payment_category: paymentCategory,
     }
   } catch (error) {
     // ファイル欠損は専用reasonで区別し、ユーザー向けの分かりやすいメッセージを返す

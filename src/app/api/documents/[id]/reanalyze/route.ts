@@ -2,10 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getCurrentUserRole } from "@/lib/auth"
 import { DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
-import { reanalyzeDocument } from "@/lib/sales-reanalyze"
-import type { Database } from "@/types/database"
-
-type DocumentRow = Database["public"]["Tables"]["documents"]["Row"]
+import { reanalyzeDocument, type ReanalyzeTargetDoc } from "@/lib/sales-reanalyze"
 
 /** Dropbox取得＋Gemini再解析でタイムアウトしないよう余裕を持たせる */
 export const maxDuration = 120
@@ -37,7 +34,7 @@ export async function POST(
   // 対象書類を取得（adminは全件、staffは自分の書類のみ）
   let fetchQuery = supabase
     .from("documents")
-    .select("id, dropbox_path, type")
+    .select("id, dropbox_path, type, status, payment_status, vendor_name")
     .eq("id", id)
   if (auth.role !== "admin") {
     fetchQuery = fetchQuery.eq("user_id", user.id)
@@ -58,7 +55,7 @@ export async function POST(
 
   const result = await reanalyzeDocument(
     supabase,
-    doc as Pick<DocumentRow, "id" | "dropbox_path" | "type">,
+    doc as ReanalyzeTargetDoc,
     modelId
   )
 
