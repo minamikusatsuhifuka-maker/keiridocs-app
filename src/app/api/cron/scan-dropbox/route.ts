@@ -86,6 +86,10 @@ function checkReviewReasons(ocrResult: OcrResult): string[] {
   if (!ocrResult.type) reasons.push("種別不明")
   if (ocrResult.amount === null || ocrResult.amount === 0) reasons.push("金額未検出")
   if (!ocrResult.vendor_name || ocrResult.vendor_name.trim() === "") reasons.push("取引先名未検出")
+  // 独立した支払いが複数含まれる場合は合計1件で自動登録せず要確認に回す
+  if (Array.isArray(ocrResult.payments) && ocrResult.payments.length >= 2) {
+    reasons.push(`複数の支払いを検出（${ocrResult.payments.length}件・分割候補）`)
+  }
   return reasons
 }
 

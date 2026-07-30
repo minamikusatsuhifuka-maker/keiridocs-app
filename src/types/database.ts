@@ -36,6 +36,7 @@ export interface Database {
           payment_method: string | null
           bank_info: Json | null
           payment_purpose: string | null
+          split_group: string | null
           user_id: string
           created_at: string
           updated_at: string
@@ -63,6 +64,7 @@ export interface Database {
           payment_method?: string | null
           bank_info?: Json | null
           payment_purpose?: string | null
+          split_group?: string | null
           user_id: string
           created_at?: string
           updated_at?: string
@@ -90,6 +92,7 @@ export interface Database {
           payment_method?: string | null
           bank_info?: Json | null
           payment_purpose?: string | null
+          split_group?: string | null
           user_id?: string
           created_at?: string
           updated_at?: string

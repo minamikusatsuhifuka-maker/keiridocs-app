@@ -24,9 +24,10 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { StatusBadge } from "@/components/documents/status-badge"
+import { SplitPaymentsConfirm } from "@/components/documents/split-payments-confirm"
 import { ArrowLeft, Loader2, Pencil, Trash2, Save, X, RefreshCw, AlertTriangle, Upload } from "lucide-react"
 import type { Database } from "@/types/database"
-import { TAX_CATEGORIES, ACCOUNT_TITLES } from "@/lib/gemini"
+import { TAX_CATEGORIES, ACCOUNT_TITLES, type SplitPayment } from "@/lib/gemini"
 import { toast } from "sonner"
 
 type Document = Database["public"]["Tables"]["documents"]["Row"]
@@ -67,6 +68,11 @@ export default function DocumentDetailPage() {
   const [isSaving, setIsSaving] = useState(false)
   const [isReanalyzing, setIsReanalyzing] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+
+  // 再解析で検出した複数支払いの分割候補（確認UIを経て分割する）
+  const [splitCandidates, setSplitCandidates] = useState<SplitPayment[] | null>(null)
+  const [splitTotalAmount, setSplitTotalAmount] = useState<number | null>(null)
+  const [isSplitting, setIsSplitting] = useState(false)
 
   // ファイル欠損チェック・再アップロード
   const [fileMissing, setFileMissing] = useState<boolean | null>(null) // null=未確認
@@ -219,18 +225,34 @@ export default function DocumentDetailPage() {
   }
 
   // 再解析（この1件をDropboxから取得し直してAI再解析→結果を反映）
-  async function handleReanalyze() {
+  // forceSingle=true のときは分割検出をせず従来どおり1件のまま更新する
+  async function handleReanalyze(forceSingle = false) {
     if (!doc) return
     setIsReanalyzing(true)
     try {
-      const res = await fetch(`/api/documents/${id}/reanalyze`, { method: "POST" })
-      const json = await res.json().catch(() => ({})) as { data?: Document; error?: string; reason?: string }
+      const res = await fetch(
+        `/api/documents/${id}/reanalyze${forceSingle ? "?force_single=1" : ""}`,
+        { method: "POST" }
+      )
+      const json = await res.json().catch(() => ({})) as {
+        data?: Document
+        error?: string
+        reason?: string
+        split_candidates?: SplitPayment[]
+        total_amount?: number | null
+      }
       if (!res.ok) {
         // ファイル欠損なら警告バナーを表示して再アップロードを促す
         if (res.status === 404 && json.reason === "file_not_found") {
           setFileMissing(true)
         }
         throw new Error(json.error || "再解析に失敗しました")
+      }
+      // 複数支払いの分割候補を検出 → 確認ダイアログを表示（DBはまだ更新されていない）
+      if (json.split_candidates && json.split_candidates.length >= 2) {
+        setSplitCandidates(json.split_candidates)
+        setSplitTotalAmount(json.total_amount ?? doc.amount)
+        return
       }
       if (json.data) {
         setDoc(json.data)
@@ -249,6 +271,32 @@ export default function DocumentDetailPage() {
       toast.error(error instanceof Error ? error.message : "再解析に失敗しました")
     } finally {
       setIsReanalyzing(false)
+    }
+  }
+
+  // 分割を確定: 元レコードを1件目に更新し、2件目以降を新規レコードとして追加する
+  async function handleConfirmSplit(payments: SplitPayment[]) {
+    if (!doc) return
+    setIsSplitting(true)
+    try {
+      const res = await fetch(`/api/documents/${id}/split`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payments }),
+      })
+      const json = await res.json().catch(() => ({})) as { data?: Document[]; error?: string }
+      if (!res.ok) {
+        throw new Error(json.error || "分割に失敗しました")
+      }
+      toast.success(`${payments.length}件に分割しました（ファイルは1つのまま共有されます）`)
+      setSplitCandidates(null)
+      setSplitTotalAmount(null)
+      // このページは1件目（元レコード）の詳細として再読み込み
+      await fetchDocument()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "分割に失敗しました")
+    } finally {
+      setIsSplitting(false)
     }
   }
 
@@ -323,7 +371,7 @@ export default function DocumentDetailPage() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleReanalyze}
+                onClick={() => handleReanalyze()}
                 disabled={isReanalyzing || !doc.dropbox_path}
                 className="btn-float"
                 title={doc.dropbox_path ? "DropboxのファイルをAIで再解析します" : "Dropboxパスがないため再解析できません"}
@@ -367,6 +415,24 @@ export default function DocumentDetailPage() {
           )}
         </div>
       </div>
+
+      {/* 再解析で複数支払いを検出したときの分割確認UI */}
+      {splitCandidates && splitCandidates.length >= 2 && (
+        <SplitPaymentsConfirm
+          payments={splitCandidates}
+          totalAmount={splitTotalAmount}
+          isSubmitting={isSplitting || isReanalyzing}
+          confirmLabel="分割して置き換える"
+          singleLabel="分割せず1件のまま反映"
+          onConfirmSplit={handleConfirmSplit}
+          onRegisterAsOne={async () => {
+            // 分割せず従来どおり1件のまま再解析結果を反映する
+            setSplitCandidates(null)
+            setSplitTotalAmount(null)
+            await handleReanalyze(true)
+          }}
+        />
+      )}
 
       {/* ファイル欠損時の警告バナー＋再アップロード導線 */}
       {fileMissing && (

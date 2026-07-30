@@ -40,6 +40,35 @@ const PAYMENT_JSON_FIELDS = `  "payment_method": "支払方法（bank_transfer=�
     "account_holder": "口座名義"
   },`
 
+/** 複数支払い分割候補のJSON項目（プロンプトのJSONテンプレートに差し込む） */
+const MULTI_PAYMENT_JSON_FIELD = `  "payments": [
+    {
+      "vendor_name": "この支払いの払込先・納付先",
+      "amount": この支払いの個別金額（数値）,
+      "issue_date": "発行日（YYYY-MM-DD形式。無ければnull）",
+      "due_date": "支払期日・納期限・有効期限（YYYY-MM-DD形式。無ければnull）",
+      "description": "この支払いの内容（払込内容・摘要）",
+      "tax_category": "この支払いの税区分（課税10%/課税8%（軽減）/非課税/免税/不課税/未判定のいずれか）",
+      "account_title": "この支払いの勘定科目（判定基準参照）"
+    }
+  ],`
+
+/** 複数支払いの分割判定ルール（プロンプト末尾に差し込む） */
+const MULTI_PAYMENT_RULES = `【payments（複数支払いの分割候補）の判定基準 — 重要】
+1つのファイルに「独立した支払い」が複数含まれる場合のみ、payments に各支払いを配列で返す。
+
+- 分割する（payments に2件以上を返す）:
+  払込先・収納機関・納付番号が異なる、独立した納付書・請求書・払込票が複数含まれている場合。
+  例: 1ページ目が輸入申告代行手数料の払込票（払込先: 日本郵便株式会社）、2ページ目が消費・地方消費税の納付書（収納機関: 国税）
+  → 手数料（支払手数料）と税金（租税公課）の2件に分割。
+- 分割しない（payments は空配列 [] を返す）:
+  1つの請求書・領収書の中に内訳明細（品目やサービスの行）が複数あるだけの場合。通常の請求書はこちら。
+- 迷った場合は必ず空配列 [] を返すこと（安全側に倒す。誤った分割は通常の請求書を細切れにしてしまうため）。
+- 分割する場合、各 amount はその支払い固有の個別金額とし、合計金額は使わない。
+- 分割する場合も、vendor_name / amount などのトップレベル項目は従来どおり書類全体の代表値（合計金額など）を返す。
+- 納付書の勘定科目: 消費税・法人税などの税金の納付 → 租税公課（選択肢に無ければそのまま「租税公課」と返してよい）。
+- この payments の判定は【追加指示】の有無にかかわらず必ず行うこと。`
+
 /** 支払方法・振込先の判定ルール（プロンプト末尾に差し込む） */
 const PAYMENT_EXTRACTION_RULES = `【支払方法（payment_method）の判定基準】
 判定は必ず次の優先順位で行うこと（上から順に確認し、最初に該当したものを採用する）。
@@ -123,6 +152,17 @@ export interface OcrItem {
   tax_rate: string
 }
 
+/** 分割支払い候補の型（1ファイルに独立した支払いが複数含まれる場合の1件分） */
+export interface SplitPayment {
+  vendor_name: string
+  amount: number | null
+  issue_date: string | null
+  due_date: string | null
+  description: string | null
+  tax_category: string | null
+  account_title: string | null
+}
+
 /** AI解析結果の型 */
 export interface OcrResult {
   vendor_name: string
@@ -139,6 +179,8 @@ export interface OcrResult {
   /** 振込先情報（抽出できなければ null） */
   bank_info: BankInfo | null
   items: OcrItem[]
+  /** 独立した複数支払いの分割候補（単一支払いの書類なら空配列） */
+  payments: SplitPayment[]
 }
 
 /** フォールバック値 */
@@ -155,6 +197,7 @@ const FALLBACK_RESULT: OcrResult = {
   payment_method: "unknown",
   bank_info: null,
   items: [],
+  payments: [],
 }
 
 /** analyzeDocument のオプション */
@@ -215,6 +258,7 @@ export async function analyzeDocument(
   "tax_category": "税区分（課税10%/課税8%（軽減）/非課税/免税/不課税/未判定のいずれか）",
   "account_title": "勘定科目（下記参照）",
 ${PAYMENT_JSON_FIELDS}
+${MULTI_PAYMENT_JSON_FIELD}
   "items": [
     {
       "item_name": "品目名",
@@ -253,7 +297,9 @@ ${PAYMENT_JSON_FIELDS}
 - スタッフ関連（食事補助等） → 福利厚生費
 - その他 → 雑費
 
-${PAYMENT_EXTRACTION_RULES}`
+${PAYMENT_EXTRACTION_RULES}
+
+${MULTI_PAYMENT_RULES}`
 
   // 429（レート制限）対策: 最大4回まで指数バックオフでリトライ（5秒・10秒・20秒・40秒）
   const maxRetries = 4
@@ -366,6 +412,7 @@ export async function analyzeDocumentFromText(
   "tax_category": "税区分（課税10%/課税8%（軽減）/非課税/免税/不課税/未判定のいずれか）",
   "account_title": "勘定科目（下記参照）",
 ${PAYMENT_JSON_FIELDS}
+${MULTI_PAYMENT_JSON_FIELD}
   "items": [
     {
       "item_name": "品目名",
@@ -405,6 +452,8 @@ ${PAYMENT_JSON_FIELDS}
 - その他 → 雑費
 
 ${PAYMENT_EXTRACTION_RULES}
+
+${MULTI_PAYMENT_RULES}
 
 --- テキストデータ ---
 ${text}`
@@ -602,6 +651,29 @@ function parseOcrResponse(responseText: string): OcrResult {
       }
     }
 
+    // 複数支払いの分割候補をパース（2件以上のときのみ有効。1件以下は分割なし扱い）
+    const payments: SplitPayment[] = []
+    if (Array.isArray(parsed.payments)) {
+      for (const p of parsed.payments) {
+        if (p && typeof p === "object") {
+          const o = p as Record<string, unknown>
+          const vendor = typeof o.vendor_name === "string" ? o.vendor_name.trim() : ""
+          const amount = normalizeAmount(o.amount)
+          // 払込先と金額の両方が取れていない行は無効
+          if (!vendor && amount === null) continue
+          payments.push({
+            vendor_name: vendor,
+            amount,
+            issue_date: typeof o.issue_date === "string" ? o.issue_date : null,
+            due_date: typeof o.due_date === "string" ? o.due_date : null,
+            description: typeof o.description === "string" ? o.description : null,
+            tax_category: typeof o.tax_category === "string" ? o.tax_category : null,
+            account_title: typeof o.account_title === "string" ? o.account_title : null,
+          })
+        }
+      }
+    }
+
     return {
       vendor_name: typeof parsed.vendor_name === "string" ? parsed.vendor_name : "",
       amount: normalizeAmount(parsed.amount),
@@ -615,6 +687,7 @@ function parseOcrResponse(responseText: string): OcrResult {
       payment_method: normalizePaymentMethod(parsed.payment_method),
       bank_info: normalizeBankInfo(parsed.bank_info),
       items,
+      payments: payments.length >= 2 ? payments : [],
     }
   } catch {
     console.error("Gemini応答のJSONパースに失敗:", responseText)

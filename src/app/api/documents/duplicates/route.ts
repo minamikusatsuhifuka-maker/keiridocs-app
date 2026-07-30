@@ -12,6 +12,8 @@ interface DocEntry {
   due_date: string | null
   dropbox_path: string | null
   file_hash: string | null
+  /** 分割登録グループID（同一グループは同じファイル由来の別支払いであり重複ではない） */
+  split_group: string | null
   created_at: string
 }
 
@@ -53,7 +55,7 @@ export async function GET() {
     // file_hashカラムがない場合にもフォールバック
     let query = supabase
       .from("documents")
-      .select("id, vendor_name, amount, type, issue_date, due_date, dropbox_path, file_hash, created_at")
+      .select("id, vendor_name, amount, type, issue_date, due_date, dropbox_path, file_hash, split_group, created_at")
       .order("created_at", { ascending: false })
 
     if (auth.role !== "admin") {
@@ -62,9 +64,9 @@ export async function GET() {
 
     let { data: documents, error } = await query
 
-    // file_hash カラムが存在しない場合はfile_hashなしで再取得
+    // file_hash / split_group カラムが存在しない場合はそれらなしで再取得
     if (error) {
-      console.warn("file_hashカラムでエラー、file_hashなしで再取得:", error.message)
+      console.warn("file_hash/split_groupカラムでエラー、これらなしで再取得:", error.message)
       let fallbackQuery = supabase
         .from("documents")
         .select("id, vendor_name, amount, type, issue_date, due_date, dropbox_path, created_at")
@@ -79,8 +81,8 @@ export async function GET() {
         console.error("重複チェック用書類取得エラー:", fallbackResult.error)
         return NextResponse.json({ error: "書類の取得に失敗しました" }, { status: 500 })
       }
-      // file_hash を null として扱う
-      documents = (fallbackResult.data ?? []).map((d) => ({ ...d, file_hash: null }))
+      // file_hash / split_group を null として扱う
+      documents = (fallbackResult.data ?? []).map((d) => ({ ...d, file_hash: null, split_group: null }))
       error = null
     }
 
@@ -109,6 +111,10 @@ export async function GET() {
 
     for (const [, docs] of hashGroups) {
       if (docs.length < 2) continue
+      // 同一の分割グループ（＝同じファイル由来の別支払い）は1つの論理書類として数える。
+      // 分割レコード同士だけのグループは重複ではないため除外する
+      const logicalKeys = new Set(docs.map((d) => d.split_group ?? `solo:${d.id}`))
+      if (logicalKeys.size < 2) continue
       groups.push({
         level: "exact",
         match_reason: "同一ファイル",

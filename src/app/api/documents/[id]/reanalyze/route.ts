@@ -14,10 +14,13 @@ export const maxDuration = 120
  * - 既存の新規登録フローは触らず、既存レコードのupdateとして動作する
  */
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params
+
+  // force_single=1 のときは分割検出をせず従来どおり1件のまま更新する
+  const forceSingle = new URL(request.url).searchParams.get("force_single") === "1"
 
   const supabase = await createClient()
   const { data: { user }, error: authError } = await supabase.auth.getUser()
@@ -56,7 +59,8 @@ export async function POST(
   const result = await reanalyzeDocument(
     supabase,
     doc as ReanalyzeTargetDoc,
-    modelId
+    modelId,
+    { detectSplit: !forceSingle }
   )
 
   if (!result.success) {
@@ -68,6 +72,16 @@ export async function POST(
       )
     }
     return NextResponse.json({ error: result.error || "再解析に失敗しました" }, { status: 500 })
+  }
+
+  // 複数支払いの分割候補を検出した場合はDB未更新のまま候補を返す
+  // （クライアントの確認UIを経て /api/documents/[id]/split で置き換える）
+  if (result.split_candidates && result.split_candidates.length >= 2) {
+    return NextResponse.json({
+      data: null,
+      split_candidates: result.split_candidates,
+      total_amount: result.amount,
+    })
   }
 
   // 更新後のレコードを返す

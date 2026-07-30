@@ -7,6 +7,7 @@ import {
   SALES_ANALYSIS_DOCUMENT_TYPES,
   SALES_ANALYSIS_EXTRA_HINT,
 } from "@/lib/gemini"
+import type { SplitPayment } from "@/lib/gemini"
 import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
 import { resolvePaymentCategory, type PaymentCategory } from "@/lib/payment-methods"
 import type { Database, Json } from "@/types/database"
@@ -39,6 +40,11 @@ export interface ReanalyzeResult {
   error?: string
   /** 失敗時の理由区分（成功時は undefined） */
   reason?: ReanalyzeFailReason
+  /**
+   * 複数支払いの分割候補（detectSplit 指定時に2件以上検出された場合のみ）。
+   * これが返るときはDBを更新していない（確認UIを経て /api/documents/[id]/split で置き換える）。
+   */
+  split_candidates?: SplitPayment[]
 }
 
 /** ファイルパスの拡張子からMIMEタイプを推定する（Dropboxのcontent-typeが不正確な場合の保険） */
@@ -81,7 +87,14 @@ const ANALYZABLE_MIME_TYPES = [
 export async function reanalyzeDocument(
   supabase: SupabaseServerClient,
   doc: ReanalyzeTargetDoc,
-  modelId: string
+  modelId: string,
+  options?: {
+    /**
+     * true のとき、解析結果に複数支払いの分割候補（2件以上）があれば
+     * DBを更新せず split_candidates を返す（個別再解析からの分割用）。
+     */
+    detectSplit?: boolean
+  }
 ): Promise<ReanalyzeResult> {
   try {
     if (!doc.dropbox_path) {
@@ -117,6 +130,17 @@ export async function reanalyzeDocument(
     const isEmpty = result.confidence === 0 && !result.vendor_name && result.amount === null
     if (isEmpty) {
       return { id: doc.id, success: false, amount: null, vendor_name: null, error: "AI解析の結果が空でした", reason: "empty" }
+    }
+
+    // 複数支払いの分割候補を検出した場合はDBを更新せず候補を返す（確認UIを経て置き換える）
+    if (options?.detectSplit && result.payments.length >= 2) {
+      return {
+        id: doc.id,
+        success: true,
+        amount: result.amount,
+        vendor_name: result.vendor_name || null,
+        split_candidates: result.payments,
+      }
     }
 
     // 抽出できた値のみ上書き（既存の良いデータを壊さない）。ocr_rawは常に更新

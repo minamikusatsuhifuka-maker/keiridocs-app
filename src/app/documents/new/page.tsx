@@ -15,8 +15,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { CameraCapture } from "@/components/documents/camera-capture"
 import { FileDropzone } from "@/components/documents/file-dropzone"
 import { OcrResultEditor, type DocumentFormData } from "@/components/documents/ocr-result-editor"
+import { SplitPaymentsConfirm } from "@/components/documents/split-payments-confirm"
 import { SalesRegisterModal } from "@/components/documents/sales-register-modal"
-import type { OcrResult } from "@/lib/gemini"
+import type { OcrResult, SplitPayment } from "@/lib/gemini"
 import {
   Dialog,
   DialogContent,
@@ -104,6 +105,13 @@ export default function NewDocumentPage() {
   const [pendingFormData, setPendingFormData] = useState<DocumentFormData | null>(null)
   const [pendingDropboxPath, setPendingDropboxPath] = useState<string | null>(null)
   const [pendingFileHash, setPendingFileHash] = useState<string | null>(null)
+  // 分割登録の重複ダイアログ用（分割候補を保持して「それでも登録する」で再送信）
+  const [pendingSplitPayments, setPendingSplitPayments] = useState<SplitPayment[] | null>(null)
+
+  // 複数支払いの分割候補: 「1件のまま登録する」を選んだら true（通常の編集フォームに戻す）
+  const [splitDismissed, setSplitDismissed] = useState(false)
+  // 要確認レビュー中の分割候補の取消フラグ（書類ごとにリセット）
+  const [reviewSplitDismissed, setReviewSplitDismissed] = useState(false)
 
   // useRefで重複スキップフラグを管理（stale closure問題を回避）
   const skipDuplicateRef = useRef(false)
@@ -212,6 +220,7 @@ export default function NewDocumentPage() {
     setIsAnalyzing(true)
     setShowEditor(true)
     setOcrResult(null)
+    setSplitDismissed(false)
 
     try {
       let base64: string
@@ -408,6 +417,89 @@ export default function NewDocumentPage() {
     }
   }, [])
 
+  // アップロード対象のファイルデータを準備する（チェックモードの登録・分割登録で共用）
+  const prepareFilePayload = useCallback(
+    async (vendorName: string, issueDate: string | null): Promise<{
+      fileBase64: string
+      fileName: string
+      fileMimeType: string
+    }> => {
+      let fileBase64: string
+      let fileName: string
+      let fileMimeType: string
+
+      if (activeTab === "camera" && capturedImages.length > 0) {
+        if (capturedImages.length > 1) {
+          const { combineImagesToPdf } = await import("@/lib/pdf")
+          const pdfBytes = await combineImagesToPdf(
+            capturedImages.map((img) => ({
+              base64: img.base64,
+              mimeType: img.mimeType,
+            }))
+          )
+          fileBase64 = Buffer.from(pdfBytes).toString("base64")
+          fileName = `${vendorName}_${issueDate || new Date().toISOString().slice(0, 10)}.pdf`
+          fileMimeType = "application/pdf"
+        } else {
+          fileBase64 = capturedImages[0].base64
+          fileName = `${vendorName}_${issueDate || new Date().toISOString().slice(0, 10)}.jpg`
+          fileMimeType = capturedImages[0].mimeType
+        }
+      } else if (activeTab === "upload" && uploadedFiles.length > 0) {
+        if (uploadedFiles.length > 1) {
+          const allImages = uploadedFiles.filter((f) =>
+            f.mimeType.startsWith("image/")
+          )
+          const allPdfs = uploadedFiles.filter(
+            (f) => f.mimeType === "application/pdf"
+          )
+
+          if (allImages.length > 0 && allPdfs.length === 0) {
+            const { combineImagesToPdf } = await import("@/lib/pdf")
+            const pdfBytes = await combineImagesToPdf(
+              allImages.map((f) => ({
+                base64: f.base64,
+                mimeType: f.mimeType,
+              }))
+            )
+            fileBase64 = Buffer.from(pdfBytes).toString("base64")
+            fileName = `${vendorName}_${issueDate || new Date().toISOString().slice(0, 10)}.pdf`
+            fileMimeType = "application/pdf"
+          } else {
+            fileBase64 = uploadedFiles[0].base64
+            fileName = uploadedFiles[0].name
+            fileMimeType = uploadedFiles[0].mimeType
+          }
+        } else {
+          fileBase64 = uploadedFiles[0].base64
+          fileName = uploadedFiles[0].name
+          fileMimeType = uploadedFiles[0].mimeType
+        }
+      } else {
+        throw new Error("ファイルが選択されていません")
+      }
+
+      // 拡張子が無い場合はMIMEタイプから追加
+      if (!fileName.includes(".")) {
+        const extMap: Record<string, string> = {
+          "application/pdf": ".pdf",
+          "image/jpeg": ".jpg",
+          "image/png": ".png",
+          "image/heic": ".heic",
+          "image/webp": ".webp",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+          "application/vnd.ms-excel": ".xls",
+          "text/csv": ".csv",
+        }
+        fileName += extMap[fileMimeType] || ".jpg"
+      }
+
+      return { fileBase64, fileName, fileMimeType }
+    },
+    [activeTab, capturedImages, uploadedFiles]
+  )
+
   // 書類を登録する（チェックモード）
   const handleSubmit = useCallback(
     async (formData: DocumentFormData) => {
@@ -415,76 +507,10 @@ export default function NewDocumentPage() {
 
       try {
         // 1. ファイルデータを準備
-        let fileBase64: string
-        let fileName: string
-        let fileMimeType: string
-
-        if (activeTab === "camera" && capturedImages.length > 0) {
-          if (capturedImages.length > 1) {
-            const { combineImagesToPdf } = await import("@/lib/pdf")
-            const pdfBytes = await combineImagesToPdf(
-              capturedImages.map((img) => ({
-                base64: img.base64,
-                mimeType: img.mimeType,
-              }))
-            )
-            fileBase64 = Buffer.from(pdfBytes).toString("base64")
-            fileName = `${formData.vendor_name}_${formData.issue_date || new Date().toISOString().slice(0, 10)}.pdf`
-            fileMimeType = "application/pdf"
-          } else {
-            fileBase64 = capturedImages[0].base64
-            fileName = `${formData.vendor_name}_${formData.issue_date || new Date().toISOString().slice(0, 10)}.jpg`
-            fileMimeType = capturedImages[0].mimeType
-          }
-        } else if (activeTab === "upload" && uploadedFiles.length > 0) {
-          if (uploadedFiles.length > 1) {
-            const allImages = uploadedFiles.filter((f) =>
-              f.mimeType.startsWith("image/")
-            )
-            const allPdfs = uploadedFiles.filter(
-              (f) => f.mimeType === "application/pdf"
-            )
-
-            if (allImages.length > 0 && allPdfs.length === 0) {
-              const { combineImagesToPdf } = await import("@/lib/pdf")
-              const pdfBytes = await combineImagesToPdf(
-                allImages.map((f) => ({
-                  base64: f.base64,
-                  mimeType: f.mimeType,
-                }))
-              )
-              fileBase64 = Buffer.from(pdfBytes).toString("base64")
-              fileName = `${formData.vendor_name}_${formData.issue_date || new Date().toISOString().slice(0, 10)}.pdf`
-              fileMimeType = "application/pdf"
-            } else {
-              fileBase64 = uploadedFiles[0].base64
-              fileName = uploadedFiles[0].name
-              fileMimeType = uploadedFiles[0].mimeType
-            }
-          } else {
-            fileBase64 = uploadedFiles[0].base64
-            fileName = uploadedFiles[0].name
-            fileMimeType = uploadedFiles[0].mimeType
-          }
-        } else {
-          throw new Error("ファイルが選択されていません")
-        }
-
-        // 拡張子が無い場合はMIMEタイプから追加
-        if (!fileName.includes(".")) {
-          const extMap: Record<string, string> = {
-            "application/pdf": ".pdf",
-            "image/jpeg": ".jpg",
-            "image/png": ".png",
-            "image/heic": ".heic",
-            "image/webp": ".webp",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-            "application/vnd.ms-excel": ".xls",
-            "text/csv": ".csv",
-          }
-          fileName += extMap[fileMimeType] || ".jpg"
-        }
+        const { fileBase64, fileName } = await prepareFilePayload(
+          formData.vendor_name,
+          formData.issue_date || null
+        )
 
         // 2. Dropboxにアップロード（重複ダイアログからの再送信時はスキップ）
         const isForceSubmit = skipDuplicateRef.current
@@ -624,7 +650,129 @@ export default function NewDocumentPage() {
         setIsSubmitting(false)
       }
     },
-    [activeTab, capturedImages, uploadedFiles, ocrResult, registerToCalendar]
+    [activeTab, prepareFilePayload, ocrResult, registerToCalendar]
+  )
+
+  // 分割登録（チェックモード）: ファイルを1つアップロードし、支払いごとに別レコードを登録する
+  const handleSplitSubmit = useCallback(
+    async (payments: SplitPayment[]) => {
+      if (payments.length < 2) return
+      setIsSubmitting(true)
+
+      try {
+        const docType = ocrResult?.type ?? documentType
+
+        // 1. Dropboxにアップロード（重複ダイアログからの再送信時はスキップ）
+        const isForceSubmit = skipDuplicateRef.current
+        let dropboxPath: string
+        let fileHash: string
+
+        if (isForceSubmit && pendingDropboxPathRef.current) {
+          dropboxPath = pendingDropboxPathRef.current
+          fileHash = pendingFileHashRef.current || ""
+        } else {
+          const { fileBase64, fileName } = await prepareFilePayload(
+            payments[0].vendor_name || "分割書類",
+            payments[0].issue_date
+          )
+          const uploadResponse = await fetch("/api/dropbox/upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              base64: fileBase64,
+              fileName,
+              type: docType,
+              date: payments[0].issue_date,
+              status: "未処理",
+              vendorName: payments[0].vendor_name,
+            }),
+          })
+
+          if (!uploadResponse.ok) {
+            const errorData = await uploadResponse.json() as { error: string }
+            throw new Error(errorData.error || "Dropboxへのアップロードに失敗しました")
+          }
+
+          const { data: uploadData } = await uploadResponse.json() as {
+            data: { path: string; file_hash: string }
+          }
+          dropboxPath = uploadData.path
+          fileHash = uploadData.file_hash
+        }
+
+        // refをリセット
+        skipDuplicateRef.current = false
+
+        // 2. 分割登録API（ファイルは1つ・レコードは複数）
+        const res = await fetch("/api/documents/split-register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            payments,
+            type: docType,
+            input_method: activeTab === "camera" ? "camera" : "upload",
+            dropbox_path: dropboxPath,
+            file_hash: fileHash,
+            ocr_raw: ocrResult,
+            skip_duplicate_check: isForceSubmit,
+          }),
+        })
+
+        if (!res.ok) {
+          const errorData = await res.json() as { error: string }
+          throw new Error(errorData.error || "分割登録に失敗しました")
+        }
+
+        const json = await res.json() as {
+          data: { id?: string; due_date?: string | null }[] | null
+          duplicates?: DuplicateCandidate[]
+          duplicate_level?: DuplicateLevel
+        }
+
+        // 重複候補がある場合はダイアログを表示（分割候補を保持して再送信できるように）
+        if (json.duplicates && json.duplicates.length > 0) {
+          setDuplicates(json.duplicates)
+          setDuplicateLevel(json.duplicate_level || null)
+          setPendingSplitPayments(payments)
+          setPendingDropboxPath(dropboxPath)
+          setPendingFileHash(fileHash)
+          pendingDropboxPathRef.current = dropboxPath
+          pendingFileHashRef.current = fileHash
+          setShowDuplicateDialog(true)
+          return
+        }
+
+        pendingDropboxPathRef.current = null
+        pendingFileHashRef.current = null
+        setPendingSplitPayments(null)
+
+        const docs = json.data ?? []
+        toast.success(`${docs.length}件に分割して登録しました`)
+        setIsRegistered(true)
+
+        // 支払期日があるレコードごとにGoogleカレンダーへ登録（best-effort）
+        if (registerToCalendar) {
+          for (const d of docs) {
+            if (d?.id && d.due_date) {
+              try {
+                await fetch("/api/calendar", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ documentId: d.id }),
+                })
+              } catch {
+                // カレンダー登録失敗は無視（書類登録は成功している）
+              }
+            }
+          }
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "分割登録に失敗しました")
+      } finally {
+        setIsSubmitting(false)
+      }
+    },
+    [ocrResult, documentType, activeTab, prepareFilePayload, registerToCalendar]
   )
 
   // フォーム全体をリセットして次の書類を登録可能にする
@@ -645,6 +793,9 @@ export default function NewDocumentPage() {
     setAutoCurrentFile("")
     setIsReviewing(false)
     setReviewIndex(0)
+    setSplitDismissed(false)
+    setReviewSplitDismissed(false)
+    setPendingSplitPayments(null)
     if (documentTypes.length > 0) {
       setDocumentType(documentTypes[0].name)
     } else {
@@ -652,19 +803,26 @@ export default function NewDocumentPage() {
     }
   }, [documentTypes])
 
-  // 重複を無視して強制登録する
+  // 重複を無視して強制登録する（分割候補が保留中なら分割登録として再送信）
   const handleForceSubmit = useCallback(async () => {
+    if (pendingSplitPayments) {
+      skipDuplicateRef.current = true
+      setShowDuplicateDialog(false)
+      await handleSplitSubmit(pendingSplitPayments)
+      return
+    }
     if (!pendingFormData) return
     skipDuplicateRef.current = true
     setShowDuplicateDialog(false)
     await handleSubmit(pendingFormData)
-  }, [pendingFormData, handleSubmit])
+  }, [pendingFormData, pendingSplitPayments, handleSubmit, handleSplitSubmit])
 
   // 要確認書類のレビューを開始
   const startReview = useCallback(() => {
     const needsReview = autoResults.filter((r) => r.status === "needs_review")
     if (needsReview.length === 0) return
     setReviewIndex(0)
+    setReviewSplitDismissed(false)
     setIsReviewing(true)
     // 最初の要確認書類のOCR結果をセット
     const first = needsReview[0]
@@ -767,8 +925,92 @@ export default function NewDocumentPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoResults, reviewIndex, uploadedFiles])
 
+  // 要確認書類のレビュー: 分割して登録する場合（複数支払いの分割候補を確認済み）
+  const handleReviewSplitSubmit = useCallback(async (payments: SplitPayment[]) => {
+    if (payments.length < 2) return
+    setIsSubmitting(true)
+    const needsReview = autoResults.filter((r) => r.status === "needs_review")
+    const currentItem = needsReview[reviewIndex]
+
+    if (!currentItem?.ocr_result) {
+      setIsSubmitting(false)
+      return
+    }
+
+    try {
+      // 元のファイルデータを使って1回だけアップロード
+      const matchedFile = uploadedFiles.find((f) => f.name === currentItem.filename)
+      if (!matchedFile) {
+        throw new Error("元のファイルが見つかりません")
+      }
+
+      const docType = currentItem.ocr_result.type ?? documentType
+      const uploadResponse = await fetch("/api/dropbox/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          base64: matchedFile.base64,
+          fileName: matchedFile.name,
+          type: docType,
+          date: payments[0].issue_date,
+          status: "未処理",
+          vendorName: payments[0].vendor_name,
+        }),
+      })
+
+      if (!uploadResponse.ok) {
+        const errorData = await uploadResponse.json() as { error: string }
+        throw new Error(errorData.error || "Dropboxへのアップロードに失敗しました")
+      }
+
+      const { data: uploadData } = await uploadResponse.json() as {
+        data: { path: string; file_hash: string }
+      }
+
+      // 分割登録（重複はレビュー理由として提示済みのためチェックはスキップ）
+      const res = await fetch("/api/documents/split-register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payments,
+          type: docType,
+          input_method: "upload",
+          dropbox_path: uploadData.path,
+          file_hash: uploadData.file_hash,
+          ocr_raw: currentItem.ocr_result,
+          skip_duplicate_check: true,
+        }),
+      })
+
+      if (!res.ok) {
+        const errorData = await res.json() as { error: string }
+        throw new Error(errorData.error || "分割登録に失敗しました")
+      }
+
+      const json = await res.json() as { data: unknown[] | null }
+      toast.success(`${currentItem.filename} を${(json.data ?? []).length}件に分割して登録しました`)
+
+      // 結果を更新
+      setAutoResults((prev) =>
+        prev.map((r) =>
+          r.filename === currentItem.filename
+            ? { ...r, status: "registered" as const }
+            : r
+        )
+      )
+
+      moveToNextReview()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "分割登録に失敗しました")
+    } finally {
+      setIsSubmitting(false)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoResults, reviewIndex, uploadedFiles, documentType])
+
   // 次の要確認書類へ移動、または完了
   const moveToNextReview = useCallback(() => {
+    setReviewSplitDismissed(false)
     const needsReview = autoResults.filter((r) => r.status === "needs_review")
     const nextIndex = reviewIndex + 1
     if (nextIndex < needsReview.length) {
@@ -1205,17 +1447,45 @@ export default function NewDocumentPage() {
       )}
 
       {/* OCR結果編集フォーム（チェックモードまたはレビュー中） */}
-      {showEditor && !isRegistered && (
-        <OcrResultEditor
-          ocrResult={ocrResult}
-          defaultType={documentType}
-          isAnalyzing={isAnalyzing}
-          isSubmitting={isSubmitting}
-          onSubmit={isReviewing ? handleReviewSubmit : handleSubmit}
-          modelUsed={modelUsed}
-          documentTypes={documentTypes.length > 0 ? documentTypes : undefined}
-        />
-      )}
+      {showEditor && !isRegistered && (() => {
+        // 複数支払いの分割候補があれば、先に分割確認UIを表示する
+        // （「1件のまま登録する」を選んだら従来の編集フォームに戻す）
+        const reviewItem = isReviewing
+          ? autoResults.filter((r) => r.status === "needs_review")[reviewIndex]
+          : null
+        const splitSource = isReviewing ? reviewItem?.ocr_result : ocrResult
+        const dismissed = isReviewing ? reviewSplitDismissed : splitDismissed
+        const splitCandidates =
+          !dismissed && splitSource?.payments && splitSource.payments.length >= 2
+            ? splitSource.payments
+            : null
+
+        if (splitCandidates) {
+          return (
+            <SplitPaymentsConfirm
+              payments={splitCandidates}
+              totalAmount={splitSource?.amount ?? null}
+              isSubmitting={isSubmitting}
+              onConfirmSplit={isReviewing ? handleReviewSplitSubmit : handleSplitSubmit}
+              onRegisterAsOne={() =>
+                isReviewing ? setReviewSplitDismissed(true) : setSplitDismissed(true)
+              }
+            />
+          )
+        }
+
+        return (
+          <OcrResultEditor
+            ocrResult={ocrResult}
+            defaultType={documentType}
+            isAnalyzing={isAnalyzing}
+            isSubmitting={isSubmitting}
+            onSubmit={isReviewing ? handleReviewSubmit : handleSubmit}
+            modelUsed={modelUsed}
+            documentTypes={documentTypes.length > 0 ? documentTypes : undefined}
+          />
+        )
+      })()}
 
       {/* 重複警告ダイアログ */}
       <Dialog open={showDuplicateDialog} onOpenChange={setShowDuplicateDialog}>
@@ -1268,6 +1538,7 @@ export default function NewDocumentPage() {
               onClick={() => {
                 setShowDuplicateDialog(false)
                 setPendingFormData(null)
+                setPendingSplitPayments(null)
                 setPendingDropboxPath(null)
                 setPendingFileHash(null)
                 setDuplicates([])

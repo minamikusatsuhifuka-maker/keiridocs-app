@@ -528,12 +528,24 @@ export async function DELETE(request: NextRequest) {
 
   // Dropboxファイルも削除（失敗してもDB削除は成功扱い）
   if (docData.dropbox_path) {
-    try {
-      console.log("Dropbox削除:", docData.dropbox_path)
-      await deleteFile(docData.dropbox_path)
-      console.log("Dropbox削除成功:", docData.dropbox_path)
-    } catch (dropboxError) {
-      console.error("Dropboxファイル削除エラー（書類ID: " + id + "）:", dropboxError)
+    // 分割登録などで同じファイルを参照している他のレコードが残っている場合は
+    // ファイルを消さない（残りのレコードの原本が失われるため）
+    const { data: sharingDocs } = await supabase
+      .from("documents")
+      .select("id")
+      .eq("dropbox_path", docData.dropbox_path)
+      .limit(1)
+
+    if (sharingDocs && sharingDocs.length > 0) {
+      console.log("同じファイルを参照する書類が残っているため、Dropbox削除をスキップ:", docData.dropbox_path)
+    } else {
+      try {
+        console.log("Dropbox削除:", docData.dropbox_path)
+        await deleteFile(docData.dropbox_path)
+        console.log("Dropbox削除成功:", docData.dropbox_path)
+      } catch (dropboxError) {
+        console.error("Dropboxファイル削除エラー（書類ID: " + id + "）:", dropboxError)
+      }
     }
   } else {
     console.log("Dropboxパスなし、ファイル削除スキップ")

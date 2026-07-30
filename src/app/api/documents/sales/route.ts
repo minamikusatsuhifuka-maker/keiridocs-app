@@ -166,6 +166,7 @@ const EMPTY_OCR_RESULT: OcrResult = {
   payment_method: "unknown",
   bank_info: null,
   items: [],
+  payments: [],
 }
 
 /** 渡された任意のオブジェクトを安全にOcrResult形に整形する */
@@ -198,6 +199,8 @@ function coerceOcrResult(input: unknown): OcrResult {
     payment_method: normalizePaymentMethod(o.payment_method),
     bank_info: normalizeBankInfo(o.bank_info),
     items,
+    // 売上登録では分割候補は使わない（型整合のため空配列）
+    payments: [],
   }
 }
 

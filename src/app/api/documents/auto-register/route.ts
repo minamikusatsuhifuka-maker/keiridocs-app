@@ -94,6 +94,11 @@ function checkReviewReasons(ocrResult: OcrResult): string[] {
     reasons.push("取引先名未検出")
   }
 
+  // 独立した支払いが複数含まれる（合計1件で自動登録せず、確認UIで分割を選んでもらう）
+  if (Array.isArray(ocrResult.payments) && ocrResult.payments.length >= 2) {
+    reasons.push(`複数の支払いを検出（${ocrResult.payments.length}件・分割候補）`)
+  }
+
   return reasons
 }
 
