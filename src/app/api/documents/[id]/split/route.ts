@@ -145,6 +145,13 @@ export async function POST(
 
     if (updateError) {
       console.error("分割: 元レコード更新エラー:", updateError)
+      // split_group カラム未作成（040_split_group.sql 未実行）を明示する
+      if (updateError.message?.includes("split_group")) {
+        return NextResponse.json(
+          { error: "DBに split_group 列がありません。Supabase SQL Editor で supabase/migrations/040_split_group.sql を実行してください" },
+          { status: 500 }
+        )
+      }
       return NextResponse.json({ error: "元レコードの更新に失敗しました" }, { status: 500 })
     }
 
