@@ -16,6 +16,11 @@ interface SplitPaymentInput {
   account_title: string | null
 }
 
+/** 表示ラベル用の「（AI判定）」が値に混ざっていた場合に除去する */
+function stripAiLabel(value: string): string {
+  return value.replace(/[（(]AI判定[）)]\s*$/, "").trim()
+}
+
 /** リクエストボディから分割支払い配列を検証・正規化する */
 function parsePayments(raw: unknown): SplitPaymentInput[] | null {
   if (!Array.isArray(raw) || raw.length < 2) return null
@@ -32,8 +37,8 @@ function parsePayments(raw: unknown): SplitPaymentInput[] | null {
       issue_date: typeof o.issue_date === "string" && o.issue_date ? o.issue_date : null,
       due_date: typeof o.due_date === "string" && o.due_date ? o.due_date : null,
       description: typeof o.description === "string" && o.description ? o.description : null,
-      tax_category: typeof o.tax_category === "string" && o.tax_category ? o.tax_category : null,
-      account_title: typeof o.account_title === "string" && o.account_title ? o.account_title : null,
+      tax_category: typeof o.tax_category === "string" && o.tax_category ? stripAiLabel(o.tax_category) : null,
+      account_title: typeof o.account_title === "string" && o.account_title ? stripAiLabel(o.account_title) : null,
     })
   }
   return payments
@@ -141,14 +146,15 @@ export async function POST(request: NextRequest) {
 
     if (error) {
       console.error("分割登録エラー:", error)
-      // split_group カラム未作成（040_split_group.sql 未実行）を明示する
-      if (error.message?.includes("split_group")) {
-        return NextResponse.json(
-          { error: "DBに split_group 列がありません。Supabase SQL Editor で supabase/migrations/040_split_group.sql を実行してください" },
-          { status: 500 }
-        )
-      }
-      return NextResponse.json({ error: "分割登録に失敗しました" }, { status: 500 })
+      // 全レコードは1回の一括INSERT（単一ステートメント）なので、失敗時は1件も登録されない。
+      // 原因調査できるよう実際のDBエラーを表示する。
+      const hint = error.message?.includes("split_group")
+        ? "（DBがsplit_group列を認識できていません。040_split_group.sql が未実行なら実行を、実行直後の場合は1〜2分待ってから再試行してください）"
+        : ""
+      return NextResponse.json(
+        { error: `分割登録に失敗しました（1件も登録されていません）: ${error.message}${hint}` },
+        { status: 500 }
+      )
     }
 
     return NextResponse.json({ data, split_group: splitGroup }, { status: 201 })

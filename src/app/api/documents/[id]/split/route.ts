@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { randomUUID } from "crypto"
 import { createClient } from "@/lib/supabase/server"
+import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { getCurrentUserRole } from "@/lib/auth"
 import { normalizeAmount } from "@/lib/gemini"
 import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
@@ -19,6 +20,11 @@ interface SplitPaymentInput {
   account_title: string | null
 }
 
+/** 表示ラベル用の「（AI判定）」が値に混ざっていた場合に除去する */
+function stripAiLabel(value: string): string {
+  return value.replace(/[（(]AI判定[）)]\s*$/, "").trim()
+}
+
 /** リクエストボディから分割支払い配列を検証・正規化する */
 function parsePayments(raw: unknown): SplitPaymentInput[] | null {
   if (!Array.isArray(raw) || raw.length < 2) return null
@@ -35,19 +41,36 @@ function parsePayments(raw: unknown): SplitPaymentInput[] | null {
       issue_date: typeof o.issue_date === "string" && o.issue_date ? o.issue_date : null,
       due_date: typeof o.due_date === "string" && o.due_date ? o.due_date : null,
       description: typeof o.description === "string" && o.description ? o.description : null,
-      tax_category: typeof o.tax_category === "string" && o.tax_category ? o.tax_category : null,
-      account_title: typeof o.account_title === "string" && o.account_title ? o.account_title : null,
+      tax_category: typeof o.tax_category === "string" && o.tax_category ? stripAiLabel(o.tax_category) : null,
+      account_title: typeof o.account_title === "string" && o.account_title ? stripAiLabel(o.account_title) : null,
     })
   }
   return payments
 }
 
 /**
+ * 書き込み用の service role クライアント。
+ * 権限チェック（admin/staff＋対象スコープ）はルート冒頭でユーザークライアントに対して行い、
+ * 通過後の書き込みは service role で行う。RLSポリシーやスキーマキャッシュの
+ * UPDATE/INSERT非対称による「一部だけ書き込まれる」事故を避けるため。
+ */
+function createServiceClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!url || !serviceKey) return null
+  return createSupabaseClient<Database>(url, serviceKey)
+}
+
+/**
  * 既存レコードの分割 API
  * POST /api/documents/[id]/split
  * 合計1件で登録済みのレコードを、分割後の複数レコードに置き換える。
- * 方式: 元レコードを1件目の支払いに更新し、2件目以降を新規レコードとして追加する
- * （元レコードのID・登録日時・カレンダー連携を保持するため、削除→再作成はしない）。
+ *
+ * 方式: 「2件目以降のINSERT → 成功したら元レコードを1件目にUPDATE」の順で実行する。
+ * - INSERTが失敗した場合は何も変更されない（元の1件がそのまま残る）
+ * - UPDATEが失敗した場合は挿入済みレコードを削除してロールバックする
+ * → 「1件目だけ更新されて2件目が消える」部分失敗状態を作らない。
+ *
  * ファイルは1つのまま、全レコードが同一の dropbox_path・file_hash を参照する。
  */
 export async function POST(
@@ -66,6 +89,11 @@ export async function POST(
   const auth = await getCurrentUserRole()
   if (auth?.role !== "admin" && auth?.role !== "staff") {
     return NextResponse.json({ error: "編集権限がありません" }, { status: 403 })
+  }
+
+  const service = createServiceClient()
+  if (!service) {
+    return NextResponse.json({ error: "サーバー設定が不足しています（SERVICE_ROLE_KEY）" }, { status: 500 })
   }
 
   try {
@@ -93,12 +121,19 @@ export async function POST(
 
     const original = doc as DocumentRow
 
-    // 既に分割済みのレコードを再分割すると兄弟レコードと二重計上になるため拒否する
+    // 既に分割済み（同グループに複数レコードが存在）の再分割は二重計上になるため拒否する。
+    // グループに自分1件しか無い場合は「分割が途中で失敗した状態」なので再分割を許可する（復旧経路）。
     if (original.split_group) {
-      return NextResponse.json(
-        { error: "この書類は既に分割登録されています。再分割する場合は分割済みの各レコードを個別に修正してください" },
-        { status: 400 }
-      )
+      const { count } = await supabase
+        .from("documents")
+        .select("id", { count: "exact", head: true })
+        .eq("split_group", original.split_group)
+      if ((count ?? 0) > 1) {
+        return NextResponse.json(
+          { error: "この書類は既に分割登録されています。再分割する場合は分割済みの各レコードを個別に修正してください" },
+          { status: 400 }
+        )
+      }
     }
 
     const splitGroup = randomUUID()
@@ -125,9 +160,48 @@ export async function POST(
       })
     }
 
-    // --- 1. 元レコードを1件目の支払いに更新 ---
+    // --- 1. 2件目以降を先にINSERT（失敗したら何も変更しない） ---
+    const restRows = []
+    for (let i = 1; i < payments.length; i++) {
+      const p = payments[i]
+      restRows.push({
+        type: original.type,
+        vendor_name: p.vendor_name,
+        amount: p.amount,
+        issue_date: p.issue_date,
+        due_date: p.due_date,
+        description: p.description,
+        input_method: original.input_method,
+        status: await resolveStatus(p),
+        dropbox_path: original.dropbox_path,
+        ocr_raw: buildOcrRaw(p, i),
+        tax_category: p.tax_category || "未判定",
+        account_title: p.account_title || "",
+        payment_method: original.payment_method,
+        bank_info: original.bank_info,
+        file_hash: original.file_hash,
+        split_group: splitGroup,
+        registrant_id: original.registrant_id,
+        user_id: original.user_id,
+      })
+    }
+
+    const { data: insertedRows, error: insertError } = await service
+      .from("documents")
+      .insert(restRows)
+      .select("id")
+
+    if (insertError) {
+      console.error("分割: 追加レコード挿入エラー:", insertError)
+      return NextResponse.json(
+        { error: `分割レコードの追加に失敗しました（元の書類は変更されていません）: ${insertError.message}` },
+        { status: 500 }
+      )
+    }
+
+    // --- 2. 元レコードを1件目の支払いにUPDATE（失敗したら挿入分を削除してロールバック） ---
     const first = payments[0]
-    const { error: updateError } = await supabase
+    const { error: updateError } = await service
       .from("documents")
       .update({
         vendor_name: first.vendor_name,
@@ -145,58 +219,29 @@ export async function POST(
 
     if (updateError) {
       console.error("分割: 元レコード更新エラー:", updateError)
-      // split_group カラム未作成（040_split_group.sql 未実行）を明示する
-      if (updateError.message?.includes("split_group")) {
-        return NextResponse.json(
-          { error: "DBに split_group 列がありません。Supabase SQL Editor で supabase/migrations/040_split_group.sql を実行してください" },
-          { status: 500 }
-        )
+      // ロールバック: 挿入済みの2件目以降を削除して元の状態に戻す
+      const insertedIds = (insertedRows ?? []).map((r) => (r as { id: string }).id)
+      if (insertedIds.length > 0) {
+        const { error: rollbackError } = await service
+          .from("documents")
+          .delete()
+          .in("id", insertedIds)
+        if (rollbackError) {
+          console.error("分割: ロールバック削除エラー:", rollbackError)
+          return NextResponse.json(
+            { error: `元レコードの更新に失敗し、ロールバックにも失敗しました。書類一覧を確認してください: ${updateError.message}` },
+            { status: 500 }
+          )
+        }
       }
-      return NextResponse.json({ error: "元レコードの更新に失敗しました" }, { status: 500 })
-    }
-
-    // --- 2. 2件目以降を新規レコードとして追加（ファイル・入力経路などは元レコードから引き継ぐ） ---
-    const restRows = []
-    for (let i = 1; i < payments.length; i++) {
-      const p = payments[i]
-      restRows.push({
-        type: original.type,
-        vendor_name: p.vendor_name,
-        amount: p.amount,
-        issue_date: p.issue_date,
-        due_date: p.due_date,
-        description: p.description,
-        input_method: original.input_method,
-        status: await resolveStatus(p),
-        dropbox_path: original.dropbox_path,
-        thumbnail_url: original.thumbnail_url,
-        ocr_raw: buildOcrRaw(p, i),
-        tax_category: p.tax_category || "未判定",
-        account_title: p.account_title || "",
-        payment_method: original.payment_method,
-        bank_info: original.bank_info,
-        file_hash: original.file_hash,
-        split_group: splitGroup,
-        registrant_id: original.registrant_id,
-        document_staff_id: original.document_staff_id,
-        user_id: original.user_id,
-      })
-    }
-
-    const { error: insertError } = await supabase
-      .from("documents")
-      .insert(restRows)
-
-    if (insertError) {
-      console.error("分割: 追加レコード挿入エラー:", insertError)
       return NextResponse.json(
-        { error: "分割レコードの追加に失敗しました（元レコードは1件目の内容に更新済みです）" },
+        { error: `元レコードの更新に失敗したため、分割を取り消しました（元の書類はそのまま残っています）: ${updateError.message}` },
         { status: 500 }
       )
     }
 
     // 分割後の全レコードを返す
-    const { data: groupRows } = await supabase
+    const { data: groupRows } = await service
       .from("documents")
       .select("*")
       .eq("split_group", splitGroup)
