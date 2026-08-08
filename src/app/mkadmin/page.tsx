@@ -23,7 +23,8 @@ import { DocumentStaffList } from "@/components/settings/document-staff-list"
 import { StaffManagement } from "@/components/line-staff/staff-management"
 import { PaymentMemo } from "@/components/mkadmin/payment-memo"
 import { StaffReimburseList } from "@/components/mkadmin/staff-reimburse-list"
-import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus, Users, MessageCircle, Wallet, Loader2, Receipt, ArrowRight, ClipboardList } from "lucide-react"
+import { StaffManualEntry } from "@/components/mkadmin/staff-manual-entry"
+import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus, Users, MessageCircle, Wallet, Loader2, Receipt, ArrowRight, ClipboardList, HandCoins } from "lucide-react"
 
 // 管理画面（/mkadmin）認証用 sessionStorage キー
 const SESSION_KEY = "mkadmin-auth"
@@ -185,6 +186,10 @@ export default function MkadminPage() {
             <Wallet className="size-4" />
             支払いメモ
           </TabsTrigger>
+          <TabsTrigger value="staff-manual-entry" className="flex items-center gap-1.5">
+            <HandCoins className="size-4" />
+            立替手動登録
+          </TabsTrigger>
           <TabsTrigger value="staff-reimburse" className="flex items-center gap-1.5">
             <ClipboardList className="size-4" />
             立替まとめ
@@ -253,6 +258,10 @@ export default function MkadminPage() {
 
         <TabsContent value="payment-memo">
           <PaymentMemo />
+        </TabsContent>
+
+        <TabsContent value="staff-manual-entry">
+          <StaffManualEntry />
         </TabsContent>
 
         <TabsContent value="staff-reimburse">

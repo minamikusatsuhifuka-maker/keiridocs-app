@@ -196,3 +196,45 @@ export async function settleStaffReceipt(params: {
     balance: newBalance,
   }
 }
+
+/* ---------- セミナー2回目以降フラグ（初回ATC表示制御） ---------- */
+
+/**
+ * 指定スタッフが「セミナー2回目以降」を申請済みか（staff_members.seminar_repeat_claimed_at が非NULL）。
+ * LINEと同じく、申請済みのスタッフには「初回ATC＋アカデミー会員費」を選ばせない判定に使う。
+ * カラム未適用（migration 032未実行）・エラー時は未申請扱い（false）で精算を止めない。
+ */
+export async function isSeminarRepeatClaimed(
+  client: ServiceClient,
+  staffMemberId: string
+): Promise<boolean> {
+  const { data, error } = await client
+    .from("staff_members")
+    .select("seminar_repeat_claimed_at")
+    .eq("id", staffMemberId)
+    .single()
+  if (error) {
+    console.warn("[staff-refund] セミナー2回目以降判定スキップ（migration 032未実行?）:", error.message)
+    return false
+  }
+  return !!(data as { seminar_repeat_claimed_at: string | null } | null)?.seminar_repeat_claimed_at
+}
+
+/**
+ * 「セミナー2回目以降」申請完了を記録する（staff_members.seminar_repeat_claimed_at をセット）。
+ * 以降そのスタッフには「初回ATC＋アカデミー会員費」を非表示にする（LINEと同一）。
+ * 既に申請済みなら元の日時を保持（未設定＝NULLのときだけセット）。カラム未適用・失敗時はログのみ。
+ */
+export async function markSeminarRepeatClaimed(
+  client: ServiceClient,
+  staffMemberId: string
+): Promise<void> {
+  const { error } = await client
+    .from("staff_members")
+    .update({ seminar_repeat_claimed_at: new Date().toISOString() })
+    .eq("id", staffMemberId)
+    .is("seminar_repeat_claimed_at", null)
+  if (error) {
+    console.warn("[staff-refund] seminar_repeat_claimed_at 更新スキップ（migration 032未実行?）:", error.message)
+  }
+}
