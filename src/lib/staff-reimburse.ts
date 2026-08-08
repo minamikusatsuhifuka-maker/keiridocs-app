@@ -67,11 +67,33 @@ interface TxRow {
   staff_receipt_id: string | null
 }
 
-/** ai_raw（OCR生データ）から発行日（issue_date）を取り出す。無ければ "" */
-function extractIssueDate(aiRaw: unknown): string {
-  if (!aiRaw || typeof aiRaw !== "object") return ""
-  const v = (aiRaw as Record<string, unknown>).issue_date
-  return typeof v === "string" ? v.trim() : ""
+/**
+ * ai_raw（OCR生データ）から発行日（issue_date）を取り出す。無ければ ""。
+ *
+ * 注意: staff_receipts.ai_raw は jsonb だが、実データは全件が二重エンコードされた
+ * JSON文字列スカラーとして格納されている（PostgREST の ai_raw->>issue_date が null になる）。
+ * そのためオブジェクトだけでなく「JSON文字列」も受けて中身の issue_date を読む。
+ * これで LINE申請分・手動登録分ともに会計士CSVの「支払年月日」が正しく出る。
+ */
+export function extractIssueDate(aiRaw: unknown): string {
+  // jsonb がオブジェクトとして返る場合
+  if (aiRaw && typeof aiRaw === "object") {
+    const v = (aiRaw as Record<string, unknown>).issue_date
+    return typeof v === "string" ? v.trim() : ""
+  }
+  // 実データの多く: JSON文字列スカラー（二重エンコード）。パースして取り出す
+  if (typeof aiRaw === "string") {
+    try {
+      const parsed = JSON.parse(aiRaw)
+      if (parsed && typeof parsed === "object") {
+        const v = (parsed as Record<string, unknown>).issue_date
+        return typeof v === "string" ? v.trim() : ""
+      }
+    } catch {
+      // JSONでない文字列は発行日なし扱い
+    }
+  }
+  return ""
 }
 
 /** ISO日時を日本時間の YYYY-MM-DD に変換（サーバTZがUTCのため明示変換） */
