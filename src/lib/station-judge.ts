@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai"
-import { DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
+import { DEFAULT_GEMINI_MODEL, LOW_THINKING_CONFIG } from "@/lib/gemini"
 
 /**
  * 駅名テキストから「駅名＋都道府県（＋代表路線）」をGeminiで判定する（自宅最寄り駅の自己登録用）。
@@ -45,13 +45,13 @@ export async function judgeStation(input: string): Promise<StationJudge> {
 
   try {
     const genAI = new GoogleGenerativeAI(apiKey)
-    // Gemini 3.x は思考が既定ONで小さな固定JSONが切れることがあるため思考を最小化する
+    // Gemini 3.x は思考が既定ONで小さな固定JSONが切れることがあるため思考レベルを下げる
+    // （3.7 は MINIMAL 不可・temperature 等は非対応のため指定しない）
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const generationConfig: any = {
       responseMimeType: "application/json",
-      temperature: 0,
       maxOutputTokens: 4096,
-      thinkingConfig: { thinkingBudget: 0 },
+      thinkingConfig: LOW_THINKING_CONFIG,
     }
     const model = genAI.getGenerativeModel({ model: DEFAULT_GEMINI_MODEL, generationConfig })
 

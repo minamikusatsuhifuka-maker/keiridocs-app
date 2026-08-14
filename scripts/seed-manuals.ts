@@ -8,6 +8,7 @@
 
 import { createClient } from "@supabase/supabase-js"
 import { GoogleGenerativeAI } from "@google/generative-ai"
+import { CURRENT_GEMINI_MODEL } from "../src/lib/gemini"
 
 // 環境変数を.env.localから読み込む
 import { config } from "dotenv"
@@ -117,7 +118,8 @@ async function generateManualContent(
   categoryName: string,
   topic: string
 ): Promise<string> {
-  const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-3.5-flash" })
+  // モデルIDは中央定数（src/lib/gemini.ts）に集約する
+  const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || CURRENT_GEMINI_MODEL })
 
   const prompt = `あなたは皮膚科・美容皮膚科クリニックのマニュアル作成担当者です。
 以下のトピックについて、実用的なマニュアル内容を作成してください。

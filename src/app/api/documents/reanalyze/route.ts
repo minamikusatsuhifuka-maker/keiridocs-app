@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getCurrentUserRole } from "@/lib/auth"
-import { DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
+import { resolveGeminiModel } from "@/lib/gemini"
 import {
   reanalyzeDocument,
   type ReanalyzeResult,
@@ -72,7 +72,7 @@ export async function POST(request: NextRequest) {
     .eq("user_id", user.id)
     .eq("key", "gemini_model")
     .maybeSingle()
-  const modelId = (typeof modelSetting?.value === "string" ? modelSetting.value : null) || DEFAULT_GEMINI_MODEL
+  const modelId = resolveGeminiModel(modelSetting?.value)
 
   // 逐次処理（レート制限回避のため並列にしない）
   const results: ReanalyzeResult[] = []

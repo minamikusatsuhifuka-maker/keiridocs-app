@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createHash } from "crypto"
 import { listFiles, downloadFile, moveFile, getDocumentPath } from "@/lib/dropbox"
 import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
-import { analyzeDocument, analyzeDocumentFromText, applyAutoClassifyRules, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
+import { analyzeDocument, analyzeDocumentFromText, applyAutoClassifyRules, resolveGeminiModel } from "@/lib/gemini"
 import type { OcrResult, AutoClassifyRule } from "@/lib/gemini"
 import type { Database } from "@/types/database"
 import mammoth from "mammoth"
@@ -319,7 +319,7 @@ async function processFile(
     .eq("key", "gemini_model")
     .maybeSingle()
 
-  const modelId = (typeof modelSetting?.value === "string" ? modelSetting.value : null) || DEFAULT_GEMINI_MODEL
+  const modelId = resolveGeminiModel(modelSetting?.value)
 
   // document_typesを取得
   const { data: docTypes } = await supabase

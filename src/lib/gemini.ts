@@ -1,13 +1,50 @@
 // Gemini API ラッパー
 import { GoogleGenerativeAI } from "@google/generative-ai"
 
-/** デフォルトのGeminiモデル（環境変数 GEMINI_MODEL で一括変更可能。未設定時は gemini-3.5-flash） */
-export const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash"
+/**
+ * 現行のGeminiモデル。モデル移行時はこの1行だけを書き換える。
+ * ロールバック: この値を PREVIOUS_GEMINI_MODEL の値に戻して再デプロイすれば全AI機能が旧モデルに戻る。
+ */
+export const CURRENT_GEMINI_MODEL = "gemini-3.7-flash"
 
-/** 選択可能なGeminiモデル一覧 */
+/** 直前世代のモデル（ロールバック先） */
+export const PREVIOUS_GEMINI_MODEL = "gemini-3.5-flash"
+
+/**
+ * デフォルトのGeminiモデル。
+ * 環境変数 GEMINI_MODEL が最優先（緊急の切り戻し用。設定されていればそのまま使う）。
+ * 未設定時は CURRENT_GEMINI_MODEL。
+ */
+export const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || CURRENT_GEMINI_MODEL
+
+/**
+ * 選択可能なGeminiモデル一覧（設定画面のドロップダウン用）。
+ * ここに載っていないモデルIDは resolveGeminiModel で無効として扱う（DBに旧モデルIDが残っていても現行モデルに寄せるため）。
+ */
 export const GEMINI_MODELS = [
-  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", description: "高速・高精度・マルチモーダル対応（デフォルト）" },
+  { id: CURRENT_GEMINI_MODEL, label: "Gemini 3.7 Flash", description: "高速・高精度・マルチモーダル対応（デフォルト）" },
 ] as const
+
+/**
+ * 設定（Supabase settings の gemini_model）に保存されたモデルIDを検証して解決する。
+ * GEMINI_MODELS に無い値（旧世代のモデルIDが残っている等）は無視して DEFAULT_GEMINI_MODEL を返す。
+ */
+export function resolveGeminiModel(raw: unknown): string {
+  if (typeof raw === "string") {
+    const known = (GEMINI_MODELS as readonly { id: string }[]).some((m) => m.id === raw)
+    if (known) return raw
+  }
+  return DEFAULT_GEMINI_MODEL
+}
+
+/**
+ * 思考を抑えたい用途（小さな固定JSONを返させる処理など）に使う thinkingConfig。
+ *
+ * Gemini 3.7 Flash は thinkingLevel="MINIMAL" を受け付けず、明示指定するとAPIバリデーションエラーになる。
+ * 対応値は LOW / MEDIUM / HIGH（既定 MEDIUM）のため、レイテンシ・コスト重視の用途は LOW を使う。
+ * （@google/generative-ai の型に thinkingConfig が無いため、呼び出し側で any 経由の generationConfig に載せる）
+ */
+export const LOW_THINKING_CONFIG = { thinkingLevel: "LOW" } as const
 
 /** 売上・振込書類の解析で判定に使う書類種別リスト */
 export const SALES_ANALYSIS_DOCUMENT_TYPES = ["売上記録", "領収書", "請求書"] as const

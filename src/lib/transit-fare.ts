@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai"
-import { DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
+import { DEFAULT_GEMINI_MODEL, LOW_THINKING_CONFIG } from "@/lib/gemini"
 
 /**
  * 電車の片道普通運賃のAI推定（領収書なし交通費用）。
@@ -36,14 +36,13 @@ export async function estimateTrainFare(params: {
 
   try {
     const genAI = new GoogleGenerativeAI(apiKey)
-    // Gemini 3.x は思考が既定ONで、小さな固定JSONが途中で切れることがあるため思考を最小化する。
-    // （@google/generative-ai の型に thinkingConfig が無いため any で渡す）
+    // Gemini 3.x は思考が既定ONで、小さな固定JSONが途中で切れることがあるため思考レベルを下げる。
+    // （3.7 は MINIMAL 不可・temperature 等は非対応。型に thinkingConfig が無いため any で渡す）
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const generationConfig: any = {
       responseMimeType: "application/json",
-      temperature: 0,
       maxOutputTokens: 4096,
-      thinkingConfig: { thinkingBudget: 0 },
+      thinkingConfig: LOW_THINKING_CONFIG,
     }
     const model = genAI.getGenerativeModel({ model: DEFAULT_GEMINI_MODEL, generationConfig })
 

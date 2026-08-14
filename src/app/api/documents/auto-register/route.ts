@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createHash } from "crypto"
 import { uploadFile, getDocumentPath } from "@/lib/dropbox"
 import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
-import { analyzeDocument, analyzeDocumentFromText, applyAutoClassifyRules, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
+import { analyzeDocument, analyzeDocumentFromText, applyAutoClassifyRules, resolveGeminiModel } from "@/lib/gemini"
 import type { OcrResult, AutoClassifyRule } from "@/lib/gemini"
 import mammoth from "mammoth"
 import * as XLSX from "xlsx"
@@ -164,7 +164,7 @@ export async function POST(request: NextRequest) {
       .eq("key", "gemini_model")
       .maybeSingle()
 
-    const modelId = (typeof modelSetting?.value === "string" ? modelSetting.value : null) || DEFAULT_GEMINI_MODEL
+    const modelId = resolveGeminiModel(modelSetting?.value)
 
     // document_typesを取得
     const { data: docTypes } = await supabase

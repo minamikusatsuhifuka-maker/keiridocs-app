@@ -14,7 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Save } from "lucide-react"
 import { toast } from "sonner"
-import { GEMINI_MODELS, DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
+import { GEMINI_MODELS, DEFAULT_GEMINI_MODEL, resolveGeminiModel } from "@/lib/gemini"
 
 /** 自動解析モードの選択肢 */
 type AnalyzeMode = "manual" | "auto"
@@ -37,7 +37,8 @@ export function AiSettings() {
       if (modelRes.ok) {
         const json = await modelRes.json() as { data: { value: unknown } | null }
         if (json.data && typeof json.data.value === "string") {
-          setCurrentModel(json.data.value)
+          // 旧モデルIDが保存されている場合は実際に使われる現行モデルを表示する（APIルート側と同じ解決）
+          setCurrentModel(resolveGeminiModel(json.data.value))
         }
       }
 

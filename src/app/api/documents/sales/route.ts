@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createHash } from "crypto"
 import { uploadFile, ensureDropboxFolderExists } from "@/lib/dropbox"
-import { analyzeDocument, DEFAULT_GEMINI_MODEL, SALES_ANALYSIS_DOCUMENT_TYPES, SALES_ANALYSIS_EXTRA_HINT, normalizePaymentMethod, normalizeBankInfo } from "@/lib/gemini"
+import { analyzeDocument, resolveGeminiModel, SALES_ANALYSIS_DOCUMENT_TYPES, SALES_ANALYSIS_EXTRA_HINT, normalizePaymentMethod, normalizeBankInfo } from "@/lib/gemini"
 import type { OcrResult } from "@/lib/gemini"
 import type { Database } from "@/types/database"
 
@@ -304,7 +304,7 @@ export async function POST(request: NextRequest) {
         .eq("key", "gemini_model")
         .maybeSingle()
 
-      const modelId = (typeof modelSetting?.value === "string" ? modelSetting.value : null) || DEFAULT_GEMINI_MODEL
+      const modelId = resolveGeminiModel(modelSetting?.value)
 
       // 売上登録専用の解析オプション（振込元・振込日・振込金額を必ず抽出）
       // extraHint・documentTypesは再解析(reanalyze)と共通の定数を使う

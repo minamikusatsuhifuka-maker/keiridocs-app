@@ -84,9 +84,9 @@ ${JSON.stringify(report.weekly_breakdown, null, 2)}
     const genAI = new GoogleGenerativeAI(apiKey)
     const model = genAI.getGenerativeModel({
       model: DEFAULT_GEMINI_MODEL,
+      // Gemini 3.x は temperature 非対応のため指定しない（思考レベルは既定の MEDIUM）
       generationConfig: {
         responseMimeType: "application/json",
-        temperature: 0.7,
       },
     })
 

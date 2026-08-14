@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { GoogleGenerativeAI } from "@google/generative-ai"
-import { DEFAULT_GEMINI_MODEL } from "@/lib/gemini"
+import { resolveGeminiModel } from "@/lib/gemini"
 import { getCurrentUserRole } from "@/lib/auth"
 import { subMonths, format } from "date-fns"
 
@@ -80,8 +80,7 @@ export async function POST(request: NextRequest) {
       .eq("key", "gemini_model")
       .maybeSingle()
 
-    const modelId = (typeof modelSetting?.value === "string" ? modelSetting.value : null)
-      || DEFAULT_GEMINI_MODEL
+    const modelId = resolveGeminiModel(modelSetting?.value)
 
     // Gemini APIでレポート生成
     const apiKey = process.env.GEMINI_API_KEY
