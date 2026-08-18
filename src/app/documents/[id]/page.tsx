@@ -23,7 +23,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { StatusBadge } from "@/components/documents/status-badge"
+import { TransferBadgeButton } from "@/components/documents/transfer-badge-button"
 import { SplitPaymentsConfirm } from "@/components/documents/split-payments-confirm"
 import { ArrowLeft, Loader2, Pencil, Trash2, Save, X, RefreshCw, AlertTriangle, Upload } from "lucide-react"
 import type { Database } from "@/types/database"
@@ -500,8 +500,12 @@ export default function DocumentDetailPage() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             {doc.type}
-            {/* 銀行振込が必要な請求書だけにマークを表示（ステータス管理は廃止） */}
-            {doc.status === "要振込" && <StatusBadge status="要振込" />}
+            {/* 銀行振込が必要な請求書だけにマークを表示（ステータス管理は廃止）。
+                一覧と同じくクリックでその場で振込完了⇄未払いを切り替えられる */}
+            <TransferBadgeButton
+              doc={doc}
+              onApplied={(patch) => setDoc((prev) => (prev ? { ...prev, ...patch } : prev))}
+            />
           </CardTitle>
         </CardHeader>
         <CardContent>

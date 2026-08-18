@@ -14,6 +14,13 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { StatusBadge } from "@/components/documents/status-badge"
+import { TransferBadgeButton } from "@/components/documents/transfer-badge-button"
+import {
+  FilePreviewModal,
+  previewKind,
+  type FilePreviewTarget,
+} from "@/components/documents/file-preview-modal"
+import { dropboxFileUrl } from "@/lib/dropbox-web-link"
 import {
   AlertCircle,
   AlertTriangle,
@@ -23,6 +30,7 @@ import {
   Calendar,
   Check,
   Eye,
+  FileText,
   GripVertical,
   Loader2,
   RotateCcw,
@@ -112,6 +120,11 @@ interface DocumentTableProps {
   onSelectionChange?: (ids: Set<string>) => void
   /** 列順をタブごとに保存するためのキー（経費書類 / 売上 で別々に保持） */
   tab?: string
+  /**
+   * 1行分の表示データを部分更新するコールバック（要振込→振込完了の楽観更新用）。
+   * 未指定の場合、要振込バッジは従来どおり表示のみになる。
+   */
+  onDocumentUpdate?: (id: string, patch: Partial<Document>) => void
 }
 
 /** localStorage の保存キー（ブラウザ単位・タブごと） */
@@ -303,8 +316,11 @@ export function DocumentTable({
   selectedIds,
   onSelectionChange,
   tab = "default",
+  onDocumentUpdate,
 }: DocumentTableProps) {
   const [calendarLoadingId, setCalendarLoadingId] = useState<string | null>(null)
+  // 登録資料のプレビューモーダル（画像・PDFのみ。他形式はDropboxウェブを新しいタブで開く）
+  const [previewTarget, setPreviewTarget] = useState<FilePreviewTarget | null>(null)
   // カレンダー登録済みIDをローカル管理（DBの calendar_event_id 更新を即時反映）
   const [registeredEventIds, setRegisteredEventIds] = useState<Record<string, string>>({})
 
@@ -408,6 +424,17 @@ export function DocumentTable({
     }
   }
 
+  // 登録資料を開く（画像/PDFはアプリ内モーダル、その他の形式はDropboxウェブを新しいタブで）
+  function openDocumentFile(doc: Document) {
+    if (!doc.dropbox_path) return
+    const kind = previewKind(doc.dropbox_path)
+    if (kind) {
+      setPreviewTarget({ id: doc.id, dropboxPath: doc.dropbox_path, title: doc.vendor_name, kind })
+    } else {
+      window.open(dropboxFileUrl(doc.dropbox_path), "_blank", "noopener,noreferrer")
+    }
+  }
+
   const hasSelection = !!selectedIds && !!onSelectionChange
 
   // 全選択/全解除
@@ -446,11 +473,20 @@ export function DocumentTable({
       label: "取引先",
       sortField: "vendor_name",
       cellClassName: "max-w-[240px]",
-      // 銀行振込が必要な請求書（要振込）だけにマークを付ける（それ以外は表示なし）
+      // 銀行振込が必要な請求書（要振込）だけにマークを付ける（それ以外は表示なし）。
+      // onDocumentUpdate があればボタン化し、クリックでその場で振込完了にできる
       renderCell: (doc) => (
         <span className="flex items-center gap-1.5">
           <span className="truncate">{doc.vendor_name}</span>
-          {doc.status === "要振込" && <StatusBadge status="要振込" className="shrink-0" />}
+          {onDocumentUpdate ? (
+            <TransferBadgeButton
+              doc={doc}
+              onApplied={(patch) => onDocumentUpdate(doc.id, patch)}
+              className="shrink-0"
+            />
+          ) : (
+            doc.status === "要振込" && <StatusBadge status="要振込" className="shrink-0" />
+          )}
         </span>
       ),
     },
@@ -631,7 +667,28 @@ export function DocumentTable({
                 {/* 固定列：操作（右端） */}
                 <TableCell>
                   <div className="flex items-center gap-1">
-                    <Button variant="ghost" size="icon-xs" asChild>
+                    {/* 登録資料を開く（一目で分かる明示リンク。資料が無い行はグレーアウト表示） */}
+                    {doc.dropbox_path ? (
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        onClick={() => openDocumentFile(doc)}
+                        className="shrink-0"
+                        title="登録された資料を表示（画像・PDFはプレビュー、その他はDropboxで開く）"
+                      >
+                        <FileText className="size-3.5" />
+                        資料
+                      </Button>
+                    ) : (
+                      <span
+                        className="inline-flex h-6 shrink-0 select-none items-center gap-1 rounded-md px-2 text-xs text-muted-foreground/50"
+                        title="資料なし（登録されたファイルがありません）"
+                      >
+                        <FileText className="size-3" />
+                        資料なし
+                      </span>
+                    )}
+                    <Button variant="ghost" size="icon-xs" asChild title="詳細を開く">
                       <Link href={`/documents/${doc.id}`}>
                         <Eye className="size-4" />
                       </Link>
@@ -668,6 +725,9 @@ export function DocumentTable({
           </TableBody>
         </Table>
       </DndContext>
+
+      {/* 登録資料のプレビューモーダル（画像・PDF） */}
+      <FilePreviewModal target={previewTarget} onClose={() => setPreviewTarget(null)} />
     </div>
   )
 }

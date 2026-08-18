@@ -1236,6 +1236,10 @@ export default function DocumentsPage() {
           selectedIds={selectedDocIds}
           onSelectionChange={setSelectedDocIds}
           tab={activeTab}
+          onDocumentUpdate={(id, patch) =>
+            // 要振込→振込完了の楽観更新をその場で一覧に反映する（再取得しない）
+            setDocuments((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)))
+          }
         />
       )}
 
