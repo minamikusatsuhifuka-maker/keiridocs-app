@@ -1,8 +1,20 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { uploadFile } from "@/lib/dropbox"
-import { analyzeDocument, DEFAULT_GEMINI_MODEL, normalizeAmount } from "@/lib/gemini"
+import {
+  analyzeDocument,
+  DEFAULT_GEMINI_MODEL,
+  normalizeAmount,
+  STAFF_RECEIPT_ANALYSIS_EXTRA_HINT,
+  type OcrResult,
+} from "@/lib/gemini"
 import { settleStaffReceipt } from "@/lib/staff-refund-core"
+import {
+  deriveReceiptCandidates,
+  fetchSplitSiblings,
+  type ReceiptCandidate,
+  type SiblingReceipt,
+} from "@/lib/staff-receipt-split"
 import { estimateTrainFare } from "@/lib/transit-fare"
 import {
   getTransitSession,
@@ -655,24 +667,60 @@ async function handleTier2Postback(
 
   try {
     const supabase = createServiceClient()
-    const { data: receipt, error } = await supabase
-      .from("staff_receipts")
-      .select("amount, store_name, created_at, staff_members!inner(name)")
-      .eq("id", receiptId)
-      .single()
-
-    if (error || !receipt) {
+    const fetched = await fetchReceiptWithSiblings(supabase, receiptId)
+    if (!fetched) {
       await sendLineMessage(replyToken, source.userId, "⚠️ 対象の領収書が見つかりませんでした。")
       return
     }
+    const { receipt, siblings } = fetched
+    const staffName = receipt.staffName
+    const isHalf = detail.subsidyCategory === "achievement_repeat"
+    // 申請日 = アップロード日（領収書の登録日）をJSTで表示
+    const applicationDate = toJstDateString(new Date(receipt.created_at))
 
-    const r = receipt as unknown as {
-      amount: number | null
-      store_name: string | null
-      created_at: string
-      staff_members: { name: string }
+    // 複数領収証（分割兄弟）の場合: 各件の内訳と合計・支給額合計で確認する
+    if (siblings.length >= 2) {
+      const totalAmount = siblings.reduce((sum, s) => sum + (s.amount ?? 0), 0)
+      const totalSubsidy = siblings.reduce(
+        (sum, s) => sum + calcSubsidy(s.amount ?? 0, detail.subsidyCategory),
+        0
+      )
+      const lines = siblings
+        .map(
+          (s, i) =>
+            `${circled(i)} ${(s.store_name || "不明").slice(0, 20)} ¥${formatAmount(s.amount)}（${s.date || "日付不明"}）`
+        )
+        .join("\n")
+      const multiText =
+        "以下の内容で登録します。確認してください。\n" +
+        "─────────────\n" +
+        `👤 スタッフ：${staffName}\n` +
+        `🧾 ${siblings.length}件の領収書（1ファイル）\n` +
+        `${lines}\n` +
+        `🏷 区分：${detail.fullLabel}（全${siblings.length}件に適用）\n` +
+        `💰 立替額合計：¥${formatAmount(totalAmount)}\n` +
+        `💴 支給額合計：¥${formatAmount(totalSubsidy)}（${isHalf ? "半額" : "全額"}・給与支給）\n` +
+        `📅 申請日：${applicationDate}\n` +
+        "─────────────\n" +
+        "この内容でよろしいですか？"
+      await sendLineQuickReply(replyToken, source.userId, multiText, [
+        {
+          type: "postback",
+          label: "✅ OK",
+          data: `action=ok&rid=${receiptId}&d=${detail.key}`,
+          displayText: "✅ OK",
+        },
+        {
+          type: "postback",
+          label: "🔄 修正",
+          data: `action=fix&rid=${receiptId}`,
+          displayText: "🔄 修正",
+        },
+      ])
+      return
     }
-    const amount = r.amount
+
+    const amount = receipt.amount
 
     // 金額が読み取れない場合は確認に進めず手動精算を案内（誤精算防止）
     if (!amount || amount <= 0) {
@@ -684,13 +732,9 @@ async function handleTier2Postback(
       return
     }
 
-    const staffName = r.staff_members.name
-    const storeName = r.store_name || "不明"
+    const storeName = receipt.store_name || "不明"
     // 支給額（セミナー2回目以降のみ半額・端数切り捨て、他は全額）
     const subsidy = calcSubsidy(amount, detail.subsidyCategory)
-    const isHalf = detail.subsidyCategory === "achievement_repeat"
-    // 申請日 = アップロード日（領収書の登録日）をJSTで表示
-    const applicationDate = toJstDateString(new Date(r.created_at))
 
     const text =
       "以下の内容で登録します。確認してください。\n" +
@@ -754,6 +798,20 @@ async function handleConfirmPostback(
   const supabase = createServiceClient()
 
   try {
+    // 分割兄弟（1ファイル複数領収証）がある場合は全件を同一区分で一括精算する
+    const fetched = await fetchReceiptWithSiblings(supabase, receiptId)
+    if (fetched && fetched.siblings.length >= 2) {
+      await settleMultiReceipts(
+        supabase,
+        event,
+        fetched.siblings,
+        detail,
+        fetched.receipt.staffName,
+        fetched.receipt.isTest
+      )
+      return
+    }
+
     const result = await settleStaffReceipt({
       staffReceiptId: receiptId,
       settlementMethod: "payroll", // LINEからは常に給与支給に一本化
@@ -1973,6 +2031,278 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
   )
 }
 
+/* ========== 1ファイル複数領収証の分割登録（LINE） ========== */
+
+/** ①②… の丸数字（21件以上は「n.」表記にフォールバック） */
+function circled(i: number): string {
+  return i < 20 ? String.fromCodePoint(0x2460 + i) : `${i + 1}.`
+}
+
+/**
+ * 領収書IDから分割兄弟（自分含む）を取得する。
+ * レコードが見つからない場合は null（呼び出し側で従来の単独フローに任せる）。
+ */
+async function fetchReceiptWithSiblings(
+  supabase: ReturnType<typeof createServiceClient>,
+  receiptId: string
+): Promise<{
+  receipt: {
+    id: string
+    staff_member_id: string
+    dropbox_path: string | null
+    amount: number | null
+    store_name: string | null
+    date: string | null
+    created_at: string
+    ai_raw: unknown
+    staffName: string
+    isTest: boolean
+  }
+  siblings: SiblingReceipt[]
+} | null> {
+  const { data, error } = await supabase
+    .from("staff_receipts")
+    .select(
+      "id, staff_member_id, dropbox_path, amount, store_name, date, created_at, ai_raw, staff_members!inner(name, is_test)"
+    )
+    .eq("id", receiptId)
+    .single()
+  if (error || !data) return null
+  const r = data as unknown as {
+    id: string
+    staff_member_id: string
+    dropbox_path: string | null
+    amount: number | null
+    store_name: string | null
+    date: string | null
+    created_at: string
+    ai_raw: unknown
+    staff_members: { name: string; is_test?: boolean | null }
+  }
+  const siblings = await fetchSplitSiblings(supabase, r)
+  return {
+    receipt: {
+      id: r.id,
+      staff_member_id: r.staff_member_id,
+      dropbox_path: r.dropbox_path,
+      amount: r.amount,
+      store_name: r.store_name,
+      date: r.date,
+      created_at: r.created_at,
+      ai_raw: r.ai_raw,
+      staffName: r.staff_members.name,
+      isTest: !!r.staff_members.is_test,
+    },
+    siblings,
+  }
+}
+
+interface MultiRegisterParams {
+  supabase: ReturnType<typeof createServiceClient>
+  event: LineEvent
+  staffId: string
+  ocrResult: OcrResult & { model_used: string }
+  candidates: ReceiptCandidate[]
+  fileName: string
+  dropboxPath: string
+  imageHash: string
+  /** 日付が読み取れない件に使うフォールバック日付（書類全体の日付 or 今日） */
+  fallbackDate: string
+}
+
+/**
+ * 複数の領収証を件数分の staff_receipts として一括登録し、
+ * 検出内訳のメッセージ＋区分選択（第1階層・1回だけ）を送る。
+ * 全レコードは同一ファイルを共有し、ai_raw.split_group でグループ化する。
+ */
+async function registerMultiReceipts(params: MultiRegisterParams): Promise<void> {
+  const { supabase, event, staffId, ocrResult, candidates, fileName, dropboxPath, imageHash, fallbackDate } = params
+  const { replyToken, source } = event
+  const splitGroup = crypto.randomUUID()
+  const docType = ocrResult.type || "領収書"
+
+  const rows = candidates.map((c, i) => ({
+    staff_member_id: staffId,
+    file_name: fileName,
+    dropbox_path: dropboxPath, // 全レコードで同一ファイルを共有（コピーしない）
+    document_type: docType,
+    // 日付はその領収証自身の領収日・決済日（読めない場合のみ書類全体の日付で補完）
+    date: c.date || fallbackDate,
+    amount: c.amount,
+    store_name: c.store || ocrResult.vendor_name || null,
+    tax_category: ocrResult.tax_category || null,
+    account_title: ocrResult.account_title || null,
+    ai_raw: JSON.parse(
+      JSON.stringify({
+        ...ocrResult,
+        vendor_name: c.store || ocrResult.vendor_name,
+        amount: c.amount,
+        issue_date: c.date || fallbackDate, // 会計士CSVの「支払年月日」に使われる
+        description: c.note || ocrResult.description,
+        payments: [],
+        split_group: splitGroup,
+        split_index: i + 1,
+        split_total: candidates.length,
+      })
+    ) as Json,
+  }))
+
+  // 一括INSERT（1ステートメント＝原子的。部分登録状態を作らない）。
+  // image_hash は migration 030 で追加。未適用環境でも保存を止めないようフォールバック
+  let insertedIds: string[] = []
+  const withHash = await supabase
+    .from("staff_receipts")
+    .insert(rows.map((r) => ({ ...r, image_hash: imageHash })))
+    .select("id")
+  if (withHash.error) {
+    const e = withHash.error
+    const isMissingColumn =
+      e.code === "PGRST204" || e.code === "42703" || /image_hash/.test(e.message || "")
+    if (isMissingColumn) {
+      console.warn("[LINE Bot] image_hash カラム未適用のためハッシュなしで保存（migration 030未実行）")
+      const noHash = await supabase.from("staff_receipts").insert(rows).select("id")
+      if (noHash.error || !noHash.data) {
+        console.error("staff_receipts一括挿入エラー:", noHash.error)
+        await sendLineMessage(replyToken, source.userId, "⚠️ データベースへの保存に失敗しました。管理者にご連絡ください。")
+        return
+      }
+      insertedIds = (noHash.data as { id: string }[]).map((r) => r.id)
+    } else {
+      console.error("staff_receipts一括挿入エラー:", e)
+      await sendLineMessage(replyToken, source.userId, "⚠️ データベースへの保存に失敗しました。管理者にご連絡ください。")
+      return
+    }
+  } else {
+    insertedIds = ((withHash.data ?? []) as { id: string }[]).map((r) => r.id)
+  }
+  if (insertedIds.length === 0) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ データベースへの保存に失敗しました。管理者にご連絡ください。")
+    return
+  }
+  console.log(`[LINE Bot] 複数領収書を一括登録: ${insertedIds.length}件`)
+
+  const total = candidates.reduce((sum, c) => sum + c.amount, 0)
+  const detailLines = candidates
+    .map(
+      (c, i) =>
+        `${circled(i)} ${(c.store || "不明").slice(0, 20)} ¥${formatAmount(c.amount)}（${c.date || fallbackDate}）`
+    )
+    .join("\n")
+  const header =
+    `📸 領収書を${candidates.length}件検出しました。\n` +
+    "─────────────\n" +
+    `${detailLines}\n` +
+    `💰 合計 ¥${formatAmount(total)}\n` +
+    "─────────────\n" +
+    `※選んだ区分は全${candidates.length}件に適用されます。区分が異なる領収書は、お手数ですが別々に送ってください（登録後に管理画面から個別修正もできます）。`
+
+  await sendTier1(replyToken, source.userId, insertedIds[0], header)
+  console.log("[LINE Bot] 複数件の区分質問（第1階層）送信完了")
+}
+
+/**
+ * 分割兄弟の全件を同一区分で精算確定する（給与支給・LINE用）。
+ * 途中で失敗したら今回登録した取引をすべて削除して巻き戻す
+ * （LINEは payroll 固定＝小口残高を動かさないため、取引削除だけで完全に戻る）。
+ */
+async function settleMultiReceipts(
+  supabase: ReturnType<typeof createServiceClient>,
+  event: LineEvent,
+  siblings: SiblingReceipt[],
+  detail: NonNullable<ReturnType<typeof getExpenseDetail>>,
+  staffName: string,
+  isTest: boolean
+): Promise<void> {
+  const { replyToken, source } = event
+  const settledIds: string[] = []
+  let okCount = 0
+  let alreadyCount = 0
+
+  try {
+    for (const sib of siblings) {
+      const result = await settleStaffReceipt({
+        staffReceiptId: sib.id,
+        settlementMethod: "payroll", // LINEからは常に給与支給に一本化
+        subsidyCategory: detail.subsidyCategory,
+        expenseDetail: detail.fullLabel,
+        client: supabase,
+      })
+      if (result.status === "already") {
+        // 二重押し・再試行時は登録済み分をスキップして残りを確定する（冪等）
+        alreadyCount++
+        continue
+      }
+      if (result.status !== "ok") {
+        throw new Error(`精算確定に失敗しました（${result.status}）`)
+      }
+      okCount++
+      settledIds.push(sib.id)
+    }
+  } catch (error) {
+    console.error("[LINE Bot] 複数件精算エラー。ロールバックします:", error)
+    if (settledIds.length > 0) {
+      try {
+        await supabase
+          .from("petty_cash_transactions")
+          .delete()
+          .in("staff_receipt_id", settledIds)
+          .eq("category", "staff_refund")
+      } catch (rollbackError) {
+        console.error("[LINE Bot] ロールバック中にエラー:", rollbackError)
+      }
+    }
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ 登録に失敗しました。今回の登録はすべて取り消しました。\nもう一度お試しいただくか、経理にご相談ください。"
+    )
+    return
+  }
+
+  if (okCount === 0 && alreadyCount === siblings.length) {
+    await sendLineMessage(replyToken, source.userId, "ℹ️ この領収書はすでに登録済みです。")
+    return
+  }
+
+  // 「セミナー2回目以降」（弁当代含む）が確定したら記録（以降「初回ATC」を非表示）
+  if (detail.key === "ach_repeat" || detail.key === "bento") {
+    await markSeminarRepeatClaimed(supabase, siblings[0].id)
+  }
+
+  const totalAmount = siblings.reduce((sum, s) => sum + (s.amount ?? 0), 0)
+  const totalSubsidy = siblings.reduce(
+    (sum, s) => sum + calcSubsidy(s.amount ?? 0, detail.subsidyCategory),
+    0
+  )
+  const isHalf = detail.subsidyCategory === "achievement_repeat"
+  const lines = siblings
+    .map((s, i) => `${circled(i)} ${(s.store_name || "不明").slice(0, 20)} ¥${formatAmount(s.amount)}（${s.date || "日付不明"}）`)
+    .join("\n")
+
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    `✅ ${siblings.length}件登録しました。給与支給で処理されます。\n` +
+      "─────────────\n" +
+      `${lines}\n` +
+      `💰 合計 ¥${formatAmount(totalAmount)}／💴 支給額合計 ¥${formatAmount(totalSubsidy)}（${isHalf ? "半額" : "全額"}）\n` +
+      "─────────────\n" +
+      "お疲れさまでした！"
+  )
+
+  // 院長へpush通知（件数と内訳を含める）。テストスタッフは通知しない
+  const adminId = process.env.ADMIN_LINE_USER_ID
+  if (adminId && !isTest) {
+    await pushMessage(
+      adminId,
+      `🧾 ${staffName}さんが立替${siblings.length}件（合計 ¥${formatAmount(totalAmount)}・1ファイル）を申請。\n` +
+        `${lines}\n` +
+        `区分: ${detail.fullLabel}\n` +
+        `支給額合計: ¥${formatAmount(totalSubsidy)}（${isHalf ? "半額" : "全額"}・給与支給）`
+    )
+  }
+}
+
 /** 画像メッセージ処理: Gemini解析 → Dropbox保存 → DB保存 → LINE返信 */
 async function handleImageMessage(event: LineEvent): Promise<void> {
   const { replyToken, source, message } = event
@@ -2036,25 +2366,41 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
       return
     }
 
-    // 5. Gemini AI解析
+    // 5. Gemini AI解析（複数領収証の分割候補も同時に判定する）
     console.log("[LINE Bot] Gemini AI解析開始")
     const base64Data = imageBuffer.toString("base64")
     const mimeType = "image/jpeg" // LINEの画像はJPEG
-    const ocrResult = await analyzeDocument(base64Data, mimeType)
-    console.log(`[LINE Bot] Gemini AI解析完了: vendor=${ocrResult.vendor_name}, amount=${ocrResult.amount}`)
+    const ocrResult = await analyzeDocument(base64Data, mimeType, {
+      extraHint: STAFF_RECEIPT_ANALYSIS_EXTRA_HINT,
+    })
+    console.log(`[LINE Bot] Gemini AI解析完了: vendor=${ocrResult.vendor_name}, amount=${ocrResult.amount}, payments=${ocrResult.payments.length}`)
+
+    // 5.2 1ファイルに複数の領収証が含まれる場合の分割候補（2件以上・全件金額ありのときのみ）
+    const splitCandidates = deriveReceiptCandidates(ocrResult)
 
     // 5.5 内容（店名+金額+日付）で重複チェック（同一スタッフ内。別画像での再申請をブロック）
+    // 分割候補があれば各件を、なければ書類全体を1回照合する（分割兄弟同士はDB未登録なので互いにブロックしない）
     const receiptDate = ocrResult.issue_date || new Date().toISOString().split("T")[0]
-    const contentDup = await findContentDuplicate(supabase, {
-      staffMemberId: matchedStaff.id,
-      storeName: ocrResult.vendor_name || null,
-      amount: ocrResult.amount,
-      date: receiptDate,
-    })
-    if (contentDup) {
-      console.log("[LINE Bot] 内容重複を検知 → 登録中止")
-      await sendLineMessage(replyToken, source.userId, buildDuplicateWarning(contentDup))
-      return
+    const dupTargets =
+      splitCandidates.length >= 2
+        ? splitCandidates.map((c) => ({
+            storeName: c.store || ocrResult.vendor_name || null,
+            amount: c.amount as number | null,
+            date: c.date || receiptDate,
+          }))
+        : [{ storeName: ocrResult.vendor_name || null, amount: ocrResult.amount, date: receiptDate }]
+    for (const t of dupTargets) {
+      const contentDup = await findContentDuplicate(supabase, {
+        staffMemberId: matchedStaff.id,
+        storeName: t.storeName,
+        amount: t.amount,
+        date: t.date,
+      })
+      if (contentDup) {
+        console.log("[LINE Bot] 内容重複を検知 → 登録中止")
+        await sendLineMessage(replyToken, source.userId, buildDuplicateWarning(contentDup))
+        return
+      }
     }
 
     // 6. Dropboxに保存（申請日＝アップロード日のフォルダ。JSTで日付を確定）
@@ -2068,6 +2414,22 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
 
     const resultPath = await uploadFile(dropboxPath, imageBuffer)
     console.log(`[LINE Bot] Dropboxアップロード完了: ${resultPath}`)
+
+    // 6.5 複数の領収証を検出した場合: 件数分のレコードを一括登録し、区分選択（1回）に進む
+    if (splitCandidates.length >= 2) {
+      await registerMultiReceipts({
+        supabase,
+        event,
+        staffId: matchedStaff.id,
+        ocrResult,
+        candidates: splitCandidates,
+        fileName,
+        dropboxPath: resultPath,
+        imageHash,
+        fallbackDate: receiptDate,
+      })
+      return
+    }
 
     // 7. staff_receiptsに保存（精算ボタンで使うidを取得）
     console.log("[LINE Bot] DB保存開始")

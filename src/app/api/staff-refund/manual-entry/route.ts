@@ -8,8 +8,9 @@ import {
   isSeminarRepeatClaimed,
   markSeminarRepeatClaimed,
 } from "@/lib/staff-refund-core"
-import { getExpenseDetail } from "@/lib/subsidy"
+import { getExpenseDetail, STAFF_EXPENSE_DETAILS } from "@/lib/subsidy"
 import { findContentDuplicate, findImageHashDuplicate } from "@/lib/staff-receipt-dedup"
+import { parseAiRawObject } from "@/lib/staff-receipt-split"
 import type { Json } from "@/types/database"
 
 /**
@@ -80,14 +81,16 @@ export async function GET() {
 
   try {
     const service = createServiceClient()
-    // 手動登録タグの付いた取引を取得（立替のみ）
+    // 手動登録タグ＋LINE申請分の取引を取得（立替のみ）。
+    // LINE申請分（registered_by「{名前}（LINE）」）も一覧に含め、区分などを個別修正できるようにする
+    // （1ファイル複数領収証の分割登録で区分が異なる場合の後修正用）。
     const { data: txRaw, error: txError } = await service
       .from("petty_cash_transactions")
       .select(
-        "id, staff_member_id, amount, expense_detail, subsidy_category, staff_receipt_id, transaction_date, created_at"
+        "id, staff_member_id, amount, expense_detail, subsidy_category, staff_receipt_id, transaction_date, created_at, registered_by"
       )
       .eq("category", "staff_refund")
-      .eq("registered_by", MANUAL_TAG)
+      .or(`registered_by.eq."${MANUAL_TAG}",registered_by.like."*（LINE）"`)
       .order("created_at", { ascending: false })
     if (txError) throw txError
     const txRows = (txRaw ?? []) as {
@@ -99,6 +102,7 @@ export async function GET() {
       staff_receipt_id: string | null
       transaction_date: string | null
       created_at: string
+      registered_by: string | null
     }[]
 
     // 参照する領収書・スタッフをまとめて取得
@@ -135,8 +139,14 @@ export async function GET() {
     const rows = txRows.map((t) => {
       const r = t.staff_receipt_id ? receiptMap.get(t.staff_receipt_id) : undefined
       const staff = t.staff_member_id ? staffMap.get(t.staff_member_id) : undefined
-      const aiRaw = (r?.ai_raw && typeof r.ai_raw === "object" ? (r.ai_raw as Record<string, unknown>) : {}) || {}
+      const aiRaw = parseAiRawObject(r?.ai_raw) ?? {}
       const submitDate = jstDate(r?.created_at) || (t.created_at ? jstDate(t.created_at) : "")
+      // 区分キー: ai_raw.detail_key を優先し、無ければ expense_detail のフル名称から逆引き
+      // （LINE申請分は detail_key を持たないため。編集ダイアログのプリフィルに使う）
+      const detailKey =
+        typeof aiRaw.detail_key === "string" && aiRaw.detail_key
+          ? aiRaw.detail_key
+          : STAFF_EXPENSE_DETAILS.find((d) => d.fullLabel === (t.expense_detail ?? ""))?.key ?? ""
       return {
         receiptId: t.staff_receipt_id,
         transactionId: t.id,
@@ -147,11 +157,13 @@ export async function GET() {
         amount: typeof t.amount === "number" ? t.amount : 0,
         paymentDate: (r?.date ?? "").slice(0, 10),
         submitDate,
-        detailKey: typeof aiRaw.detail_key === "string" ? aiRaw.detail_key : "",
+        detailKey,
         expenseDetail: t.expense_detail ?? "",
         subsidyCategory: t.subsidy_category ?? "other",
         note: typeof aiRaw.note === "string" ? aiRaw.note : "",
         hasFile: !!(r?.dropbox_path && r.dropbox_path.trim() !== ""),
+        // 登録元（manual=手動登録 / line=LINE申請）
+        source: t.registered_by === MANUAL_TAG ? "manual" : "line",
       }
     })
 

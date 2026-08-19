@@ -12,20 +12,63 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Upload } from "lucide-react"
-import { SUBSIDY_OPTIONS, type SubsidyCategory } from "@/lib/subsidy"
+import {
+  SUBSIDY_OPTIONS,
+  STAFF_EXPENSE_DETAILS,
+  EXPENSE_GROUP_LABELS,
+  getExpenseDetail,
+  calcSubsidy,
+  type SubsidyCategory,
+  type ExpenseGroup,
+} from "@/lib/subsidy"
 
 interface Staff {
   id: string
   name: string
 }
 
-interface AnalyzedItem {
+/** 解析APIが返すファイル1つ分の結果 */
+interface AnalyzedApiFile {
   filename: string
-  vendor: string
-  amount: number
-  date: string | null
-  note?: string
+  single: { vendor: string; amount: number; date: string | null; note: string }
+  splitCandidates: { vendor: string; amount: number; date: string | null; note: string }[]
   error?: string
+}
+
+/** 編集可能な1行（支払い1件＝1行。店名/日付/金額/費用区分を修正できる） */
+interface RowDraft {
+  store: string
+  amount: string
+  date: string
+  detailKey: string
+  note: string
+}
+
+/** ファイル1つ分の編集状態（分割候補があれば「分割する/しない」を選べる） */
+interface AnalyzedFileState {
+  filename: string
+  error?: string
+  single: RowDraft
+  splitCandidates: RowDraft[]
+  /** true=支払いごとに分割して登録（分割候補があるファイルの既定） */
+  useSplit: boolean
+}
+
+const EXPENSE_GROUPS: ExpenseGroup[] = ["ach", "other"]
+
+function toRowDraft(r: { vendor: string; amount: number; date: string | null; note: string }): RowDraft {
+  return {
+    store: r.vendor ?? "",
+    amount: r.amount ? String(r.amount) : "",
+    date: (r.date ?? "").slice(0, 10),
+    detailKey: "",
+    note: r.note ?? "",
+  }
+}
+
+/** そのファイルで実際に登録される行（分割ON＝候補行、OFF＝単体1行） */
+function activeRows(f: AnalyzedFileState): RowDraft[] {
+  return f.useSplit && f.splitCandidates.length >= 2 ? f.splitCandidates : [f.single]
 }
 
 interface Props {
@@ -63,10 +106,46 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
 
   // アップロード
   const [files, setFiles] = useState<File[]>([])
-  const [analyzed, setAnalyzed] = useState<AnalyzedItem[] | null>(null)
-  const [analyzedTotal, setAnalyzedTotal] = useState(0)
+  const [analyzed, setAnalyzed] = useState<AnalyzedFileState[] | null>(null)
   const [isDragOver, setIsDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // 登録対象の全行（分割ON/OFFを反映）と合計
+  const allRows = (analyzed ?? []).flatMap((f, fileIndex) =>
+    f.error ? [] : activeRows(f).map((row) => ({ fileIndex, row, file: f }))
+  )
+  const analyzedTotal = allRows.reduce((sum, { row }) => {
+    const n = Number(row.amount)
+    return sum + (Number.isFinite(n) && n > 0 ? n : 0)
+  }, 0)
+  const analyzedSubsidyTotal = allRows.reduce((sum, { row }) => {
+    const n = Number(row.amount)
+    const detail = getExpenseDetail(row.detailKey)
+    if (!Number.isFinite(n) || n <= 0 || !detail) return sum
+    return sum + calcSubsidy(Math.round(n), detail.subsidyCategory)
+  }, 0)
+
+  /** 行の編集を反映する（isSplit=trueは分割候補行、falseは単体行） */
+  function updateRow(fileIndex: number, isSplit: boolean, rowIndex: number, patch: Partial<RowDraft>) {
+    setAnalyzed((prev) => {
+      if (!prev) return prev
+      return prev.map((f, i) => {
+        if (i !== fileIndex) return f
+        if (isSplit) {
+          const next = f.splitCandidates.map((r, j) => (j === rowIndex ? { ...r, ...patch } : r))
+          return { ...f, splitCandidates: next }
+        }
+        return { ...f, single: { ...f.single, ...patch } }
+      })
+    })
+  }
+
+  /** 分割する/しないの切り替え（分割候補があるファイルのみ） */
+  function toggleSplit(fileIndex: number, useSplit: boolean) {
+    setAnalyzed((prev) =>
+      prev ? prev.map((f, i) => (i === fileIndex ? { ...f, useSplit } : f)) : prev
+    )
+  }
 
   // PDF / JPG / PNG を許可
   const acceptedTypeRegex = /^(application\/pdf|image\/(jpeg|jpg|png))$/i
@@ -139,7 +218,6 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
     setSubsidyCategory("other")
     setFiles([])
     setAnalyzed(null)
-    setAnalyzedTotal(0)
     setIsDragOver(false)
     setError("")
   }
@@ -205,10 +283,18 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
         method: "POST",
         body: fd,
       })
-      const data = await res.json()
+      const data = await res.json() as { files?: AnalyzedApiFile[]; error?: string }
       if (!res.ok) throw new Error(data.error || "解析に失敗しました")
-      setAnalyzed(data.items)
-      setAnalyzedTotal(data.total)
+      // 分割候補があるファイルは既定で「分割して登録」にする（確認UIで切り替え可能）
+      setAnalyzed(
+        (data.files ?? []).map((f) => ({
+          filename: f.filename,
+          error: f.error,
+          single: toRowDraft(f.single),
+          splitCandidates: (f.splitCandidates ?? []).map(toRowDraft),
+          useSplit: (f.splitCandidates ?? []).length >= 2,
+        }))
+      )
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "解析に失敗しました")
     } finally {
@@ -219,21 +305,48 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
   const approve = async () => {
     if (!analyzed) return
     setError("")
+
+    // 行のバリデーション（金額・支払年月日・費用区分）
+    for (const [i, { row }] of allRows.entries()) {
+      const n = Number(row.amount)
+      if (!Number.isFinite(n) || n <= 0) {
+        setError(`行${i + 1}: 金額を入力してください`)
+        return
+      }
+      if (!row.date) {
+        setError(`行${i + 1}: 支払年月日を入力してください`)
+        return
+      }
+      if (!getExpenseDetail(row.detailKey)) {
+        setError(`行${i + 1}: 費用区分を選択してください`)
+        return
+      }
+    }
+    if (allRows.length === 0) {
+      setError("登録できる行がありません")
+      return
+    }
+
     setLoading(true)
     try {
       const fd = new FormData()
       files.forEach((f) => fd.append("files", f))
       fd.append("staff_member_id", staffId)
-      fd.append("total_amount", String(analyzedTotal))
-      fd.append(
-        "note",
-        analyzed
-          .map((it, i) => `${i + 1}. ${it.vendor || "?"} ¥${it.amount.toLocaleString()}`)
-          .join(" / ")
-      )
       fd.append("transaction_date", date)
       fd.append("settlement_method", settlement)
-      fd.append("subsidy_category", subsidyCategory)
+      fd.append(
+        "rows",
+        JSON.stringify(
+          allRows.map(({ fileIndex, row }) => ({
+            fileIndex,
+            store: row.store,
+            amount: Math.round(Number(row.amount)),
+            date: row.date,
+            detailKey: row.detailKey,
+            note: row.note,
+          }))
+        )
+      )
 
       const res = await fetch("/api/petty-cash/staff-refund/approve", {
         method: "POST",
@@ -253,7 +366,7 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[640px]">
+      <DialogContent className="sm:max-w-[760px]">
         <DialogHeader>
           <DialogTitle>スタッフ返金 登録</DialogTitle>
         </DialogHeader>
@@ -291,31 +404,33 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
               </select>
             </div>
             <div className="space-y-1">
-              <Label>日付</Label>
+              <Label>{tab === "upload" ? "提出日（申請日）" : "日付"}</Label>
               <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
             </div>
           </div>
 
-          {/* 区分（アチーブメント参加区分。手入力・アップロード共通） */}
-          <div className="space-y-1">
-            <Label>区分</Label>
-            <select
-              className="w-full border rounded px-2 py-1.5 text-sm"
-              value={subsidyCategory}
-              onChange={(e) => setSubsidyCategory(e.target.value as SubsidyCategory)}
-            >
-              {SUBSIDY_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-gray-500">
-              {subsidyCategory === "achievement_repeat"
-                ? "2回目以降のため、支給額は立替額の半額（端数切り捨て）で計算されます。"
-                : "全額支給（立替額どおり）で計算されます。"}
-            </p>
-          </div>
+          {/* 区分（アチーブメント参加区分。手入力タブのみ。アップロードは行ごとに費用区分を選ぶ） */}
+          {tab === "manual" && (
+            <div className="space-y-1">
+              <Label>区分</Label>
+              <select
+                className="w-full border rounded px-2 py-1.5 text-sm"
+                value={subsidyCategory}
+                onChange={(e) => setSubsidyCategory(e.target.value as SubsidyCategory)}
+              >
+                {SUBSIDY_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500">
+                {subsidyCategory === "achievement_repeat"
+                  ? "2回目以降のため、支給額は立替額の半額（端数切り捨て）で計算されます。"
+                  : "全額支給（立替額どおり）で計算されます。"}
+              </p>
+            </div>
+          )}
 
           {/* 精算方法（手入力・アップロード共通） */}
           <div className="space-y-1">
@@ -442,46 +557,154 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
               )}
 
               {analyzed && (
-                <div className="border rounded p-3 bg-amber-50 space-y-2">
-                  <p className="font-bold">解析結果</p>
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="text-left border-b">
-                        <th className="py-1">ファイル</th>
-                        <th>店名</th>
-                        <th>日付</th>
-                        <th className="text-right">金額</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {analyzed.map((it, i) => (
-                        <tr key={i} className="border-b last:border-0">
-                          <td className="py-1">{it.filename}</td>
-                          <td>{it.vendor || "-"}</td>
-                          <td>{it.date || "-"}</td>
-                          <td className="text-right">
-                            {it.error ? (
-                              <span className="text-red-600">{it.error}</span>
-                            ) : (
-                              `¥${it.amount.toLocaleString()}`
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot>
-                      <tr className="font-bold">
-                        <td colSpan={3} className="text-right pt-2">
-                          合計
-                        </td>
-                        <td className="text-right pt-2">¥{analyzedTotal.toLocaleString()}</td>
-                      </tr>
-                    </tfoot>
-                  </table>
+                <div className="border rounded p-3 bg-amber-50 space-y-3">
+                  <p className="font-bold">解析結果（支払いごとに1行・各行を修正できます）</p>
+                  {analyzed.map((f, fileIndex) => {
+                    const hasSplit = f.splitCandidates.length >= 2
+                    const rows = activeRows(f)
+                    const editingSplit = hasSplit && f.useSplit
+                    return (
+                      <div key={`${f.filename}-${fileIndex}`} className="rounded border bg-white p-2 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="max-w-full truncate text-xs font-medium">📎 {f.filename}</span>
+                          {hasSplit && !f.error && (
+                            <div className="flex flex-wrap items-center gap-1 text-xs">
+                              <span className="font-medium text-amber-700">
+                                複数の領収書を検出（{f.splitCandidates.length}件）
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => toggleSplit(fileIndex, true)}
+                                className={`rounded border px-2 py-0.5 ${
+                                  f.useSplit
+                                    ? "border-amber-500 bg-amber-100 font-bold"
+                                    : "border-gray-300 bg-white hover:bg-gray-50"
+                                }`}
+                              >
+                                分割して登録
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => toggleSplit(fileIndex, false)}
+                                className={`rounded border px-2 py-0.5 ${
+                                  !f.useSplit
+                                    ? "border-amber-500 bg-amber-100 font-bold"
+                                    : "border-gray-300 bg-white hover:bg-gray-50"
+                                }`}
+                              >
+                                分割せず1件のまま登録
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        {f.error ? (
+                          <p className="text-sm text-red-600">{f.error}（このファイルは登録されません）</p>
+                        ) : (
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="border-b text-left">
+                                <th className="py-1">店名</th>
+                                <th className="w-[120px]">支払年月日</th>
+                                <th className="w-[90px] text-right">金額</th>
+                                <th className="w-[190px]">費用区分</th>
+                                <th className="w-[80px] text-right">支給額</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rows.map((r, rowIndex) => {
+                                const detail = getExpenseDetail(r.detailKey)
+                                const n = Number(r.amount)
+                                const subsidy =
+                                  detail && Number.isFinite(n) && n > 0
+                                    ? calcSubsidy(Math.round(n), detail.subsidyCategory)
+                                    : null
+                                return (
+                                  <tr key={rowIndex} className="border-b last:border-0 align-top">
+                                    <td className="py-1 pr-1">
+                                      <Input
+                                        value={r.store}
+                                        onChange={(e) =>
+                                          updateRow(fileIndex, editingSplit, rowIndex, { store: e.target.value })
+                                        }
+                                        className="h-7 text-xs"
+                                        placeholder="店名"
+                                      />
+                                      {r.note && (
+                                        <p className="mt-0.5 truncate text-[10px] text-gray-500" title={r.note}>
+                                          {r.note}
+                                        </p>
+                                      )}
+                                    </td>
+                                    <td className="py-1 pr-1">
+                                      <Input
+                                        type="date"
+                                        value={r.date}
+                                        onChange={(e) =>
+                                          updateRow(fileIndex, editingSplit, rowIndex, { date: e.target.value })
+                                        }
+                                        className="h-7 text-xs"
+                                      />
+                                    </td>
+                                    <td className="py-1 pr-1">
+                                      <Input
+                                        type="number"
+                                        inputMode="numeric"
+                                        value={r.amount}
+                                        onChange={(e) =>
+                                          updateRow(fileIndex, editingSplit, rowIndex, { amount: e.target.value })
+                                        }
+                                        className="h-7 text-right text-xs"
+                                      />
+                                    </td>
+                                    <td className="py-1 pr-1">
+                                      <select
+                                        value={r.detailKey}
+                                        onChange={(e) =>
+                                          updateRow(fileIndex, editingSplit, rowIndex, { detailKey: e.target.value })
+                                        }
+                                        className="h-7 w-full rounded border px-1 text-xs"
+                                      >
+                                        <option value="">区分を選択…</option>
+                                        {EXPENSE_GROUPS.map((g) => (
+                                          <optgroup key={g} label={EXPENSE_GROUP_LABELS[g]}>
+                                            {STAFF_EXPENSE_DETAILS.filter((d) => d.group === g).map((d) => (
+                                              <option key={d.key} value={d.key}>
+                                                {d.fullLabel}
+                                              </option>
+                                            ))}
+                                          </optgroup>
+                                        ))}
+                                      </select>
+                                    </td>
+                                    <td className="py-1 text-right">
+                                      {subsidy !== null ? (
+                                        <span>
+                                          ¥{subsidy.toLocaleString()}
+                                          {detail?.subsidyCategory === "achievement_repeat" && (
+                                            <span className="block text-[10px] text-red-600">半額</span>
+                                          )}
+                                        </span>
+                                      ) : (
+                                        <span className="text-gray-400">—</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    )
+                  })}
+                  <div className="flex justify-end gap-4 text-sm font-bold">
+                    <span>立替合計 ¥{analyzedTotal.toLocaleString()}</span>
+                    <span>支給額合計 ¥{analyzedSubsidyTotal.toLocaleString()}</span>
+                  </div>
                   <p className="text-xs text-gray-600">
-                    内容に問題がなければ「承認」を押すと、領収書はDropboxの
-                    <code className="mx-1">スタッフ領収書/{"{スタッフ名}"}/{"{YYYY年MM月}"}/</code>
-                    に保存されます。
+                    「承認」を押すと行ごとに別レコードとして登録され、領収書はDropboxの
+                    <code className="mx-1">スタッフ領収書/{"{スタッフ名}"}/{"{提出日}"}/</code>
+                    に保存されます（分割行は同じファイルを共有します）。
                     {settlement === "petty_cash"
                       ? "合計金額が小口残高から差し引かれます。"
                       : settlement === "payroll"

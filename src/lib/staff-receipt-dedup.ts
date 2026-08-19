@@ -59,40 +59,54 @@ export interface DedupReceiptLike {
   amount: number | null
   date: string | null
   image_hash?: string | null
+  /** 分割兄弟判定用（同一ファイルを共有する分割レコードを重複扱いしないため） */
+  dropbox_path?: string | null
+}
+
+/**
+ * グループ全員が同一ファイル（同一 dropbox_path）を共有しているか。
+ * 1ファイル複数領収証の分割登録では兄弟レコードが同じ画像ハッシュ・同じファイルを持つため、
+ * 同一パスのグループは「1つの論理ファイルの分割」とみなして重複扱いしない。
+ */
+function isSameFileGroup(rows: DedupReceiptLike[]): boolean {
+  const first = (rows[0]?.dropbox_path || "").trim()
+  if (!first) return false
+  return rows.every((r) => (r.dropbox_path || "").trim() === first)
 }
 
 /**
  * リスト内で重複している領収書のIDセットを返す。
  *  - 画像ハッシュ一致: 全体照合（別スタッフでも怪しいため）
  *  - 内容一致（店名+金額+日付）: 同一スタッフ内のみ
+ *  - ただし同一 dropbox_path を共有するグループ（分割兄弟）は重複扱いしない
  */
 export function findDuplicateIds(receipts: DedupReceiptLike[]): Set<string> {
   const dup = new Set<string>()
 
   // 1) 画像ハッシュ（全体照合）
-  const byHash = new Map<string, string[]>()
+  const byHash = new Map<string, DedupReceiptLike[]>()
   for (const r of receipts) {
     const h = (r.image_hash || "").trim()
     if (!h) continue
     const arr = byHash.get(h) ?? []
-    arr.push(r.id)
+    arr.push(r)
     byHash.set(h, arr)
   }
-  for (const ids of byHash.values()) {
-    if (ids.length > 1) ids.forEach((id) => dup.add(id))
+  for (const rows of byHash.values()) {
+    if (rows.length > 1 && !isSameFileGroup(rows)) rows.forEach((r) => dup.add(r.id))
   }
 
   // 2) 内容一致（同一スタッフ内）
-  const byContent = new Map<string, string[]>()
+  const byContent = new Map<string, DedupReceiptLike[]>()
   for (const r of receipts) {
     if (!isContentKeyComplete(r.store_name, r.amount, r.date)) continue
     const key = `${r.staff_member_id}|${contentKey(r.store_name, r.amount, r.date)}`
     const arr = byContent.get(key) ?? []
-    arr.push(r.id)
+    arr.push(r)
     byContent.set(key, arr)
   }
-  for (const ids of byContent.values()) {
-    if (ids.length > 1) ids.forEach((id) => dup.add(id))
+  for (const rows of byContent.values()) {
+    if (rows.length > 1 && !isSameFileGroup(rows)) rows.forEach((r) => dup.add(r.id))
   }
 
   return dup

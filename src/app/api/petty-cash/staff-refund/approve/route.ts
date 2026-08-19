@@ -1,34 +1,69 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
+import crypto from "crypto"
 import { createClient as createAuthClient } from "@/lib/supabase/server"
 import { uploadFile } from "@/lib/dropbox"
-import { normalizeSubsidyCategory } from "@/lib/subsidy"
-import type { Database } from "@/types/database"
-
-function createServiceClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-  if (!url || !serviceKey) {
-    throw new Error("NEXT_PUBLIC_SUPABASE_URL と SUPABASE_SERVICE_ROLE_KEY が必要です")
-  }
-  return createClient<Database>(url, serviceKey)
-}
+import { getExpenseDetail, calcSubsidy } from "@/lib/subsidy"
+import {
+  createServiceClient,
+  settleStaffReceipt,
+  isSeminarRepeatClaimed,
+  markSeminarRepeatClaimed,
+  type SettlementMethod,
+} from "@/lib/staff-refund-core"
+import type { Json } from "@/types/database"
 
 /**
  * POST /api/petty-cash/staff-refund/approve
  *
- * multipart/form-data:
- *  - files: File[]            （analyze で見た領収書を再アップロード）
- *  - staff_member_id: string
- *  - total_amount: string|number
- *  - note: string             明細サマリ等
- *  - transaction_date: string
+ * スタッフ返金（資料アップロード）の承認確定。
+ * 解析結果テーブルの「支払い1件＝1行」を、行ごとに staff_receipts ＋ settleStaffReceipt で
+ * 別レコードとして登録する（LINE申請・手動登録と同一のデータ経路・同一の支給額ロジック）。
  *
- * 動作:
- *  1) /経理書類/スタッフ領収書/{スタッフ名}/{YYYY年MM月}/ に全ファイルアップロード
- *  2) petty_cash_transactions に1件登録（receipt_urlsに全パス保存）
- *  3) petty_cash_settings.balance を更新
+ * multipart/form-data:
+ *  - files: File[]                  … 領収書ファイル（analyze で見たもの）
+ *  - staff_member_id: string
+ *  - transaction_date: string       … 提出日（YYYY-MM-DD。staff_receipts.created_at＝税理士20日締めに使用）
+ *  - settlement_method: string      … petty_cash / payroll / storage_only
+ *  - rows: string(JSON)             … [{ fileIndex, store, amount, date, detailKey }]
+ *      date は支払年月日（その領収証自身の領収日）→ staff_receipts.date / ai_raw.issue_date
+ *
+ * 1ファイルから複数行が登録される場合（複数領収証の分割）は、全行が同一ファイル
+ * （同一 dropbox_path）を共有し、ai_raw.split_group でグループ化する。
+ *
+ * 原子性: staff_receipts は一括INSERT（1ステートメント）で先に作成し、精算確定が途中で
+ * 失敗した場合は 作成済みの取引・残高・領収書をすべて巻き戻す（部分登録状態を残さない）。
  */
+
+/** 承認1行分（クライアントから受け取る形） */
+interface ApproveRow {
+  fileIndex: number
+  store: string
+  amount: number
+  date: string
+  detailKey: string
+  note?: string
+}
+
+/** LINE申請・手動登録と同じDropboxパス規約（提出日フォルダ）。テストスタッフはテストフォルダへ分離。 */
+function getStaffReceiptPath(
+  staffName: string,
+  submitDate: string,
+  originalFileName: string,
+  isTest: boolean
+): string {
+  const safeName = staffName.replace(/[/\\:*?"<>|]/g, "_")
+  const base = isTest ? "/経理書類/テスト" : "/経理書類/スタッフ領収書"
+  return `${base}/${safeName}/${submitDate}/${originalFileName}`
+}
+
+/**
+ * 提出日（YYYY-MM-DD）をJST正午の timestamptz 文字列に変換する（手動登録と同一）。
+ * 税理士側の created_at.slice(0,10) と会計士側の toJstDate のどちらでも提出日と一致する。
+ */
+function submitDateToCreatedAt(submitDate: string): string {
+  return `${submitDate}T12:00:00+09:00`
+}
+
 export async function POST(req: NextRequest) {
   const authSupabase = await createAuthClient()
   const { data: { user }, error: authError } = await authSupabase.auth.getUser()
@@ -40,29 +75,50 @@ export async function POST(req: NextRequest) {
     const formData = await req.formData()
     const files = formData.getAll("files") as File[]
     const staffMemberId = formData.get("staff_member_id") as string
-    const totalAmount = Number(formData.get("total_amount"))
-    const note = (formData.get("note") as string) ?? ""
     const transactionDate =
       (formData.get("transaction_date") as string) || new Date().toISOString().slice(0, 10)
-    // 精算方法（未指定は後方互換で小口返金扱い）
     const rawSettlement = formData.get("settlement_method") as string | null
-    const settlementMethod =
+    const settlementMethod: SettlementMethod =
       rawSettlement === "payroll" || rawSettlement === "storage_only"
         ? rawSettlement
         : "petty_cash"
-    // アチーブメント参加区分（未指定・不正値は 'other' = 全額）
-    const subsidyCategory = normalizeSubsidyCategory(formData.get("subsidy_category"))
+
+    // 行データ（支払い1件＝1行）
+    let rows: ApproveRow[] = []
+    try {
+      const parsed = JSON.parse((formData.get("rows") as string) || "[]")
+      if (Array.isArray(parsed)) rows = parsed as ApproveRow[]
+    } catch {
+      return NextResponse.json({ error: "行データ（rows）が不正です" }, { status: 400 })
+    }
 
     if (!staffMemberId) {
       return NextResponse.json({ error: "スタッフが選択されていません" }, { status: 400 })
     }
-    if (!totalAmount || totalAmount <= 0) {
-      return NextResponse.json({ error: "合計金額が不正です" }, { status: 400 })
-    }
     if (!files || files.length === 0) {
       return NextResponse.json({ error: "領収書ファイルがありません" }, { status: 400 })
     }
+    if (rows.length === 0) {
+      return NextResponse.json({ error: "登録する行がありません" }, { status: 400 })
+    }
 
+    // 行のバリデーション
+    for (const [i, row] of rows.entries()) {
+      if (!Number.isInteger(row.fileIndex) || row.fileIndex < 0 || row.fileIndex >= files.length) {
+        return NextResponse.json({ error: `行${i + 1}: 対応するファイルが見つかりません` }, { status: 400 })
+      }
+      if (!Number.isFinite(row.amount) || row.amount <= 0) {
+        return NextResponse.json({ error: `行${i + 1}: 金額を正しく入力してください` }, { status: 400 })
+      }
+      if (!row.date || !/^\d{4}-\d{2}-\d{2}$/.test(row.date.slice(0, 10))) {
+        return NextResponse.json({ error: `行${i + 1}: 支払年月日を入力してください` }, { status: 400 })
+      }
+      if (!getExpenseDetail(row.detailKey)) {
+        return NextResponse.json({ error: `行${i + 1}: 費用区分を選択してください` }, { status: 400 })
+      }
+    }
+
+    // 登録者名（表示名）
     const { data: roleData } = await authSupabase
       .from("user_roles")
       .select("display_name")
@@ -74,87 +130,204 @@ export async function POST(req: NextRequest) {
       user.email ||
       "不明"
 
-    const serviceClient = createServiceClient()
+    const service = createServiceClient()
 
-    // スタッフ名取得
-    const { data: staff } = await serviceClient
+    // スタッフ確認（is_test・名前）
+    const { data: staffRow } = await service
       .from("staff_members")
-      .select("id, name")
+      .select("id, name, is_test")
       .eq("id", staffMemberId)
       .single()
-    if (!staff) {
+    if (!staffRow) {
       return NextResponse.json({ error: "対象スタッフが存在しません" }, { status: 404 })
     }
-    const staffData = staff as unknown as { id: string; name: string }
+    const staff = staffRow as unknown as { id: string; name: string; is_test?: boolean | null }
+    const isTest = !!staff.is_test
 
-    // フォルダパス: /経理書類/スタッフ領収書/{スタッフ名}/{YYYY年MM月}/
-    const root = process.env.DROPBOX_ROOT_FOLDER || "/経理書類"
-    const yyyymm = transactionDate.slice(0, 7).replace("-", "年") + "月"
-    const folder = `${root}/スタッフ領収書/${staffData.name}/${yyyymm}`
+    // 初回ATC制御: セミナー2回目以降を登録済みなら「初回ATC」は選べない（LINE・手動登録と同一）
+    if (
+      rows.some((r) => r.detailKey === "ach_first") &&
+      (await isSeminarRepeatClaimed(service, staffMemberId))
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "このスタッフは既に「セミナー2回目以降」を登録済みのため、「初回ATC＋アカデミー会員費」は選べません。",
+          code: "ach_first_blocked",
+        },
+        { status: 409 }
+      )
+    }
 
-    // 各ファイルをDropboxへアップロード
-    const uploadedPaths: string[] = []
-    for (const file of files) {
-      const arrayBuffer = await file.arrayBuffer()
-      const buffer = Buffer.from(arrayBuffer)
-      const ts = Date.now()
-      const safeName = file.name.replace(/[\/\\:*?"<>|]/g, "_")
-      const path = `${folder}/${ts}_${safeName}`
+    const submitDate = transactionDate.slice(0, 10)
+
+    // 各ファイルをDropboxへアップロード（行から参照されているファイルのみ・1ファイル1回）
+    const usedFileIndexes = Array.from(new Set(rows.map((r) => r.fileIndex))).sort((a, b) => a - b)
+    const uploadedByIndex = new Map<number, { path: string; fileName: string; imageHash: string }>()
+    for (const idx of usedFileIndexes) {
+      const file = files[idx]
+      const buffer = Buffer.from(await file.arrayBuffer())
+      if (buffer.length === 0) {
+        return NextResponse.json({ error: `ファイル「${file.name}」のデータが空です` }, { status: 400 })
+      }
+      const imageHash = crypto.createHash("sha256").update(buffer).digest("hex")
+      const safeName = file.name.replace(/[/\\:*?"<>|]/g, "_")
+      const fileName = `${Date.now()}_${idx}_${safeName}`
+      const path = getStaffReceiptPath(staff.name, submitDate, fileName, isTest)
       const uploaded = await uploadFile(path, buffer)
-      uploadedPaths.push(uploaded)
+      uploadedByIndex.set(idx, { path: uploaded, fileName, imageHash })
     }
 
-    // 残高更新
-    const { data: settingsRaw, error: settingsError } = await serviceClient
-      .from("petty_cash_settings")
-      .select("*")
-      .limit(1)
-      .single()
-    if (settingsError) throw settingsError
-    const settings = settingsRaw as unknown as { id: string; balance: number }
-    const currentBalance = settings.balance ?? 0
-    // 小口返金のみ残高を減算。給与返金・保管のみは残高を動かさない
-    const deductsBalance = settlementMethod === "petty_cash"
-    const newBalance = deductsBalance ? currentBalance - totalAmount : currentBalance
+    // ファイルごとの行数（2行以上のファイルは分割グループとして ai_raw に記録する）
+    const rowCountByFile = new Map<number, number>()
+    for (const r of rows) {
+      rowCountByFile.set(r.fileIndex, (rowCountByFile.get(r.fileIndex) ?? 0) + 1)
+    }
+    const splitGroupByFile = new Map<number, string>()
+    for (const [idx, count] of rowCountByFile) {
+      if (count >= 2) splitGroupByFile.set(idx, crypto.randomUUID())
+    }
+    const splitIndexCounter = new Map<number, number>()
 
-    const { data: tx, error: txErr } = await serviceClient
-      .from("petty_cash_transactions")
-      .insert({
-        type: "出金",
-        amount: totalAmount,
-        description: `${staffData.name} スタッフ返金（${files.length}件）`,
+    // staff_receipts の行を組み立て（一括INSERTで原子的に作成する）
+    const receiptRows = rows.map((row) => {
+      const uploaded = uploadedByIndex.get(row.fileIndex)!
+      const detail = getExpenseDetail(row.detailKey)!
+      const paymentDate = row.date.slice(0, 10)
+      const storeName = row.store.trim() || null
+      const splitGroup = splitGroupByFile.get(row.fileIndex)
+      const splitIndex = (splitIndexCounter.get(row.fileIndex) ?? 0) + 1
+      splitIndexCounter.set(row.fileIndex, splitIndex)
+
+      const aiRaw = {
+        source: "admin_upload",
+        issue_date: paymentDate, // 会計士CSVの「支払年月日」に使われる
+        detail_key: detail.key, // 編集時の区分プリフィル用
+        note: row.note?.trim() || "",
+        store_name: storeName,
+        ...(splitGroup
+          ? {
+              split_group: splitGroup,
+              split_index: splitIndex,
+              split_total: rowCountByFile.get(row.fileIndex) ?? 1,
+            }
+          : {}),
+      } as unknown as Json
+
+      return {
         staff_member_id: staffMemberId,
-        registered_by: registeredBy,
-        category: "staff_refund",
-        receipt_urls: uploadedPaths,
-        note,
-        created_by: registeredBy,
-        transaction_date: transactionDate,
-        balance_after: newBalance,
-        settlement_method: settlementMethod,
-        // 給与返金のみ返金待ちステータスを付与
-        payroll_refund_status: settlementMethod === "payroll" ? "pending" : null,
-        // アチーブメント参加区分（支給率の判定に使用）
-        subsidy_category: subsidyCategory,
-      })
-      .select()
-      .single()
-    if (txErr) throw txErr
+        file_name: uploaded.fileName,
+        dropbox_path: uploaded.path, // 分割行は同一ファイルを共有（コピーしない）
+        document_type: detail.fullLabel,
+        date: paymentDate,
+        amount: Math.round(row.amount),
+        store_name: storeName,
+        tax_category: null,
+        account_title: null,
+        ai_raw: aiRaw,
+        created_at: submitDateToCreatedAt(submitDate),
+        image_hash: uploaded.imageHash,
+      }
+    })
 
-    // 残高を動かすのは小口返金のときだけ
-    if (deductsBalance) {
-      const { error: updateError } = await serviceClient
-        .from("petty_cash_settings")
-        .update({ balance: newBalance, updated_at: new Date().toISOString() })
-        .eq("id", settings.id)
-      if (updateError) throw updateError
+    // 一括INSERT（1ステートメント＝原子的）。image_hash 未適用環境ではフォールバック
+    let insertedIds: string[] = []
+    const withHash = await service.from("staff_receipts").insert(receiptRows).select("id")
+    if (withHash.error) {
+      const e = withHash.error
+      const isMissingColumn =
+        e.code === "PGRST204" || e.code === "42703" || /image_hash/.test(e.message || "")
+      if (isMissingColumn) {
+        console.warn("[staff-refund/approve] image_hash 未適用のためハッシュなしで保存（migration 030未実行）")
+        const noHash = await service
+          .from("staff_receipts")
+          .insert(receiptRows.map(({ image_hash: _ignored, ...rest }) => rest))
+          .select("id")
+        if (noHash.error) throw noHash.error
+        insertedIds = ((noHash.data ?? []) as { id: string }[]).map((r) => r.id)
+      } else {
+        throw e
+      }
+    } else {
+      insertedIds = ((withHash.data ?? []) as { id: string }[]).map((r) => r.id)
     }
+    if (insertedIds.length !== rows.length) {
+      throw new Error("領収書レコードの作成件数が一致しません")
+    }
+
+    // 行ごとに精算確定（LINE・手動登録と同一の settleStaffReceipt）。
+    // 途中で失敗したら、この処理で作成した取引・残高・領収書をすべて巻き戻す。
+    const settled: { receiptId: string; amount: number }[] = []
+    try {
+      for (const [i, row] of rows.entries()) {
+        const detail = getExpenseDetail(row.detailKey)!
+        const result = await settleStaffReceipt({
+          staffReceiptId: insertedIds[i],
+          settlementMethod,
+          subsidyCategory: detail.subsidyCategory,
+          expenseDetail: detail.fullLabel,
+          registeredBy,
+          client: service,
+        })
+        if (result.status !== "ok") {
+          throw new Error(`精算確定に失敗しました（${result.status}）`)
+        }
+        settled.push({ receiptId: insertedIds[i], amount: Math.round(row.amount) })
+      }
+    } catch (settleError) {
+      // ロールバック: 取引削除 → 残高復元（小口のみ） → 領収書削除
+      console.error("[staff-refund/approve] 精算失敗。ロールバックします:", settleError)
+      try {
+        if (settled.length > 0) {
+          await service
+            .from("petty_cash_transactions")
+            .delete()
+            .in("staff_receipt_id", settled.map((s) => s.receiptId))
+            .eq("category", "staff_refund")
+          if (settlementMethod === "petty_cash") {
+            const refund = settled.reduce((sum, s) => sum + s.amount, 0)
+            const { data: settingsRaw } = await service
+              .from("petty_cash_settings")
+              .select("*")
+              .limit(1)
+              .single()
+            const settings = settingsRaw as unknown as { id: string; balance: number } | null
+            if (settings) {
+              await service
+                .from("petty_cash_settings")
+                .update({ balance: (settings.balance ?? 0) + refund, updated_at: new Date().toISOString() })
+                .eq("id", settings.id)
+            }
+          }
+        }
+        await service.from("staff_receipts").delete().in("id", insertedIds)
+      } catch (rollbackError) {
+        console.error("[staff-refund/approve] ロールバック中にエラー:", rollbackError)
+      }
+      const msg = settleError instanceof Error ? settleError.message : "精算確定に失敗しました"
+      return NextResponse.json(
+        { error: `${msg}（登録はすべて取り消しました。もう一度お試しください）` },
+        { status: 500 }
+      )
+    }
+
+    // 「セミナー2回目以降」（弁当代含む）を登録したらフラグをセット（LINE・手動登録と同一）
+    if (rows.some((r) => r.detailKey === "ach_repeat" || r.detailKey === "bento")) {
+      await markSeminarRepeatClaimed(service, staffMemberId)
+    }
+
+    const totalAmount = rows.reduce((sum, r) => sum + Math.round(r.amount), 0)
+    const totalSubsidy = rows.reduce(
+      (sum, r) => sum + calcSubsidy(Math.round(r.amount), getExpenseDetail(r.detailKey)!.subsidyCategory),
+      0
+    )
 
     return NextResponse.json({
       success: true,
-      transaction: tx,
-      uploaded: uploadedPaths,
-      balance: newBalance,
+      count: rows.length,
+      totalAmount,
+      totalSubsidy,
+      receiptIds: insertedIds,
     })
   } catch (e: unknown) {
     console.error("[staff-refund/approve]", e)

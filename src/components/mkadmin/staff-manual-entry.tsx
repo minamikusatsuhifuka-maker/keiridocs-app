@@ -63,6 +63,8 @@ interface ManualEntry {
   subsidyCategory: string
   note: string
   hasFile: boolean
+  /** 登録元（manual=手動登録 / line=LINE申請。LINE分も区分などを個別修正できる） */
+  source?: "manual" | "line"
 }
 
 /* ---------- ユーティリティ ---------- */
@@ -515,12 +517,15 @@ export function StaffManualEntry() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
             <ClipboardList className="size-5" />
-            手動登録した立替（{entries.length}件）
+            登録済みの立替（手動・LINE申請 / {entries.length}件）
           </CardTitle>
         </CardHeader>
         <CardContent>
+          <p className="mb-2 text-xs text-muted-foreground">
+            手動登録分に加えてLINE申請分も表示します。区分・金額・日付は行ごとに修正できます（支給額は自動再計算）。
+          </p>
           {entries.length === 0 ? (
-            <p className="py-6 text-center text-sm text-muted-foreground">まだ手動登録はありません。</p>
+            <p className="py-6 text-center text-sm text-muted-foreground">まだ登録はありません。</p>
           ) : (
             <div className="overflow-x-auto">
               <Table>
@@ -545,6 +550,9 @@ export function StaffManualEntry() {
                         <TableCell className="whitespace-nowrap">
                           {e.staffName}
                           {e.isTest && <Badge variant="outline" className="ml-1 text-[10px]">テスト</Badge>}
+                          {e.source === "line" && (
+                            <Badge variant="secondary" className="ml-1 text-[10px]">LINE</Badge>
+                          )}
                         </TableCell>
                         <TableCell className="max-w-[160px] truncate">{e.storeName || "—"}</TableCell>
                         <TableCell className="text-right">{yen(e.amount)}</TableCell>

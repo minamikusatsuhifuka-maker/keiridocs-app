@@ -5,6 +5,7 @@ import { listFilesRecursive } from "@/lib/dropbox"
 import type { createClient } from "@/lib/supabase/server"
 import { SALES_SUBFOLDER, LEGACY_SALES_SUBFOLDER } from "@/lib/tax-folder-structure"
 import { calcSubsidy, subsidyRate } from "@/lib/subsidy"
+import { getSplitGroupInfo } from "@/lib/staff-receipt-split"
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -275,12 +276,14 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   // 表示は 種別「スタッフ領収書」・取引先=スタッフ名・支払先=店名・発行日=支払年月日・金額=立替額。
   // 支給割合/支給額は精算確定行（petty_cash_transactions）の subsidy_category / amount から
   // calcSubsidy で算出し、会計士向けスタッフ立替明細CSVと必ず一致させる。
-  const staffReceiptMap = new Map<string, DocMeta>()
+  // 1ファイルに複数の領収証が含まれる分割登録では、同一 file_name に複数の staff_receipts が
+  // 紐づくため、値は配列で保持し、一覧では1ファイル→複数行に展開する（合計は各行の金額なので二重計上しない）。
+  const staffReceiptMap = new Map<string, DocMeta[]>()
   try {
     const [{ data: staffReceipts }, { data: staffMembers }, { data: staffTxs }] = await Promise.all([
       supabase
         .from("staff_receipts")
-        .select("id, file_name, dropbox_path, date, amount, store_name, tax_category, account_title, staff_member_id, created_at"),
+        .select("id, file_name, dropbox_path, date, amount, store_name, tax_category, account_title, staff_member_id, created_at, ai_raw"),
       supabase.from("staff_members").select("id, name"),
       supabase
         .from("petty_cash_transactions")
@@ -312,8 +315,11 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       }
     }
 
+    // 分割兄弟の並び順制御用（split_index があればその順で表示する）
+    const splitOrderByMeta = new Map<DocMeta, number>()
+
     for (const r of staffReceipts ?? []) {
-      if (typeof r.file_name !== "string" || !r.file_name || staffReceiptMap.has(r.file_name)) continue
+      if (typeof r.file_name !== "string" || !r.file_name) continue
 
       const tx =
         (typeof r.id === "string" ? txByReceiptId.get(r.id) : undefined) ??
@@ -325,7 +331,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
         : typeof r.amount === "number" ? r.amount : null
       const category = tx?.subsidy_category ?? null
 
-      staffReceiptMap.set(r.file_name, {
+      const meta: DocMeta = {
         vendor_name: staffNameMap.get(r.staff_member_id ?? "") ?? null,
         amount: typeof r.amount === "number" ? r.amount : null,
         type: "スタッフ領収書",
@@ -342,18 +348,38 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
         transfer_from: null,
         transfer_date: null,
         transfer_total: null,
-      })
+      }
+      splitOrderByMeta.set(meta, getSplitGroupInfo(r.ai_raw)?.index ?? 0)
+
+      const arr = staffReceiptMap.get(r.file_name) ?? []
+      arr.push(meta)
+      staffReceiptMap.set(r.file_name, arr)
+    }
+
+    // 同一ファイルの分割兄弟は split_index 順に並べる
+    for (const arr of staffReceiptMap.values()) {
+      if (arr.length > 1) {
+        arr.sort((a, b) => (splitOrderByMeta.get(a) ?? 0) - (splitOrderByMeta.get(b) ?? 0))
+      }
     }
   } catch (err) {
     // staff_receipts が読めない場合も CSV 生成自体は継続する（従来どおり要確認扱いになる）
     console.error("staff_receipts照合エラー:", err)
   }
 
-  // 書類データを組み立て（documents優先 → staff_receiptsフォールバック）
-  const allRows = filesInTaxFolder.map((file, idx) => {
-    const meta = fileNameMap.get(file.name) ?? staffReceiptMap.get(file.name)
-    return {
-      no: idx + 1,
+  // 書類データを組み立て（documents優先 → staff_receiptsフォールバック）。
+  // 分割登録されたスタッフ領収書は1ファイルに複数の staff_receipts が紐づくため、
+  // その場合はファイル1つを複数行に展開する（各行の金額は個別金額＝合計は二重計上しない）。
+  const allRows = filesInTaxFolder.flatMap((file) => {
+    const docMeta = fileNameMap.get(file.name)
+    const staffMetas = staffReceiptMap.get(file.name)
+    const metas: (DocMeta | undefined)[] = docMeta
+      ? [docMeta]
+      : staffMetas && staffMetas.length > 0
+        ? staffMetas
+        : [undefined]
+    return metas.map((meta) => ({
+      no: 0, // 展開後に連番を振り直す
       fileName: file.name,
       type: meta?.type ?? "",
       vendor: meta?.vendor_name ?? "",
@@ -375,7 +401,11 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       isSales: salesPrefixes.some((p) => file.path_display.startsWith(p)) || meta?.type === "売上記録",
       // DBに一致する書類が無い＝内容不明（未登録・手動配置等）。集計対象外にする
       needsReview: !meta,
-    }
+    }))
+  })
+  // 展開後に連番を振り直す
+  allRows.forEach((r, idx) => {
+    r.no = idx + 1
   })
 
   const needsReviewRows = allRows.filter((r) => r.needsReview)

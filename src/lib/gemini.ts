@@ -67,6 +67,24 @@ export const SALES_ANALYSIS_EXTRA_HINT = `
 PDFが複数ページの場合は全ページを確認し、振込金額の合計（トータル）を返すこと。
 `
 
+/**
+ * スタッフ立替領収書向けの追加抽出指示（extraHint）。
+ * 管理画面のスタッフ返金取込（staff-refund/analyze）と LINE Bot の画像解析で同一のものを使う。
+ * 1ファイルに複数の領収証が含まれる場合の分割候補（payments）の判定を領収書向けに具体化する。
+ */
+export const STAFF_RECEIPT_ANALYSIS_EXTRA_HINT = `
+これはスタッフが立て替えた領収書です。発行店名(vendor_name)、合計金額(amount)、日付(issue_date YYYY-MM-DD)を必ず抽出してください。
+
+【複数の領収証が含まれる場合（payments の判定・重要）】
+- 1つのファイルに「独立した領収証・領収書」が複数含まれる場合（1枚の写真に複数枚の領収証が写っている、
+  複数ページのPDFの各ページが別々の領収証、など）は、payments に各領収証を1件ずつ返すこと。
+- 独立した領収証とは、金額・日付・但し書きが別々のものを指す。
+- 各件の issue_date は、その領収証自身に記載された領収日・決済日・支払日を採用すること。
+  送付状・案内状の発行日や作成日、書類全体の日付で代用してはならない。
+- 送付状・案内状・挨拶状のページは支払いではないため payments に含めない。
+- 1枚の領収証の中の内訳明細（品目の行）は分割しない。迷う場合は分割しない（payments は空配列）。
+`
+
 /** 支払方法・振込先のJSON項目（プロンプトのJSONテンプレートに差し込む） */
 const PAYMENT_JSON_FIELDS = `  "payment_method": "支払方法（bank_transfer=振込が必要/auto_debit=口座振替・自動引落し/credit_card=カード払い/unknown=判別不能）",
   "bank_info": {
