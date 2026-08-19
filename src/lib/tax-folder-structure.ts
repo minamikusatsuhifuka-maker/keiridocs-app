@@ -102,10 +102,25 @@ export function processingMonthOf(
   return { year, month: month + 1 }
 }
 
-/** ISO日時/日付文字列（YYYY-MM-DD...）から提出日 YYYY-MM-DD を取り出す */
+/**
+ * ISO日時/日付文字列（YYYY-MM-DD...）から提出日 YYYY-MM-DD を取り出す。
+ *
+ * 生ISOの先頭10文字はUTC日付になるため、JST深夜（00:00〜08:59）の申請が前日扱いになり、
+ * 20日締めの月割りが1か月ずれることがある（例: JST 8/21 06:00 → UTC 8/20 → 8月扱い）。
+ * 日時（Tを含む）の場合はJSTへ明示変換し、日付のみの文字列はそのまま採用する。
+ */
 export function submitDateStr(iso: string | null | undefined): string {
-  if (typeof iso !== "string") return ""
-  return iso.slice(0, 10)
+  if (typeof iso !== "string" || iso === "") return ""
+  // 日付のみ（YYYY-MM-DD）はタイムゾーン変換しない
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso.slice(0, 10)
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d)
 }
 
 /**

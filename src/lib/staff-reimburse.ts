@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { Database } from "@/types/database"
 import { calcSubsidy, subsidyRate } from "@/lib/subsidy"
+import { fetchAllRows } from "@/lib/supabase/fetch-all"
 
 /**
  * 会計士向け「スタッフ立替まとめ」の集計（共通ロジック）。
@@ -130,14 +131,17 @@ export async function buildStaffReimburse(params: {
   const { supabase, start, endExclusive } = params
 
   // 1. スタッフ立替の取引行（全件）を取得し、JSで申請日フィルタ
-  const { data: txRaw, error: txError } = await supabase
-    .from("petty_cash_transactions")
-    .select(
-      "id, staff_member_id, amount, expense_detail, subsidy_category, settlement_method, created_at, transaction_date, description, note, staff_receipt_id"
-    )
-    .eq("category", "staff_refund")
-  if (txError) throw txError
-  const txRows = (txRaw as unknown as TxRow[]) ?? []
+  // ※ PostgREST の max-rows（Supabase既定1000）で暗黙に打ち切られないようページングする
+  const txRows = await fetchAllRows<TxRow>((from, to) =>
+    supabase
+      .from("petty_cash_transactions")
+      .select(
+        "id, staff_member_id, amount, expense_detail, subsidy_category, settlement_method, created_at, transaction_date, description, note, staff_receipt_id"
+      )
+      .eq("category", "staff_refund")
+      .order("id", { ascending: true })
+      .range(from, to) as unknown as PromiseLike<{ data: TxRow[] | null; error: { message: string } | null }>
+  )
 
   // 2. 参照されている領収書（店名・アップロード日時・OCR発行日）をまとめて取得
   const receiptIds = Array.from(
@@ -147,11 +151,13 @@ export async function buildStaffReimburse(params: {
     string,
     { store_name: string | null; created_at: string; issueDate: string }
   >()
-  if (receiptIds.length > 0) {
+  // .in() のURL長制限・行数上限を避けるため200件ずつ引く
+  for (let i = 0; i < receiptIds.length; i += 200) {
+    const chunk = receiptIds.slice(i, i + 200)
     const { data: receipts } = await supabase
       .from("staff_receipts")
       .select("id, store_name, created_at, ai_raw")
-      .in("id", receiptIds)
+      .in("id", chunk)
     for (const r of (receipts ?? []) as {
       id: string
       store_name: string | null
@@ -168,10 +174,19 @@ export async function buildStaffReimburse(params: {
   }
 
   // 3. スタッフ名マップ＋テストスタッフ判別（テストは会計士CSV・集計から除外）
-  const { data: staffRaw } = await supabase.from("staff_members").select("id, name, is_test")
+  const staffRaw = await fetchAllRows<{ id: string; name: string; is_test: boolean | null }>((from, to) =>
+    supabase
+      .from("staff_members")
+      .select("id, name, is_test")
+      .order("id", { ascending: true })
+      .range(from, to) as unknown as PromiseLike<{
+        data: { id: string; name: string; is_test: boolean | null }[] | null
+        error: { message: string } | null
+      }>
+  )
   const staffNameMap = new Map<string, string>()
   const testStaffIds = new Set<string>()
-  for (const s of (staffRaw ?? []) as { id: string; name: string; is_test?: boolean | null }[]) {
+  for (const s of staffRaw) {
     staffNameMap.set(s.id, s.name)
     if (s.is_test) testStaffIds.add(s.id)
   }

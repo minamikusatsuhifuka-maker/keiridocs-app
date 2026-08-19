@@ -21,6 +21,7 @@ import {
   LineChart,
   Wallet,
   RotateCcw,
+  HandCoins,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -42,6 +43,7 @@ const navItems = [
   { href: "/downloads", label: "自動取得", icon: Download },
   { href: "/accountant", label: "税理士提出", icon: Briefcase },
   { href: "/petty-cash", label: "小口現金", icon: Wallet },
+  { href: "/staff-reimburse", label: "スタッフ立替", icon: HandCoins },
   { href: "/refund", label: "返金管理", icon: RotateCcw },
   { href: "/business-cards", label: "名刺管理", icon: IdCard },
   { href: "/mail", label: "メール確認", icon: Mail },
@@ -96,6 +98,7 @@ function isActive(href: string, pathname: string) {
   if (href === "/staff-receipts/admin") return pathname === "/staff-receipts/admin"
   if (href === "/payments") return pathname === "/payments"
   if (href === "/petty-cash") return pathname === "/petty-cash"
+  if (href === "/staff-reimburse") return pathname === "/staff-reimburse"
   if (href === "/refund") return pathname === "/refund" || pathname.startsWith("/refund/")
   if (href === "/line-staff") return pathname === "/line-staff"
   return pathname.startsWith(href)

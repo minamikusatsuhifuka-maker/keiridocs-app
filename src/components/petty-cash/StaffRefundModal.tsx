@@ -99,6 +99,8 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
   const [subsidyCategory, setSubsidyCategory] = useState<SubsidyCategory>("other")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
+  // 二重承認ガードの警告（同一ファイルが既登録のとき。承知のうえでの再実行だけ許す）
+  const [duplicateWarning, setDuplicateWarning] = useState("")
 
   // 手入力
   const [amount, setAmount] = useState("")
@@ -220,6 +222,7 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
     setAnalyzed(null)
     setIsDragOver(false)
     setError("")
+    setDuplicateWarning("")
   }
 
   const submitManual = async () => {
@@ -302,9 +305,10 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
     }
   }
 
-  const approve = async () => {
+  const approve = async (force = false) => {
     if (!analyzed) return
     setError("")
+    if (!force) setDuplicateWarning("")
 
     // 行のバリデーション（金額・支払年月日・費用区分）
     for (const [i, { row }] of allRows.entries()) {
@@ -334,6 +338,8 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
       fd.append("staff_member_id", staffId)
       fd.append("transaction_date", date)
       fd.append("settlement_method", settlement)
+      // 二重承認ガードの警告を承知のうえで登録する場合のみ force を付ける
+      if (force) fd.append("force", "1")
       fd.append(
         "rows",
         JSON.stringify(
@@ -353,7 +359,15 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
         body: fd,
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || "承認に失敗しました")
+      if (!res.ok) {
+        // 同一ファイルの二重承認は警告を出し、承知のうえでの再実行だけを許す
+        if (res.status === 409 && data.code === "duplicate_file") {
+          setDuplicateWarning(data.error || "同じ資料が既に登録されています")
+          return
+        }
+        throw new Error(data.error || "承認に失敗しました")
+      }
+      setDuplicateWarning("")
       reset()
       onOpenChange(false)
       onSuccess?.()
@@ -717,6 +731,32 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
           )}
 
           {error && <p className="text-sm text-red-600">{error}</p>}
+
+          {/* 二重承認ガード: 同じ資料が既に登録済み。承知のうえでのみ再実行できる */}
+          {duplicateWarning && (
+            <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+              <p className="font-bold">⚠️ 同じ資料が既に登録されています</p>
+              <p className="mt-1 whitespace-pre-wrap">{duplicateWarning}</p>
+              <div className="mt-2 flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => approve(true)}
+                  disabled={loading}
+                >
+                  重複を承知で登録
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setDuplicateWarning("")}
+                  disabled={loading}
+                >
+                  やめる
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
 
         <DialogFooter>
@@ -729,7 +769,7 @@ export function StaffRefundModal({ open, onOpenChange, onSuccess }: Props) {
             </Button>
           ) : (
             analyzed && (
-              <Button onClick={approve} disabled={loading}>
+              <Button onClick={() => approve(false)} disabled={loading}>
                 {loading
                   ? "保存中…"
                   : settlement === "petty_cash"

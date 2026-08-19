@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef, Suspense } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
+import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -415,6 +416,13 @@ function PettyCashPageInner() {
             <Button onClick={() => setShowImportDialog(true)} variant="outline">
               <Upload className="mr-2 size-4" />
               過去データをインポート
+            </Button>
+            {/* スタッフ立替は専用メニューで1件1行・分割の内訳付きで確認できる */}
+            <Button variant="ghost" asChild>
+              <Link href="/staff-reimburse">
+                <UserRound className="mr-2 size-4" />
+                スタッフ立替の一覧を開く
+              </Link>
             </Button>
           </div>
         </CardContent>

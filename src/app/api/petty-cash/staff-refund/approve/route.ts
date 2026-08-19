@@ -10,6 +10,7 @@ import {
   markSeminarRepeatClaimed,
   type SettlementMethod,
 } from "@/lib/staff-refund-core"
+import { findImageHashDuplicate } from "@/lib/staff-receipt-dedup"
 import type { Json } from "@/types/database"
 
 /**
@@ -26,6 +27,13 @@ import type { Json } from "@/types/database"
  *  - settlement_method: string      … petty_cash / payroll / storage_only
  *  - rows: string(JSON)             … [{ fileIndex, store, amount, date, detailKey }]
  *      date は支払年月日（その領収証自身の領収日）→ staff_receipts.date / ai_raw.issue_date
+ *  - force: "1"                     … 二重承認ガードの警告を承知のうえで登録する
+ *
+ * 二重承認ガード:
+ *  アップロードされたファイルのSHA-256が既存 staff_receipts と一致する場合は 409 を返して
+ *  登録を止める（同じ資料を二度承認してしまう事故を防ぐ）。同一リクエスト内で1ファイルを
+ *  複数行に分ける「分割兄弟」は同じファイルを共有するのが正しい姿なので対象外。
+ *  意図した再登録は force=1 で通せる。
  *
  * 1ファイルから複数行が登録される場合（複数領収証の分割）は、全行が同一ファイル
  * （同一 dropbox_path）を共有し、ai_raw.split_group でグループ化する。
@@ -77,6 +85,8 @@ export async function POST(req: NextRequest) {
     const staffMemberId = formData.get("staff_member_id") as string
     const transactionDate =
       (formData.get("transaction_date") as string) || new Date().toISOString().slice(0, 10)
+    // 二重承認ガードを承知のうえで登録する場合のみ true
+    const force = formData.get("force") === "1"
     const rawSettlement = formData.get("settlement_method") as string | null
     const settlementMethod: SettlementMethod =
       rawSettlement === "payroll" || rawSettlement === "storage_only"
@@ -161,21 +171,61 @@ export async function POST(req: NextRequest) {
 
     const submitDate = transactionDate.slice(0, 10)
 
-    // 各ファイルをDropboxへアップロード（行から参照されているファイルのみ・1ファイル1回）
+    // 行から参照されているファイルのみ・1ファイル1回だけ読み込んでハッシュを計算する
     const usedFileIndexes = Array.from(new Set(rows.map((r) => r.fileIndex))).sort((a, b) => a - b)
-    const uploadedByIndex = new Map<number, { path: string; fileName: string; imageHash: string }>()
+    const prepared: { idx: number; buffer: Buffer; imageHash: string; originalName: string }[] = []
     for (const idx of usedFileIndexes) {
       const file = files[idx]
       const buffer = Buffer.from(await file.arrayBuffer())
       if (buffer.length === 0) {
         return NextResponse.json({ error: `ファイル「${file.name}」のデータが空です` }, { status: 400 })
       }
-      const imageHash = crypto.createHash("sha256").update(buffer).digest("hex")
-      const safeName = file.name.replace(/[/\\:*?"<>|]/g, "_")
-      const fileName = `${Date.now()}_${idx}_${safeName}`
+      prepared.push({
+        idx,
+        buffer,
+        imageHash: crypto.createHash("sha256").update(buffer).digest("hex"),
+        originalName: file.name,
+      })
+    }
+
+    // 二重承認ガード: 同じファイル（SHA-256一致）が既に登録済みなら止める。
+    // アップロード前に判定するため、警告時はDropboxにも何も残らない。
+    // 分割兄弟は同一リクエスト内で1ファイルを共有するだけなので、この判定には掛からない
+    // （既存DBとの照合であり、リクエスト内の行同士は比較しない）。
+    if (!force) {
+      for (const p of prepared) {
+        const dup = await findImageHashDuplicate(service, p.imageHash)
+        if (dup) {
+          return NextResponse.json(
+            {
+              error:
+                `ファイル「${p.originalName}」は既に登録済みです` +
+                `（${dup.store_name || "店名不明"}／${dup.amount != null ? `¥${dup.amount.toLocaleString("ja-JP")}` : "金額不明"}` +
+                `／登録日 ${dup.created_at.slice(0, 10)}）。` +
+                `同じ資料を二重に承認しようとしています。それでも登録する場合は「重複を承知で登録」を選んでください。`,
+              code: "duplicate_file",
+              duplicate: {
+                fileName: p.originalName,
+                storeName: dup.store_name,
+                amount: dup.amount,
+                date: dup.date,
+                createdAt: dup.created_at,
+              },
+            },
+            { status: 409 }
+          )
+        }
+      }
+    }
+
+    // 各ファイルをDropboxへアップロード
+    const uploadedByIndex = new Map<number, { path: string; fileName: string; imageHash: string }>()
+    for (const p of prepared) {
+      const safeName = p.originalName.replace(/[/\\:*?"<>|]/g, "_")
+      const fileName = `${Date.now()}_${p.idx}_${safeName}`
       const path = getStaffReceiptPath(staff.name, submitDate, fileName, isTest)
-      const uploaded = await uploadFile(path, buffer)
-      uploadedByIndex.set(idx, { path: uploaded, fileName, imageHash })
+      const uploaded = await uploadFile(path, p.buffer)
+      uploadedByIndex.set(p.idx, { path: uploaded, fileName, imageHash: p.imageHash })
     }
 
     // ファイルごとの行数（2行以上のファイルは分割グループとして ai_raw に記録する）

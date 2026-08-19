@@ -6,6 +6,7 @@ import type { createClient } from "@/lib/supabase/server"
 import { SALES_SUBFOLDER, LEGACY_SALES_SUBFOLDER } from "@/lib/tax-folder-structure"
 import { calcSubsidy, subsidyRate } from "@/lib/subsidy"
 import { getSplitGroupInfo } from "@/lib/staff-receipt-split"
+import { fetchAllRows } from "@/lib/supabase/fetch-all"
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -57,7 +58,8 @@ interface BuildResult {
   saveFolderPath: string
   rowCount: number
   // DBに一致する書類が無く「要確認」として集計対象外にしたファイル
-  needsReviewFiles: Array<{ fileName: string; path: string }>
+  // folder は月フォルダ配下のサブフォルダ名（要確認の内訳を切り分けるために付与）
+  needsReviewFiles: Array<{ fileName: string; path: string; folder: string }>
   // 新旧フォルダ構造の重複として除外した件数
   duplicatesRemoved: number
   // xlsx生成用の構造化データ（detailRows はCSVと同一の行構成、rows はシート分割用の構造化行）
@@ -81,6 +83,35 @@ function escapeCsv(value: string): string {
 function formatAmount(amount: number | null): string {
   if (amount === null || amount === undefined) return ""
   return `¥${amount.toLocaleString()}`
+}
+
+/**
+ * ファイル名の照合キーを正規化する。
+ *
+ * DropboxのAPIが返すパスと、アプリ側がDBに保存したファイル名は、日本語を含む場合に
+ * Unicode正規化形（NFC/NFD）が食い違うことがある。素の文字列比較だと同じ見た目でも
+ * 一致せず、DBに登録済みの資料が「要確認：DB未登録」に落ちる。NFCに揃えて比較する。
+ */
+function fileKey(name: string): string {
+  return name.normalize("NFC")
+}
+
+/**
+ * ISO日時を日本時間の YYYY-MM-DD に変換する（サーバTZがUTCのため明示変換）。
+ * スタッフ領収書の提出日は 20日締めの月割り判定に直結するため、生ISOの先頭10文字
+ * （＝UTC日付）でスライスすると JST深夜の申請が前日扱いになり月がずれる。
+ * 会計士向け立替明細CSV（staff-reimburse.ts）と同じJST変換に揃える。
+ */
+function toJstDate(iso: string | null | undefined): string {
+  if (!iso) return ""
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ""
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d)
 }
 
 type TaxFolderFile = { name: string; path_display: string; size: number; client_modified: string }
@@ -185,16 +216,34 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   }
 
   // DBからメタデータ取得
-  let dbQuery = supabase
-    .from("documents")
-    .select("dropbox_path, vendor_name, amount, type, issue_date, due_date, created_at, tax_category, account_title, ocr_raw")
-    .not("dropbox_path", "is", null)
-
-  if (!isAdmin) {
-    dbQuery = dbQuery.eq("user_id", userId)
+  // ※ 全件走査が前提のため必ずページングする。無指定の .select() は PostgREST の
+  //   max-rows（Supabase既定1000）で静かに打ち切られ、超過分が「要確認：DB未登録」に落ちる。
+  type DbDocRow = {
+    id: string
+    dropbox_path: string | null
+    vendor_name: string | null
+    amount: number | null
+    type: string
+    issue_date: string | null
+    due_date: string | null
+    created_at: string
+    tax_category: string | null
+    account_title: string | null
+    ocr_raw: unknown
   }
-
-  const { data: dbDocs } = await dbQuery
+  const dbDocs = await fetchAllRows<DbDocRow>((from, to) => {
+    let q = supabase
+      .from("documents")
+      .select("id, dropbox_path, vendor_name, amount, type, issue_date, due_date, created_at, tax_category, account_title, ocr_raw")
+      .not("dropbox_path", "is", null)
+    if (!isAdmin) {
+      q = q.eq("user_id", userId)
+    }
+    return q.order("id", { ascending: true }).range(from, to) as unknown as PromiseLike<{
+      data: DbDocRow[] | null
+      error: { message: string } | null
+    }>
+  })
 
   type DocMeta = {
     vendor_name: string | null
@@ -232,9 +281,9 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   }
 
   const fileNameMap = new Map<string, DocMeta>()
-  for (const d of dbDocs ?? []) {
+  for (const d of dbDocs) {
     if (typeof d.dropbox_path !== "string") continue
-    const fn = d.dropbox_path.split("/").pop() ?? ""
+    const fn = fileKey(d.dropbox_path.split("/").pop() ?? "")
     if (!fn || fileNameMap.has(fn)) continue
 
     // ocr_rawから振込情報を追加抽出（売上記録の場合）
@@ -280,32 +329,64 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   // 紐づくため、値は配列で保持し、一覧では1ファイル→複数行に展開する（合計は各行の金額なので二重計上しない）。
   const staffReceiptMap = new Map<string, DocMeta[]>()
   try {
-    const [{ data: staffReceipts }, { data: staffMembers }, { data: staffTxs }] = await Promise.all([
-      supabase
-        .from("staff_receipts")
-        .select("id, file_name, dropbox_path, date, amount, store_name, tax_category, account_title, staff_member_id, created_at, ai_raw"),
-      supabase.from("staff_members").select("id, name"),
-      supabase
-        .from("petty_cash_transactions")
-        .select("id, staff_receipt_id, receipt_urls, amount, expense_detail, subsidy_category")
-        .eq("category", "staff_refund"),
-    ])
-    const staffNameMap = new Map<string, string>()
-    for (const s of staffMembers ?? []) {
-      if (typeof s.id === "string" && typeof s.name === "string") staffNameMap.set(s.id, s.name)
+    type StaffReceiptRow = {
+      id: string
+      file_name: string | null
+      dropbox_path: string | null
+      date: string | null
+      amount: number | null
+      store_name: string | null
+      tax_category: string | null
+      account_title: string | null
+      staff_member_id: string | null
+      created_at: string
+      ai_raw: unknown
     }
-
-    // 精算行を staff_receipt_id / receipt_urls（dropbox_path）の両方で引けるようにする
-    type StaffTx = {
+    type StaffMemberRow = { id: string; name: string }
+    type StaffTxRow = {
+      id: string
       staff_receipt_id: string | null
       receipt_urls: unknown
       amount: number | null
       expense_detail: string | null
       subsidy_category: string | null
     }
+
+    // いずれも全件走査が前提のためページングする（1000件超で照合漏れ＝要確認が増える）
+    const [staffReceipts, staffMembers, staffTxs] = await Promise.all([
+      fetchAllRows<StaffReceiptRow>((from, to) =>
+        supabase
+          .from("staff_receipts")
+          .select("id, file_name, dropbox_path, date, amount, store_name, tax_category, account_title, staff_member_id, created_at, ai_raw")
+          .order("id", { ascending: true })
+          .range(from, to) as unknown as PromiseLike<{ data: StaffReceiptRow[] | null; error: { message: string } | null }>
+      ),
+      fetchAllRows<StaffMemberRow>((from, to) =>
+        supabase
+          .from("staff_members")
+          .select("id, name")
+          .order("id", { ascending: true })
+          .range(from, to) as unknown as PromiseLike<{ data: StaffMemberRow[] | null; error: { message: string } | null }>
+      ),
+      fetchAllRows<StaffTxRow>((from, to) =>
+        supabase
+          .from("petty_cash_transactions")
+          .select("id, staff_receipt_id, receipt_urls, amount, expense_detail, subsidy_category")
+          .eq("category", "staff_refund")
+          .order("id", { ascending: true })
+          .range(from, to) as unknown as PromiseLike<{ data: StaffTxRow[] | null; error: { message: string } | null }>
+      ),
+    ])
+    const staffNameMap = new Map<string, string>()
+    for (const s of staffMembers) {
+      if (typeof s.id === "string" && typeof s.name === "string") staffNameMap.set(s.id, s.name)
+    }
+
+    // 精算行を staff_receipt_id / receipt_urls（dropbox_path）の両方で引けるようにする
+    type StaffTx = StaffTxRow
     const txByReceiptId = new Map<string, StaffTx>()
     const txByUrl = new Map<string, StaffTx>()
-    for (const tx of (staffTxs ?? []) as StaffTx[]) {
+    for (const tx of staffTxs) {
       if (tx.staff_receipt_id && !txByReceiptId.has(tx.staff_receipt_id)) {
         txByReceiptId.set(tx.staff_receipt_id, tx)
       }
@@ -318,8 +399,17 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     // 分割兄弟の並び順制御用（split_index があればその順で表示する）
     const splitOrderByMeta = new Map<DocMeta, number>()
 
-    for (const r of staffReceipts ?? []) {
-      if (typeof r.file_name !== "string" || !r.file_name) continue
+    for (const r of staffReceipts) {
+      // 照合キー: file_name と dropbox_path のファイル名の両方。
+      // 税理士フォルダへは dropbox_path のファイル名でコピーされるため、
+      // 何らかの理由で file_name と食い違っていても取りこぼさないようにする。
+      const keys = new Set<string>()
+      if (typeof r.file_name === "string" && r.file_name) keys.add(fileKey(r.file_name))
+      if (typeof r.dropbox_path === "string" && r.dropbox_path) {
+        const base = r.dropbox_path.split("/").pop() ?? ""
+        if (base) keys.add(fileKey(base))
+      }
+      if (keys.size === 0) continue
 
       const tx =
         (typeof r.id === "string" ? txByReceiptId.get(r.id) : undefined) ??
@@ -338,9 +428,9 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
         issue_date: r.date ?? null,
         tax_category: r.tax_category ?? null,
         account_title: r.account_title ?? null,
-        // スタッフ領収書の月割りは提出日（アップロード日）の20日締め
-        base_date: r.created_at ? `${r.created_at.slice(0, 10)}（提出日）` : "",
-        created_date: r.created_at ? r.created_at.slice(0, 10) : "",
+        // スタッフ領収書の月割りは提出日（アップロード日）の20日締め。JSTで日付化する
+        base_date: toJstDate(r.created_at) ? `${toJstDate(r.created_at)}（提出日）` : "",
+        created_date: toJstDate(r.created_at),
         store_name: typeof r.store_name === "string" ? r.store_name : "",
         expense_detail: tx?.expense_detail ?? "",
         subsidy_label: subsidyBase !== null ? (subsidyRate(category) === 0.5 ? "半額" : "全額") : "",
@@ -351,9 +441,11 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       }
       splitOrderByMeta.set(meta, getSplitGroupInfo(r.ai_raw)?.index ?? 0)
 
-      const arr = staffReceiptMap.get(r.file_name) ?? []
-      arr.push(meta)
-      staffReceiptMap.set(r.file_name, arr)
+      for (const key of keys) {
+        const arr = staffReceiptMap.get(key) ?? []
+        arr.push(meta)
+        staffReceiptMap.set(key, arr)
+      }
     }
 
     // 同一ファイルの分割兄弟は split_index 順に並べる
@@ -371,8 +463,9 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   // 分割登録されたスタッフ領収書は1ファイルに複数の staff_receipts が紐づくため、
   // その場合はファイル1つを複数行に展開する（各行の金額は個別金額＝合計は二重計上しない）。
   const allRows = filesInTaxFolder.flatMap((file) => {
-    const docMeta = fileNameMap.get(file.name)
-    const staffMetas = staffReceiptMap.get(file.name)
+    const key = fileKey(file.name)
+    const docMeta = fileNameMap.get(key)
+    const staffMetas = staffReceiptMap.get(key)
     const metas: (DocMeta | undefined)[] = docMeta
       ? [docMeta]
       : staffMetas && staffMetas.length > 0
@@ -520,7 +613,16 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     folderPath,
     saveFolderPath,
     rowCount: allRows.length,
-    needsReviewFiles: needsReviewRows.map((r) => ({ fileName: r.fileName, path: r.path })),
+    needsReviewFiles: needsReviewRows.map((r) => ({
+      fileName: r.fileName,
+      path: r.path,
+      // 月フォルダ直下からの相対パスの先頭要素＝サブフォルダ名（直下なら「（直下）」）
+      folder: (() => {
+        const rest = r.path.startsWith(`${folderPath}/`) ? r.path.slice(folderPath.length + 1) : ""
+        const idx = rest.indexOf("/")
+        return idx > 0 ? rest.slice(0, idx) : "（直下）"
+      })(),
+    })),
     duplicatesRemoved,
     table: {
       summaryLines,

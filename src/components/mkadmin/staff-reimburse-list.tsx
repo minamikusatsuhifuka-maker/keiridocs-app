@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, Fragment } from "react"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -148,6 +149,15 @@ export function StaffReimburseList() {
           <p className="text-sm" style={{ color: "var(--dusk-text-muted)" }}>
             申請日（アップロード日）ベースで集計します。立替は全件「給与支給」、
             「セミナー2回目以降」のみ半額（端数切り捨て）、他は全額です。
+          </p>
+          {/* 役割の整理: このタブは給与の月次反映用サマリー。
+              1件ごとの内訳・分割の確認・資料閲覧・編集削除は専用メニュー「スタッフ立替」で行う。 */}
+          <p className="text-sm" style={{ color: "var(--dusk-text-muted)" }}>
+            1件ごとの内訳（申請日・提出日・分割の内訳・登録資料）を見るときは
+            <Link href="/staff-reimburse" className="mx-1 font-medium underline">
+              スタッフ立替メニュー
+            </Link>
+            を開いてください。金額はこのタブと同じ計算です。
           </p>
 
           {/* 期間選択 */}

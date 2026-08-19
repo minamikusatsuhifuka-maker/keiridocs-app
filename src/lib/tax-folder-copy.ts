@@ -22,6 +22,7 @@ import {
   processingMonthOfDate,
   STAFF_RECEIPT_SUBFOLDER,
 } from "@/lib/tax-folder-structure"
+import { fetchAllRows } from "@/lib/supabase/fetch-all"
 import type { createClient } from "@/lib/supabase/server"
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
@@ -124,36 +125,56 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
   // ステータスにかかわらずコピーする（要振込・未処理のままでも税理士提出から漏らさない）。
   // アーカイブのみ手動除外の意思を尊重して対象外とする。
   // 月割りは基準日（発行日→支払期日→取込日）ベースのためJS側で判定する（DBの範囲絞り込みはしない）。
-  let dbQuery = supabase
-    .from("documents")
-    .select("id, dropbox_path, vendor_name, amount, type, issue_date, due_date, created_at, status")
-    .neq("status", "アーカイブ")
-    .not("dropbox_path", "is", null)
-
-  if (!isAdmin) {
-    dbQuery = dbQuery.eq("user_id", userId)
+  // ※ 全件走査が前提のため必ずページングする。無指定の .select() は PostgREST の
+  //   max-rows（Supabase既定1000）で静かに打ち切られ、超過分がコピー対象から漏れる。
+  type CopyDocRow = {
+    id: string
+    dropbox_path: string | null
+    vendor_name: string | null
+    amount: number | null
+    type: string
+    issue_date: string | null
+    due_date: string | null
+    created_at: string
+    status: string
   }
-
-  const { data: dbDocs, error: fetchError } = await dbQuery
-
-  if (fetchError) {
+  let dbDocs: CopyDocRow[]
+  try {
+    dbDocs = await fetchAllRows<CopyDocRow>((from, to) => {
+      let q = supabase
+        .from("documents")
+        .select("id, dropbox_path, vendor_name, amount, type, issue_date, due_date, created_at, status")
+        .neq("status", "アーカイブ")
+        .not("dropbox_path", "is", null)
+      if (!isAdmin) {
+        q = q.eq("user_id", userId)
+      }
+      return q.order("id", { ascending: true }).range(from, to) as unknown as PromiseLike<{
+        data: CopyDocRow[] | null
+        error: { message: string } | null
+      }>
+    })
+  } catch (fetchError) {
     console.error("書類取得エラー:", fetchError)
     throw new Error("書類の取得に失敗しました")
   }
 
   // 全DB書類のdropbox_pathセット（pass 2 で重複除外用）
-  let allPathsQuery = supabase
-    .from("documents")
-    .select("dropbox_path")
-    .not("dropbox_path", "is", null)
-
-  if (!isAdmin) {
-    allPathsQuery = allPathsQuery.eq("user_id", userId)
-  }
-
-  const { data: allPathsData } = await allPathsQuery
+  const allPathsData = await fetchAllRows<{ id: string; dropbox_path: string | null }>((from, to) => {
+    let q = supabase
+      .from("documents")
+      .select("id, dropbox_path")
+      .not("dropbox_path", "is", null)
+    if (!isAdmin) {
+      q = q.eq("user_id", userId)
+    }
+    return q.order("id", { ascending: true }).range(from, to) as unknown as PromiseLike<{
+      data: { id: string; dropbox_path: string | null }[] | null
+      error: { message: string } | null
+    }>
+  })
   const dbPathSet = new Set(
-    (allPathsData ?? [])
+    allPathsData
       .map((d) => d.dropbox_path)
       .filter((p): p is string => typeof p === "string")
   )
@@ -165,17 +186,7 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
 
   // pass 1: DB書類を、選択フォルダに該当し「基準日の処理月＝対象月」のものだけコピー
   const targetFolderPrefixes = targetFolders.map((f) => `/経理書類/${f}/`)
-  const dbDocsForCopy = (dbDocs ?? []).filter((d): d is {
-    id: string
-    dropbox_path: string
-    vendor_name: string
-    amount: number | null
-    type: string
-    issue_date: string | null
-    due_date: string | null
-    created_at: string
-    status: string
-  } => {
+  const dbDocsForCopy = dbDocs.filter((d): d is CopyDocRow & { dropbox_path: string } => {
     if (typeof d.dropbox_path !== "string" || d.dropbox_path.length === 0) return false
     // 選択フォルダ配下のみ
     if (!targetFolderPrefixes.some((prefix) => d.dropbox_path!.startsWith(prefix))) return false
@@ -294,34 +305,86 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
   // petty_cash_transactions の staff_refund 領収書を、精算方法によらず対象月分すべてコピー
   if (targetFolders.includes("スタッフ領収書")) {
     try {
-      const { data: staffTxRaw, error: staffTxError } = await supabase
-        .from("petty_cash_transactions")
-        .select("id, amount, staff_member_id, receipt_urls, transaction_date, created_at")
-        .eq("category", "staff_refund")
-        .not("receipt_urls", "is", null)
+      type StaffTxRow = {
+        id: string
+        amount: number | null
+        staff_member_id: string | null
+        staff_receipt_id: string | null
+        receipt_urls: unknown
+        transaction_date: string | null
+        created_at: string
+      }
+      // ページング必須（1000件超で取りこぼすとその分がコピーされず一覧にも出ない）
+      const staffTxRaw = await fetchAllRows<StaffTxRow>((from, to) =>
+        supabase
+          .from("petty_cash_transactions")
+          .select("id, amount, staff_member_id, staff_receipt_id, receipt_urls, transaction_date, created_at")
+          .eq("category", "staff_refund")
+          .not("receipt_urls", "is", null)
+          .order("id", { ascending: true })
+          .range(from, to) as unknown as PromiseLike<{ data: StaffTxRow[] | null; error: { message: string } | null }>
+      )
 
-      if (staffTxError) {
-        console.error("スタッフ領収書取得エラー:", staffTxError)
-      } else {
+      {
         // スタッフ情報マップ（名前・テストスタッフ判定）
-        const { data: staffRaw } = await supabase
-          .from("staff_members")
-          .select("id, name, is_test")
+        type StaffMemberRow = { id: string; name: string; is_test: boolean | null }
+        const staffRaw = await fetchAllRows<StaffMemberRow>((from, to) =>
+          supabase
+            .from("staff_members")
+            .select("id, name, is_test")
+            .order("id", { ascending: true })
+            .range(from, to) as unknown as PromiseLike<{ data: StaffMemberRow[] | null; error: { message: string } | null }>
+        )
         const staffInfoMap = new Map<string, { name: string; is_test: boolean }>()
-        for (const s of (staffRaw ?? []) as { id: string; name: string; is_test: boolean }[]) {
+        for (const s of staffRaw) {
           staffInfoMap.set(s.id, { name: s.name, is_test: !!s.is_test })
+        }
+
+        // 提出日の正本は staff_receipts.created_at（承認フロー・手動登録で明示指定した提出日）。
+        // 取引側の created_at は「実際に登録操作をした日時」であり提出日とは別物なので、
+        // これで月割りすると承認フローの分だけ別の月フォルダに入り、その月の提出書類一覧に出なくなる。
+        // 提出書類一覧の基準日・会計士CSVの申請日と同じ値を使うことで3経路の月割りを揃える。
+        const receiptIds = Array.from(
+          new Set(
+            staffTxRaw
+              .map((t) => t.staff_receipt_id)
+              .filter((v): v is string => typeof v === "string" && v.length > 0)
+          )
+        )
+        const receiptCreatedAt = new Map<string, string>()
+        if (receiptIds.length > 0) {
+          type ReceiptRow = { id: string; created_at: string }
+          // .in() のURL長制限を避けるため200件ずつ引く
+          for (let i = 0; i < receiptIds.length; i += 200) {
+            const chunk = receiptIds.slice(i, i + 200)
+            const { data, error } = await supabase
+              .from("staff_receipts")
+              .select("id, created_at")
+              .in("id", chunk)
+            if (error) {
+              console.error("スタッフ領収書の提出日取得エラー:", error)
+              continue
+            }
+            for (const r of (data ?? []) as ReceiptRow[]) {
+              receiptCreatedAt.set(r.id, r.created_at)
+            }
+          }
         }
 
         // 既に作成したスタッフ用サブフォルダを記録（重複ensure回避）
         const ensuredStaffFolders = new Set<string>()
 
-        for (const tx of staffTxRaw ?? []) {
+        for (const tx of staffTxRaw) {
           // テストスタッフ（is_test）は税理士提出に入れない
           const staffInfo = tx.staff_member_id ? staffInfoMap.get(tx.staff_member_id) : undefined
           if (staffInfo?.is_test) continue
 
-          // 対象月判定は「提出日（created_at）の20日締め」で行う（支払年月日ではない）
-          const submitDate = submitDateStr(tx.created_at)
+          // 対象月判定は「提出日の20日締め」で行う（支払年月日ではない）。
+          // 提出日 = staff_receipts.created_at（無ければ取引の created_at にフォールバック）
+          const submitSource =
+            (tx.staff_receipt_id ? receiptCreatedAt.get(tx.staff_receipt_id) : undefined) ??
+            tx.created_at
+          const submitDate = submitDateStr(submitSource)
           const cutoff = staffCutoffMonth(submitDate)
           if (!cutoff) continue
           if (cutoff.year !== yearNum || cutoff.month !== monthNum) continue

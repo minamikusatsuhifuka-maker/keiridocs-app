@@ -80,6 +80,13 @@ export default function AccountantPage() {
     status: "saved" | "error"
     message?: string
   }>>([])
+  // 要確認（DB未登録）ファイルの内訳（対象月の税理士提出フォルダを最新ロジックで再判定）
+  const [unclear, setUnclear] = useState<{
+    files: { fileName: string; path: string; folder: string }[]
+    duplicatesRemoved: number
+  } | null>(null)
+  const [isUnclearLoading, setIsUnclearLoading] = useState(false)
+
   const [uploadResult, setUploadResult] = useState<{
     yearMonthLabel: string
     yearMonthSource: string
@@ -122,6 +129,33 @@ export default function AccountantPage() {
   useEffect(() => {
     fetchDocTypes()
   }, [fetchDocTypes])
+
+  // 要確認ファイルの内訳を取得（対象月）
+  async function fetchUnclear() {
+    if (!targetMonth) return
+    const [year, month] = targetMonth.split("-").map(Number)
+    setIsUnclearLoading(true)
+    try {
+      const res = await fetch(`/api/documents/tax-folder-unclear?year=${year}&month=${month}`)
+      const json = (await res.json()) as {
+        data?: {
+          needsReviewFiles: { fileName: string; path: string; folder: string }[]
+          duplicatesRemoved: number
+        }
+        error?: string
+      }
+      if (!res.ok || !json.data) throw new Error(json.error || "判定に失敗しました")
+      setUnclear({
+        files: json.data.needsReviewFiles,
+        duplicatesRemoved: json.data.duplicatesRemoved,
+      })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "判定に失敗しました")
+      setUnclear(null)
+    } finally {
+      setIsUnclearLoading(false)
+    }
+  }
 
   // 種別の選択/解除
   function toggleType(type: string) {
@@ -571,6 +605,76 @@ export default function AccountantPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* 要確認（DB未登録）ファイルの内訳 */}
+      <Card>
+        <CardHeader>
+          <CardTitle>要確認（DB未登録）ファイルの内訳</CardTitle>
+          <CardDescription>
+            対象月の税理士提出フォルダにあるのにDBの書類・スタッフ領収書と照合できなかったファイルです。
+            提出書類一覧では集計対象外（金額に含めない）になります。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Button variant="outline" onClick={fetchUnclear} disabled={isUnclearLoading || !targetMonth}>
+            {isUnclearLoading ? <Loader2 className="size-4 animate-spin" /> : <FolderOutput className="size-4" />}
+            {isUnclearLoading ? "判定中..." : "この月の内訳を表示"}
+          </Button>
+
+          {unclear && (
+            unclear.files.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                要確認のファイルはありません
+                {unclear.duplicatesRemoved > 0
+                  ? `（新旧フォルダ構造の重複 ${unclear.duplicatesRemoved}件は除外済み）`
+                  : ""}
+              </p>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm">
+                  要確認 <span className="font-bold">{unclear.files.length}件</span>
+                  {unclear.duplicatesRemoved > 0
+                    ? `（別途、新旧フォルダ構造の重複 ${unclear.duplicatesRemoved}件は除外済み）`
+                    : ""}
+                </p>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>サブフォルダ</TableHead>
+                      <TableHead className="text-right">件数</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {Object.entries(
+                      unclear.files.reduce<Record<string, number>>((acc, f) => {
+                        acc[f.folder] = (acc[f.folder] ?? 0) + 1
+                        return acc
+                      }, {})
+                    )
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([folder, count]) => (
+                        <TableRow key={folder}>
+                          <TableCell className="font-medium">{folder}</TableCell>
+                          <TableCell className="text-right">{count}件</TableCell>
+                        </TableRow>
+                      ))}
+                  </TableBody>
+                </Table>
+                <details className="text-sm">
+                  <summary className="cursor-pointer text-muted-foreground">ファイル一覧を表示</summary>
+                  <ul className="mt-2 space-y-1">
+                    {unclear.files.map((f) => (
+                      <li key={f.path} className="break-all text-xs text-muted-foreground">
+                        [{f.folder}] {f.fileName}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              </div>
+            )
+          )}
+        </CardContent>
+      </Card>
 
       {/* 月計表アップロードセクション */}
       <Card>

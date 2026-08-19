@@ -24,6 +24,12 @@ export interface FilePreviewTarget {
   /** 見出し表示用（取引先名など） */
   title: string
   kind: "image" | "pdf"
+  /**
+   * 配信APIのURL（省略時は書類用の /api/documents/{id}/file）。
+   * スタッフ領収書のように別テーブル・別APIから配信する場合に指定する。
+   * どちらの経路でもIDからサーバ側でパスを解決し、パス直指定は受け付けない。
+   */
+  fileUrl?: string
 }
 
 /**
@@ -47,7 +53,7 @@ export function FilePreviewModal({ target, onClose }: FilePreviewModalProps) {
   const [loaded, setLoaded] = useState(false)
 
   const fileName = target ? target.dropboxPath.slice(target.dropboxPath.lastIndexOf("/") + 1) : ""
-  const fileUrl = target ? `/api/documents/${target.id}/file` : ""
+  const fileUrl = target ? (target.fileUrl ?? `/api/documents/${target.id}/file`) : ""
 
   return (
     <Dialog
