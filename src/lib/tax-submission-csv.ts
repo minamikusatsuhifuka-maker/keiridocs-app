@@ -7,6 +7,18 @@ import { SALES_SUBFOLDER, LEGACY_SALES_SUBFOLDER } from "@/lib/tax-folder-struct
 import { calcSubsidy, subsidyRate } from "@/lib/subsidy"
 import { getSplitGroupInfo } from "@/lib/staff-receipt-split"
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
+import {
+  diffSnapshots,
+  formatFieldChanges,
+  makeSnapshotKey,
+  periodOf,
+  STATUS_LABELS,
+  type ChangeEntry,
+  type DiffResult,
+  type RowStatus,
+  type SnapshotRow,
+  type TaxSnapshot,
+} from "@/lib/tax-submission-snapshot"
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -21,11 +33,20 @@ interface BuildOpts {
   //   expense … 経費書類のみ（売上サブフォルダ配下を除外）
   //   sales   … 売上書類のみ（売上サブフォルダ配下のみ）
   scope?: "all" | "expense" | "sales"
+  /**
+   * 差分表示（新規／修正／削除）に使う、同月・同scopeの過去スナップショット（run_at 昇順）。
+   * 省略時は差分を計算せず全件「変更なし」扱いになる（従来どおりの表示）。
+   */
+  snapshots?: TaxSnapshot[]
+  /** 今回の実行者（変更履歴の「変更者」に入る） */
+  runBy?: string
 }
 
 /** 明細1行の構造化データ（xlsxのシート分割・小計計算に使う） */
 export interface TaxListRow {
   no: number
+  /** スナップショット照合キー（NFCファイル名＋同名内の連番） */
+  snapshotKey: string
   fileName: string
   type: string
   vendor: string
@@ -47,6 +68,12 @@ export interface TaxListRow {
   transferDate: string
   transferTotal: number | null
   needsReview: boolean
+  /** 前回提出との比較結果（新規／修正／変更なし／削除） */
+  status: RowStatus
+  /** 修正の場合の「項目：変更前 → 変更後」。それ以外は "" */
+  changeSummary: string
+  /** 更新日（この資料が最後に変わった日 YYYY-MM-DD。変更履歴が無ければ ""） */
+  updatedDate: string
 }
 
 interface BuildResult {
@@ -70,7 +97,13 @@ interface BuildResult {
     detailRows: Array<{ cells: string[]; path: string }>
     totalRow: string[]
     rows: TaxListRow[]
+    /** その月に発生した変更の時系列一覧（過去スナップショット＋今回検出分） */
+    changeHistory: ChangeEntry[]
   }
+  /** 今回の内容のスナップショット（保存すると次回の差分判定に使われる） */
+  snapshot: TaxSnapshot
+  /** 今回の差分（新規・修正・削除の件数、金額の増減など） */
+  diff: DiffResult
 }
 
 function escapeCsv(value: string): string {
@@ -94,6 +127,93 @@ function formatAmount(amount: number | null): string {
  */
 function fileKey(name: string): string {
   return name.normalize("NFC")
+}
+
+/** 生成日時（ISO）を「YYYY-MM-DD HH:mm」（JST）に整形する */
+function formatJstDateTime(iso: string | null | undefined): string {
+  if (!iso) return ""
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ""
+  const parts = new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d)
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? ""
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`
+}
+
+/**
+ * サマリーの「今回の変更」ブロックを作る。
+ * 税理士が最初に見る場所なので、件数と金額の増減、前回提出日時をここに集約する。
+ */
+function buildChangeSummaryLines(
+  diff: DiffResult,
+  currentTotal: number,
+  generatedAt: string
+): string[][] {
+  const lines: string[][] = [["【今回の変更】", "", "", ""]]
+
+  if (diff.isFirst) {
+    lines.push(
+      ["前回の提出内容が記録されていないため、全件を「変更なし」として記録しました", "", "", ""],
+      ["次回の一括コピーから、追加・修正が「新規」「修正」として表示されます", "", "", ""],
+      ["今回の生成日時", formatJstDateTime(generatedAt), "", ""]
+    )
+    return lines
+  }
+
+  const { added, modified, removed, unchanged } = diff.counts
+  if (added === 0 && modified === 0 && removed === 0) {
+    lines.push(["前回から変更はありません", "", "", ""])
+  } else {
+    lines.push(
+      ["新規", `${added}件`, "", ""],
+      ["修正", `${modified}件`, "", ""],
+      ["削除", `${removed}件`, "", "金額集計からは除外"],
+      ["変更なし", `${unchanged}件`, "", ""]
+    )
+  }
+
+  const prevTotal = diff.prevTotalAmount ?? 0
+  const delta = currentTotal - prevTotal
+  lines.push(
+    [
+      "金額の増減",
+      formatAmount(prevTotal),
+      formatAmount(currentTotal),
+      `差額 ${delta >= 0 ? "+" : "−"}${formatAmount(Math.abs(delta))}`,
+    ],
+    ["前回の提出日時", formatJstDateTime(diff.prevGeneratedAt), "", ""],
+    ["今回の生成日時", formatJstDateTime(generatedAt), "", ""]
+  )
+  return lines
+}
+
+/** 明細行をスナップショット用のレコードに変換する（比較対象の項目だけを持つ） */
+function toSnapshotRow(r: TaxListRow): SnapshotRow {
+  return {
+    key: r.snapshotKey,
+    fileName: r.fileName,
+    type: r.type,
+    vendor: r.vendor,
+    storeName: r.storeName,
+    expenseDetail: r.expenseDetail,
+    amount: r.amount,
+    subsidyLabel: r.subsidyLabel,
+    subsidyAmount: r.subsidyAmount,
+    date: r.date,
+    createdDate: r.createdDate,
+    baseDate: r.baseDate,
+    taxCategory: r.taxCategory,
+    accountTitle: r.accountTitle,
+    path: r.path,
+    needsReview: r.needsReview,
+  }
 }
 
 /**
@@ -462,7 +582,9 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   // 書類データを組み立て（documents優先 → staff_receiptsフォールバック）。
   // 分割登録されたスタッフ領収書は1ファイルに複数の staff_receipts が紐づくため、
   // その場合はファイル1つを複数行に展開する（各行の金額は個別金額＝合計は二重計上しない）。
-  const allRows = filesInTaxFolder.flatMap((file) => {
+  // 同一ファイル名の出現回数（分割兄弟を照合キーで区別するための連番）
+  const occurrenceByName = new Map<string, number>()
+  const allRows: TaxListRow[] = filesInTaxFolder.flatMap((file) => {
     const key = fileKey(file.name)
     const docMeta = fileNameMap.get(key)
     const staffMetas = staffReceiptMap.get(key)
@@ -471,38 +593,98 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       : staffMetas && staffMetas.length > 0
         ? staffMetas
         : [undefined]
-    return metas.map((meta) => ({
-      no: 0, // 展開後に連番を振り直す
-      fileName: file.name,
-      type: meta?.type ?? "",
-      vendor: meta?.vendor_name ?? "",
-      amount: meta?.amount ?? null,
-      date: meta?.issue_date ?? "",
-      createdDate: meta?.created_date ?? "",
-      baseDate: meta?.base_date ?? "",
-      storeName: meta?.store_name ?? "",
-      expenseDetail: meta?.expense_detail ?? "",
-      subsidyLabel: meta?.subsidy_label ?? "",
-      subsidyAmount: meta?.subsidy_amount ?? null,
-      taxCategory: meta?.tax_category ?? "",
-      accountTitle: meta?.account_title ?? "",
-      path: file.path_display,
-      transferFrom: meta?.transfer_from ?? "",
-      transferDate: meta?.transfer_date ?? "",
-      transferTotal: meta?.transfer_total ?? null,
-      // DBに無いファイルでも売上判定できるよう、サブフォルダのパスも見る
-      isSales: salesPrefixes.some((p) => file.path_display.startsWith(p)) || meta?.type === "売上記録",
-      // DBに一致する書類が無い＝内容不明（未登録・手動配置等）。集計対象外にする
-      needsReview: !meta,
-    }))
+    return metas.map((meta) => {
+      const occurrence = occurrenceByName.get(key) ?? 0
+      occurrenceByName.set(key, occurrence + 1)
+      return {
+        no: 0, // 展開後に連番を振り直す
+        snapshotKey: makeSnapshotKey(file.name, occurrence),
+        fileName: file.name,
+        type: meta?.type ?? "",
+        vendor: meta?.vendor_name ?? "",
+        amount: meta?.amount ?? null,
+        date: meta?.issue_date ?? "",
+        createdDate: meta?.created_date ?? "",
+        baseDate: meta?.base_date ?? "",
+        storeName: meta?.store_name ?? "",
+        expenseDetail: meta?.expense_detail ?? "",
+        subsidyLabel: meta?.subsidy_label ?? "",
+        subsidyAmount: meta?.subsidy_amount ?? null,
+        taxCategory: meta?.tax_category ?? "",
+        accountTitle: meta?.account_title ?? "",
+        path: file.path_display,
+        transferFrom: meta?.transfer_from ?? "",
+        transferDate: meta?.transfer_date ?? "",
+        transferTotal: meta?.transfer_total ?? null,
+        // DBに無いファイルでも売上判定できるよう、サブフォルダのパスも見る
+        isSales:
+          salesPrefixes.some((p) => file.path_display.startsWith(p)) || meta?.type === "売上記録",
+        // DBに一致する書類が無い＝内容不明（未登録・手動配置等）。集計対象外にする
+        needsReview: !meta,
+        status: "unchanged" as RowStatus,
+        changeSummary: "",
+        updatedDate: "",
+      }
+    })
   })
+
+  /* ====== 前回提出との差分判定 ====== */
+  const generatedAt = new Date().toISOString()
+  const runBy = opts.runBy ?? "不明"
+  const period = periodOf(year, month)
+  const snapshotRows: SnapshotRow[] = allRows.map((r) => toSnapshotRow(r))
+  const diff: DiffResult = diffSnapshots(
+    snapshotRows,
+    opts.snapshots ?? [],
+    generatedAt,
+    runBy
+  )
+
+  for (const r of allRows) {
+    r.status = diff.statusByKey.get(r.snapshotKey) ?? "unchanged"
+    const fields = diff.changesByKey.get(r.snapshotKey)
+    r.changeSummary = fields ? formatFieldChanges(fields) : ""
+    r.updatedDate = (diff.updatedAtByKey.get(r.fileName.normalize("NFC")) ?? "").slice(0, 10)
+  }
+
+  // 削除（前回あったが今回無い）行を末尾に追加する。金額集計からは除外する。
+  for (const rm of diff.removedRows) {
+    allRows.push({
+      no: 0,
+      snapshotKey: rm.key,
+      fileName: rm.fileName,
+      type: rm.type,
+      vendor: rm.vendor,
+      amount: rm.amount,
+      date: rm.date,
+      createdDate: rm.createdDate,
+      baseDate: rm.baseDate,
+      storeName: rm.storeName,
+      expenseDetail: rm.expenseDetail,
+      subsidyLabel: rm.subsidyLabel,
+      subsidyAmount: rm.subsidyAmount,
+      taxCategory: rm.taxCategory,
+      accountTitle: rm.accountTitle,
+      path: rm.path,
+      transferFrom: "",
+      transferDate: "",
+      transferTotal: null,
+      isSales: salesPrefixes.some((p) => rm.path.startsWith(p)) || rm.type === "売上記録",
+      needsReview: false,
+      status: "removed",
+      changeSummary: "前回の提出にあったファイルが今回はありません",
+      updatedDate: generatedAt.slice(0, 10),
+    })
+  }
+
   // 展開後に連番を振り直す
   allRows.forEach((r, idx) => {
     r.no = idx + 1
   })
 
-  const needsReviewRows = allRows.filter((r) => r.needsReview)
-  const countedRows = allRows.filter((r) => !r.needsReview)
+  const needsReviewRows = allRows.filter((r) => r.needsReview && r.status !== "removed")
+  // 集計対象＝要確認でも削除でもない行
+  const countedRows = allRows.filter((r) => !r.needsReview && r.status !== "removed")
 
   // ====== サマリーセクション（要確認ファイルは集計に含めない） ======
   // スタッフ領収書は立替額合計に加えて支給額合計（給与で実際に支給する額）も併記する
@@ -540,20 +722,24 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       : []),
     ["", "", "", ""],
     ["合計", `${grandCount}件`, formatAmount(grandTotal), ""],
+    ["", "", "", ""],
+    ...buildChangeSummaryLines(diff, grandTotal, generatedAt),
   ]
 
   // ====== 詳細セクション ======
   // 支払先（店名）・目的用途・支給割合・支給額はスタッフ領収書行のみ値が入る（通常書類は空欄）
   const detailHeaders = [
-    "No", "ファイル名", "種別", "取引先 / 振込元", "支払先（店名）", "目的・用途",
+    "No", "状態", "ファイル名", "種別", "取引先 / 振込元", "支払先（店名）", "目的・用途",
     "金額 / 振込金額", "支給割合", "支給額",
-    "発行日 / 振込日", "基準日（月割り判定）", "税区分", "勘定科目", "コピー先パス", "ステータス",
+    "発行日 / 振込日", "基準日（月割り判定）", "取り込み日", "更新日", "変更内容",
+    "税区分", "勘定科目", "コピー先パス", "ステータス",
   ]
 
   const detailRows = allRows.map((r) => ({
     path: r.path,
     cells: [
       String(r.no),
+      STATUS_LABELS[r.status],
       r.fileName,
       r.type,
       r.isSales && r.transferFrom ? r.transferFrom : r.vendor,
@@ -566,21 +752,24 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       r.subsidyAmount !== null ? formatAmount(r.subsidyAmount) : "",
       r.isSales && r.transferDate ? r.transferDate : r.date,
       r.baseDate,
+      r.createdDate,
+      r.updatedDate,
+      r.changeSummary,
       r.taxCategory,
       r.accountTitle,
       r.path,
-      r.needsReview ? "要確認：DB未登録" : "",
+      r.needsReview ? "要確認：DB未登録" : r.status === "removed" ? "削除（集計対象外）" : "",
     ],
   }))
 
-  // 合計行（要確認ファイルの金額は含まない。支給額はスタッフ領収書行の合計）
+  // 合計行（要確認・削除の金額は含まない。支給額はスタッフ領収書行の合計）
   const staffSubsidyTotal = countedRows.reduce((sum, r) => sum + (r.subsidyAmount ?? 0), 0)
   const totalRow = [
-    "合計", "", "", "", "", "",
+    "合計", "", "", "", "", "", "",
     formatAmount(grandTotal),
     "",
     staffSubsidyTotal > 0 ? formatAmount(staffSubsidyTotal) : "",
-    "", "", "", "", `${grandCount}件`, "",
+    "", "", "", "", "", "", "", `${grandCount}件`, "",
   ]
 
   // CSV組み立て
@@ -631,6 +820,23 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       detailRows,
       totalRow,
       rows: allRows,
+      // 過去スナップショットの変更＋今回検出した変更を時系列で連結する
+      changeHistory: [
+        ...(opts.snapshots ?? []).flatMap((snap) => snap.changes ?? []),
+        ...diff.changes,
+      ].sort((a, b) => a.changedAt.localeCompare(b.changedAt)),
     },
+    snapshot: {
+      version: 1,
+      kind: "tax_submission_snapshot",
+      scope,
+      period,
+      generatedAt,
+      runBy,
+      rows: snapshotRows,
+      totalAmount: grandTotal,
+      changes: diff.changes,
+    },
+    diff,
   }
 }

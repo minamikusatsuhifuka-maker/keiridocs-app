@@ -350,6 +350,14 @@ export default function DocumentsPage() {
     folderBreakdown: Record<string, { copied: number; skipped: number; failed: number }>
     // 失敗したファイルの内訳（実行履歴の「要確認一覧」用）
     failedFiles: Array<{ file_name: string; folder: string; reason?: string }>
+    // 前回提出との差分（新規・修正・削除の件数）。初回は isFirst=true
+    diffSummary?: {
+      isFirst: boolean
+      added: number
+      modified: number
+      removed: number
+      unchanged: number
+    } | null
     error?: string
   }> | null>(null)
 
@@ -620,6 +628,13 @@ export default function DocumentsPage() {
               status: "copied" | "skipped" | "failed"
               message?: string
             }>
+            diffSummary?: {
+              isFirst: boolean
+              added: number
+              modified: number
+              removed: number
+              unchanged: number
+            } | null
             error?: string
           }
           if (!res.ok) {
@@ -654,6 +669,7 @@ export default function DocumentsPage() {
             total: json.total ?? 0,
             folderBreakdown,
             failedFiles,
+            diffSummary: json.diffSummary ?? null,
           })
           totalCopied += json.copied ?? 0
           // 途中経過を随時反映（部分表示）
@@ -1597,6 +1613,32 @@ export default function DocumentsPage() {
                             {c.failed > 0 ? <span className="text-red-600">（失敗{c.failed}）</span> : null}
                           </span>
                         ))}
+                      </div>
+                    )}
+                    {/* 前回提出との差分（税理士が再処理すべき変更点） */}
+                    {!r.error && r.diffSummary && (
+                      <div className="mt-2 text-xs">
+                        {r.diffSummary.isFirst ? (
+                          <span className="text-muted-foreground">
+                            初回のため全件「変更なし」として記録しました（次回から差分が出ます）
+                          </span>
+                        ) : r.diffSummary.added === 0 &&
+                          r.diffSummary.modified === 0 &&
+                          r.diffSummary.removed === 0 ? (
+                          <span className="text-muted-foreground">前回から変更はありません</span>
+                        ) : (
+                          <span className="flex flex-wrap gap-1.5">
+                            <span className="rounded-full bg-green-100 px-2 py-0.5 text-green-800">
+                              新規 {r.diffSummary.added}
+                            </span>
+                            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">
+                              修正 {r.diffSummary.modified}
+                            </span>
+                            <span className="rounded-full bg-gray-200 px-2 py-0.5 text-gray-700">
+                              削除 {r.diffSummary.removed}
+                            </span>
+                          </span>
+                        )}
                       </div>
                     )}
                     {!r.error && (r.copied > 0 || r.skipped > 0) && (

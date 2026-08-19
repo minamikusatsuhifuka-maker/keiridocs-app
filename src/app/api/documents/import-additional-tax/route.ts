@@ -6,7 +6,11 @@ import {
   ensureDropboxFolderExists,
   fileExists,
   listFilesRecursive,
+  uploadFileOverwrite,
 } from "@/lib/dropbox"
+import { buildTaxSubmissionCsv } from "@/lib/tax-submission-csv"
+import { buildTaxSubmissionXlsxBuffer } from "@/lib/tax-submission-xlsx"
+import { loadSnapshots, periodOf, saveSnapshot } from "@/lib/tax-submission-snapshot"
 import { getCurrentUserRole } from "@/lib/auth"
 import { analyzeDocument } from "@/lib/gemini"
 import {
@@ -124,6 +128,18 @@ export async function POST() {
   if (auth?.role !== "admin" && auth?.role !== "staff") {
     return NextResponse.json({ error: "コピー権限がありません" }, { status: 403 })
   }
+
+  // 変更履歴の「変更者」に残す表示名
+  const { data: roleRow } = await supabase
+    .from("user_roles")
+    .select("display_name")
+    .eq("user_id", user.id)
+    .maybeSingle()
+  const displayName =
+    (roleRow?.display_name as string) ||
+    (user.user_metadata?.full_name as string) ||
+    user.email ||
+    "不明"
 
   const startTime = Date.now()
 
@@ -479,6 +495,42 @@ export async function POST() {
       .map((s) => s.summary)
       .sort((a, b) => (b.year - a.year) || (b.month - a.month))
 
+    // 実際にファイルが増えた月は提出書類一覧を作り直し、追加分が「新規」として出るようにする。
+    // ここでスナップショットも更新するので、次回の一括コピーでは二重に「新規」にならない。
+    // 失敗しても取り込み自体は成功扱いにする（一覧は次回の一括コピーで再生成される）。
+    const listRefresh: Array<{ year: number; month: number; added: number; modified: number; removed: number }> = []
+    const runBy = `追加分の一括取り込み（${displayName}）`
+    for (const m of months) {
+      if (m.toBody + m.toAdditional === 0) continue
+      try {
+        const period = periodOf(m.year, m.month)
+        const built = await buildTaxSubmissionCsv({
+          supabase,
+          isAdmin: auth.role === "admin",
+          userId: user.id,
+          year: m.year,
+          month: m.month,
+          scope: "expense",
+          snapshots: await loadSnapshots(period, "expense"),
+          runBy,
+        })
+        const targetCsvPath = `${built.saveFolderPath}/${built.fileName}`
+        await uploadFileOverwrite(targetCsvPath, Buffer.from(built.csvWithBom, "utf-8"))
+        const xlsxBuffer = await buildTaxSubmissionXlsxBuffer(built.table)
+        await uploadFileOverwrite(targetCsvPath.replace(/\.csv$/, ".xlsx"), xlsxBuffer)
+        await saveSnapshot(built.snapshot)
+        listRefresh.push({
+          year: m.year,
+          month: m.month,
+          added: built.diff.counts.added,
+          modified: built.diff.counts.modified,
+          removed: built.diff.counts.removed,
+        })
+      } catch (refreshError) {
+        console.error(`提出書類一覧の再生成に失敗 (${m.year}年${m.month}月):`, refreshError)
+      }
+    }
+
     const totals = {
       toBody: months.reduce((n, m) => n + m.toBody, 0),
       toAdditional: months.reduce((n, m) => n + m.toAdditional, 0),
@@ -491,6 +543,7 @@ export async function POST() {
       totals,
       needsReviewList,
       details,
+      listRefresh,
     })
   } catch (error) {
     console.error("追加分一括取り込みエラー:", error)

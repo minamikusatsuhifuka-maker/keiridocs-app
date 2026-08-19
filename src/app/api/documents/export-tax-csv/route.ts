@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getCurrentUserRole } from "@/lib/auth"
 import { buildTaxSubmissionCsv } from "@/lib/tax-submission-csv"
+import { loadSnapshots, periodOf } from "@/lib/tax-submission-snapshot"
 
 /**
  * 指定年月の税理士提出書類一覧をCSVで出力する
@@ -46,6 +47,9 @@ export async function GET(request: NextRequest) {
     userId: user.id,
     year: yearNum,
     month: monthNum,
+    // 状態・更新日・変更内容の列は前回の提出内容との比較で決まる（保存はしない）
+    snapshots: await loadSnapshots(periodOf(yearNum, monthNum), "all"),
+    runBy: "ダウンロード時点",
   })
 
   const encodedFileName = encodeURIComponent(fileName)

@@ -55,6 +55,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "対象フォルダを1つ以上選択してください" }, { status: 400 })
     }
 
+    // 変更履歴の「変更者」に残す表示名（user_roles.display_name → メタデータ → メール）
+    const { data: roleRow } = await supabase
+      .from("user_roles")
+      .select("display_name")
+      .eq("user_id", user.id)
+      .maybeSingle()
+    const runBy =
+      (roleRow?.display_name as string) ||
+      (user.user_metadata?.full_name as string) ||
+      user.email ||
+      "手動実行"
+
     const result = await runTaxFolderCopy({
       supabase,
       isAdmin: auth.role === "admin",
@@ -62,6 +74,7 @@ export async function POST(request: NextRequest) {
       year: yearNum,
       month: monthNum,
       targetFolders: requestedFolders,
+      runBy,
     })
 
     return NextResponse.json({
@@ -75,6 +88,7 @@ export async function POST(request: NextRequest) {
       salesCsvDropboxPath: result.salesCsvDropboxPath,
       staffSubsidyCsvDropboxPath: result.staffSubsidyCsvDropboxPath,
       csvSaveError: result.csvSaveError,
+      diffSummary: result.diffSummary,
     })
   } catch (error) {
     console.error("税理士フォルダコピーエラー:", error)

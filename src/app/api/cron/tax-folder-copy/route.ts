@@ -62,6 +62,7 @@ export async function GET(request: NextRequest) {
       userId: "",
       year,
       month,
+      runBy: `自動実行（cron・${runKind}）`,
     })
 
     // 実行履歴に記録（summary は range_copy と同じ月別構造にして履歴画面で詳細表示できるようにする）
@@ -97,9 +98,19 @@ export async function GET(request: NextRequest) {
 
     // 院長LINEへ結果通知
     const failedNote = result.failed > 0 ? `／失敗 ${result.failed}件` : ""
+    // 前回提出との差分（税理士が再処理すべき変更点）も通知に含める
+    const d = result.diffSummary
+    const diffNote = !d
+      ? ""
+      : d.isFirst
+        ? "\n（初回のため全件「変更なし」として記録しました）"
+        : d.added === 0 && d.modified === 0 && d.removed === 0
+          ? "\n前回から変更はありません"
+          : `\n変更: 新規 ${d.added}件／修正 ${d.modified}件／削除 ${d.removed}件`
     await notifyAdmin(
       `✅ 税理士フォルダへ自動コピー完了（${year}年${monthStr}月・${runKind}）：` +
-      `コピー ${result.copied}件／スキップ ${result.skipped}件／要確認 ${result.needsReviewCount}件${failedNote}`
+      `コピー ${result.copied}件／スキップ ${result.skipped}件／要確認 ${result.needsReviewCount}件${failedNote}` +
+      diffNote
     )
 
     return NextResponse.json({
@@ -111,6 +122,7 @@ export async function GET(request: NextRequest) {
       skipped: result.skipped,
       failed: result.failed,
       needsReview: result.needsReviewCount,
+      diffSummary: result.diffSummary,
     })
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)

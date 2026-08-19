@@ -23,6 +23,7 @@ import {
   STAFF_RECEIPT_SUBFOLDER,
 } from "@/lib/tax-folder-structure"
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
+import { loadSnapshots, periodOf, saveSnapshot } from "@/lib/tax-submission-snapshot"
 import type { createClient } from "@/lib/supabase/server"
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
@@ -74,6 +75,14 @@ export interface TaxFolderCopyResult {
   csvSaveError: string | null
   /** 提出書類一覧CSV（経費+売上）で「要確認：DB未登録」になったファイル数 */
   needsReviewCount: number
+  /** 前回提出との差分（経費リスト基準）。初回は isFirst=true */
+  diffSummary: {
+    isFirst: boolean
+    added: number
+    modified: number
+    removed: number
+    unchanged: number
+  } | null
 }
 
 interface RunOpts {
@@ -85,6 +94,8 @@ interface RunOpts {
   month: number
   /** 対象フォルダ（省略時は全フォルダ） */
   targetFolders?: string[]
+  /** 実行者名（提出書類一覧の変更履歴に「変更者」として残す） */
+  runBy?: string
 }
 
 /**
@@ -462,8 +473,12 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
   let staffSubsidyCsvDropboxPath: string | null = null
   let csvSaveError: string | null = null
   let needsReviewCount = 0
+  let diffSummary: TaxFolderCopyResult["diffSummary"] = null
 
   // 経費CSV: 月フォルダ直下に保存（売上行は除外）。リンク付きxlsxも同じ場所へ併存保存する
+  // 前回提出との差分を出すため、同月・同scopeの過去スナップショットを読み込んで渡す。
+  const period = periodOf(yearNum, monthNum)
+  const runBy = opts.runBy ?? "不明"
   try {
     const built = await buildTaxSubmissionCsv({
       supabase,
@@ -472,8 +487,19 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
       year: yearNum,
       month: monthNum,
       scope: "expense",
+      snapshots: await loadSnapshots(period, "expense"),
+      runBy,
     })
     needsReviewCount += built.needsReviewFiles.length
+    diffSummary = {
+      isFirst: built.diff.isFirst,
+      added: built.diff.counts.added,
+      modified: built.diff.counts.modified,
+      removed: built.diff.counts.removed,
+      unchanged: built.diff.counts.unchanged,
+    }
+    // 今回の内容をスナップショットとして保存（次回の差分判定に使う）
+    await saveSnapshot(built.snapshot)
     const targetCsvPath = `${built.saveFolderPath}/${built.fileName}`
     const buffer = Buffer.from(built.csvWithBom, "utf-8")
     csvDropboxPath = await uploadFileOverwrite(targetCsvPath, buffer)
@@ -507,10 +533,13 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
         year: yearNum,
         month: monthNum,
         scope: "sales",
+        snapshots: await loadSnapshots(period, "sales"),
+        runBy,
       })
       // 売上資料が1件も無ければ売上CSVは作成しない
       if (builtSales.rowCount > 0) {
         needsReviewCount += builtSales.needsReviewFiles.length
+        await saveSnapshot(builtSales.snapshot)
         const targetSalesCsvPath = `${builtSales.saveFolderPath}/${builtSales.fileName}`
         const buffer = Buffer.from(builtSales.csvWithBom, "utf-8")
         salesCsvDropboxPath = await uploadFileOverwrite(targetSalesCsvPath, buffer)
@@ -582,6 +611,7 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
     staffSubsidyCsvDropboxPath,
     csvSaveError,
     needsReviewCount,
+    diffSummary,
   }
 }
 

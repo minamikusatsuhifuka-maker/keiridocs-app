@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getCurrentUserRole } from "@/lib/auth"
 import { createServiceClient } from "@/lib/staff-refund-core"
+import { SNAPSHOT_RUN_TYPE } from "@/lib/tax-submission-snapshot"
 import type { Json } from "@/types/database"
 
 /** 税理士フォルダ一括コピーの実行種別 */
@@ -29,9 +30,11 @@ export async function GET() {
   }
 
   try {
+    // 提出内容のスナップショット（差分検出用の内部レコード）は実行履歴には出さない
     const { data, error } = await supabase
       .from("tax_folder_copy_runs")
       .select("*")
+      .neq("run_type", SNAPSHOT_RUN_TYPE)
       .order("run_at", { ascending: false })
       .limit(200)
 

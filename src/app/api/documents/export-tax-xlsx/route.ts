@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getCurrentUserRole } from "@/lib/auth"
 import { buildTaxSubmissionCsv } from "@/lib/tax-submission-csv"
 import { buildTaxSubmissionXlsxBuffer } from "@/lib/tax-submission-xlsx"
+import { loadSnapshots, periodOf } from "@/lib/tax-submission-snapshot"
 
 /**
  * 指定年月の税理士提出書類一覧をExcel（.xlsx）で出力する
@@ -40,12 +41,17 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "月が不正です" }, { status: 400 })
   }
 
+  // 差分（新規／修正／削除）は前回の提出内容と比較して表示する。
+  // ここは「今の状態を見るためのダウンロード」なので、スナップショットの保存はしない
+  // （保存するのは提出物をDropboxへ書き出す一括コピーのときだけ）。
   const built = await buildTaxSubmissionCsv({
     supabase,
     isAdmin: auth.role === "admin",
     userId: user.id,
     year: yearNum,
     month: monthNum,
+    snapshots: await loadSnapshots(periodOf(yearNum, monthNum), "all"),
+    runBy: "ダウンロード時点",
   })
 
   const buffer = await buildTaxSubmissionXlsxBuffer(built.table)
