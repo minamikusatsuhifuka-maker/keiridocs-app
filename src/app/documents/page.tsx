@@ -324,6 +324,22 @@ export default function DocumentsPage() {
   // CSVエクスポート
   const [isExporting, setIsExporting] = useState(false)
 
+  // 税理士提出フォルダへ未コピーのスタッフ立替（提出リストは「コピー済みファイル」を起点に作られるため、
+  // コピー実行後に申請された分はコピーするまでリストに出ない。件数と最終コピー日時を表示して気づけるようにする）
+  type UncopiedMonth = {
+    year: number
+    month: number
+    items: { transactionId: string; staffName: string; submitDate: string; expenseDetail: string; amount: number; fileName: string }[]
+    totalCount: number
+    lastCopiedAt: string | null
+    lastCopiedBy: string | null
+    dropboxUnavailable: boolean
+  }
+  // [直前の締め済み月, 今の対象月（受付中）] の順で入る
+  const [uncopiedMonths, setUncopiedMonths] = useState<UncopiedMonth[] | null>(null)
+  const [uncopiedCurrent, setUncopiedCurrent] = useState<{ year: number; month: number } | null>(null)
+  const [uncopiedOpenKey, setUncopiedOpenKey] = useState<string | null>(null)
+
   // 税理士フォルダへのコピー
   const nowForTaxCopy = new Date()
   const TAX_SOURCE_FOLDERS = ["請求書", "領収書", "社会保険料", "その他", "スタッフ領収書", "売上", "返金", "自動精算機データ"] as const
@@ -398,6 +414,25 @@ export default function DocumentsPage() {
   }
 
   // モーダルを開くたびに結果をリセット
+  // 未コピー件数を取得（今の対象月＝提出日20日締め）。失敗しても画面は通常どおり使えるようにする
+  const loadUncopied = useCallback(async () => {
+    try {
+      const res = await fetch("/api/documents/tax-uncopied")
+      if (!res.ok) return
+      const json = await res.json()
+      if (json && Array.isArray(json.months)) {
+        setUncopiedMonths(json.months)
+        if (json.current) setUncopiedCurrent(json.current)
+      }
+    } catch {
+      // 通信エラー時は何も表示しない（警告の未表示より誤警告の方が困るため）
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadUncopied()
+  }, [loadUncopied])
+
   function openTaxCopyModal() {
     setTaxCopyResults(null)
     setTaxCopyProgress(null)
@@ -1176,6 +1211,76 @@ export default function DocumentsPage() {
           </Button>
         </div>
       </div>
+
+      {/* 税理士提出フォルダの未コピー状況（提出リストに出ていない申請に気づくため）。
+          直前の締め済み月で未コピーが残っていれば「漏れ」、受付中の月は次回コピー予定なので情報表示にとどめる。 */}
+      {uncopiedMonths
+        ?.filter((m) => !m.dropboxUnavailable)
+        .map((m) => {
+          const key = `${m.year}-${m.month}`
+          const isCurrent = uncopiedCurrent?.year === m.year && uncopiedCurrent?.month === m.month
+          // コピー済みなのに残っている＝取りこぼし（要対応）。まだ一度もコピーしていない月は予定内。
+          const isMissing = m.items.length > 0 && !!m.lastCopiedAt && !isCurrent
+          if (m.items.length === 0 && isCurrent) return null // 受付中で未コピーが無ければ何も出さない
+          return (
+            <div
+              key={key}
+              className={`rounded-lg border px-4 py-2.5 text-sm ${
+                isMissing
+                  ? "border-amber-300 bg-amber-50 text-amber-900"
+                  : "border-muted bg-muted/40 text-muted-foreground"
+              }`}
+            >
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="font-medium">
+                  {m.year}年{String(m.month).padStart(2, "0")}月分{isCurrent ? "（受付中）" : ""}
+                </span>
+                {m.items.length === 0 ? (
+                  <span>✅ スタッフ立替はすべてコピー済みです（{m.totalCount}件）。</span>
+                ) : isMissing ? (
+                  <span>
+                    ⚠️ コピー済みのはずが <strong>{m.items.length}件</strong> 未コピーです（対象{m.totalCount}件中）。
+                    このままでは提出書類一覧・スタッフ立替明細に出ません。
+                  </span>
+                ) : (
+                  <span>
+                    未コピー <strong>{m.items.length}件</strong>（対象{m.totalCount}件中）。次回のコピーで反映されます。
+                  </span>
+                )}
+                <span className="text-xs">
+                  最終コピー実行：{m.lastCopiedAt ?? "履歴なし"}
+                  {m.lastCopiedBy ? `（${m.lastCopiedBy}）` : ""}
+                </span>
+                {m.items.length > 0 && (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setUncopiedOpenKey((v) => (v === key ? null : key))}
+                    >
+                      {uncopiedOpenKey === key ? "一覧を隠す" : "一覧を見る"}
+                    </Button>
+                    <Button variant="outline" size="sm" className="btn-float" onClick={openTaxCopyModal}>
+                      <FolderInput className="size-3.5" />
+                      今すぐコピー
+                    </Button>
+                  </>
+                )}
+              </div>
+
+              {uncopiedOpenKey === key && m.items.length > 0 && (
+                <ul className="mt-2 space-y-0.5 text-xs">
+                  {m.items.map((it) => (
+                    <li key={it.transactionId}>
+                      提出{it.submitDate}　{it.staffName}　{it.expenseDetail}　¥
+                      {it.amount.toLocaleString("ja-JP")}　{it.fileName}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )
+        })}
 
       {/* 一括操作アクションバー（選択時のみ表示）
           仕様: N件選択中 | 選択を解除 | [ステータス変更 ▾] | 🔄選択項目を再解析 | 選択した書類を削除(赤) */}
