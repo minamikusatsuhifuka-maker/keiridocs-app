@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -79,6 +80,10 @@ interface Row {
   staffName: string
   applicationDate: string
   submitDate: string
+  /** 提出月（"YYYY-MM"。税理士提出フォルダの振り分け先） */
+  submissionMonth: string
+  /** 提出月が手動指定か（false は提出日20日締めの自動判定） */
+  submissionMonthManual: boolean
   paymentDate: string
   storeName: string
   expenseDetail: string
@@ -121,6 +126,7 @@ const ALL = "__all__"
 type SortKey =
   | "applicationDate"
   | "submitDate"
+  | "submissionMonth"
   | "paymentDate"
   | "staffName"
   | "storeName"
@@ -133,6 +139,7 @@ type SortKey =
 const COLUMNS: { key: SortKey; label: string; numeric?: boolean; className?: string }[] = [
   { key: "applicationDate", label: "申請日" },
   { key: "submitDate", label: "提出日" },
+  { key: "submissionMonth", label: "提出月" },
   { key: "paymentDate", label: "支払年月日" },
   { key: "staffName", label: "スタッフ名" },
   { key: "storeName", label: "支払先" },
@@ -165,6 +172,17 @@ export default function StaffReimbursePage() {
   const [end, setEnd] = useState(initialRange.end)
   const [staffMemberId, setStaffMemberId] = useState<string>(ALL)
   const [expenseDetail, setExpenseDetail] = useState<string>(ALL)
+  // 提出月（税理士提出フォルダの振り分け先）の絞り込みと一括変更
+  const [submissionMonthFilter, setSubmissionMonthFilter] = useState("")
+  const [selectedReceiptIds, setSelectedReceiptIds] = useState<Set<string>>(new Set())
+  const [showSubmissionMonthModal, setShowSubmissionMonthModal] = useState(false)
+  const [submissionMonthInput, setSubmissionMonthInput] = useState("")
+  const [isSavingSubmissionMonth, setIsSavingSubmissionMonth] = useState(false)
+  const [submissionMonthResult, setSubmissionMonthResult] = useState<{
+    updated: number
+    month: string | null
+    leftoverFiles: { id: string; fileName: string; fromMonthLabel: string; path: string }[]
+  } | null>(null)
 
   const [data, setData] = useState<ApiResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -183,8 +201,9 @@ export default function StaffReimbursePage() {
     if (end) p.set("end", end)
     if (staffMemberId !== ALL) p.set("staffMemberId", staffMemberId)
     if (expenseDetail !== ALL) p.set("expenseDetail", expenseDetail)
+    if (submissionMonthFilter) p.set("submissionMonth", submissionMonthFilter)
     return p.toString()
-  }, [basis, start, end, staffMemberId, expenseDetail])
+  }, [basis, start, end, staffMemberId, expenseDetail, submissionMonthFilter])
 
   const fetchData = useCallback(async () => {
     setIsLoading(true)
@@ -226,6 +245,39 @@ export default function StaffReimbursePage() {
       return String(av).localeCompare(String(bv), "ja") * sign
     })
   }, [data, sortKey, sortDir])
+
+  // 提出月を変更できるのは資料（staff_receipts）がある行のみ
+  const selectableRows = useMemo(() => sortedRows.filter((r) => !!r.receiptId), [sortedRows])
+
+  // 選択中の行の提出月を一括変更（month=null で自動判定に戻す）
+  async function applySubmissionMonth(month: string | null) {
+    if (selectedReceiptIds.size === 0) return
+    setIsSavingSubmissionMonth(true)
+    setSubmissionMonthResult(null)
+    try {
+      const res = await fetch("/api/submission-month", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target: "staff_receipt",
+          ids: Array.from(selectedReceiptIds),
+          month,
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok) {
+        toast.error(json?.error ?? "提出月の変更に失敗しました")
+        return
+      }
+      setSubmissionMonthResult(json)
+      setSelectedReceiptIds(new Set())
+      await fetchData()
+    } catch {
+      toast.error("提出月の変更に失敗しました")
+    } finally {
+      setIsSavingSubmissionMonth(false)
+    }
+  }
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
@@ -312,6 +364,9 @@ export default function StaffReimbursePage() {
           <CardDescription>
             期間の基準日は「提出日（20日締めの月割りに使う日付）」が既定です。
             提出日ベースの集計は、会計士向け立替明細CSV・/mkadmin の立替まとめと同じ基準日です。
+            <br />
+            「提出月」は税理士提出フォルダの振り分け先（前月21日〜当月20日提出分＝当月。手動指定があればそちらが優先）で、
+            会計士向け立替明細CSVもこの提出月で集計します。同じ月のフォルダの中身とCSVの中身が一致します。
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -356,6 +411,17 @@ export default function StaffReimbursePage() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs" htmlFor="submissionMonth">
+                提出月
+              </Label>
+              <Input
+                id="submissionMonth"
+                type="month"
+                value={submissionMonthFilter}
+                onChange={(e) => setSubmissionMonthFilter(e.target.value)}
+              />
             </div>
             <div className="space-y-1">
               <Label className="text-xs">費用区分</Label>
@@ -432,6 +498,27 @@ export default function StaffReimbursePage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto">
+          {selectedReceiptIds.size > 0 && (
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border bg-muted/50 px-4 py-2.5">
+              <span className="text-sm font-medium">{selectedReceiptIds.size}件選択中</span>
+              <Button variant="ghost" size="sm" onClick={() => setSelectedReceiptIds(new Set())}>
+                選択を解除
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isSavingSubmissionMonth}
+                onClick={() => {
+                  setSubmissionMonthResult(null)
+                  setSubmissionMonthInput("")
+                  setShowSubmissionMonthModal(true)
+                }}
+              >
+                提出月を変更
+              </Button>
+            </div>
+          )}
+
           {isLoading ? (
             <div className="flex items-center justify-center py-12 text-muted-foreground">
               <Loader2 className="mr-2 size-5 animate-spin" />
@@ -445,6 +532,19 @@ export default function StaffReimbursePage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-8">
+                    <Checkbox
+                      aria-label="すべて選択"
+                      checked={
+                        selectableRows.length > 0 && selectedReceiptIds.size === selectableRows.length
+                      }
+                      onCheckedChange={(v) =>
+                        setSelectedReceiptIds(
+                          v ? new Set(selectableRows.map((r) => r.receiptId as string)) : new Set()
+                        )
+                      }
+                    />
+                  </TableHead>
                   {COLUMNS.map((c) => (
                     <TableHead
                       key={c.key}
@@ -473,8 +573,38 @@ export default function StaffReimbursePage() {
               <TableBody>
                 {sortedRows.map((r) => (
                   <TableRow key={r.transactionId}>
+                    <TableCell className="w-8">
+                      <Checkbox
+                        aria-label="この行を選択"
+                        disabled={!r.receiptId}
+                        checked={!!r.receiptId && selectedReceiptIds.has(r.receiptId)}
+                        onCheckedChange={() => {
+                          if (!r.receiptId) return
+                          setSelectedReceiptIds((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(r.receiptId as string)) next.delete(r.receiptId as string)
+                            else next.add(r.receiptId as string)
+                            return next
+                          })
+                        }}
+                      />
+                    </TableCell>
                     <TableCell className="whitespace-nowrap">{r.applicationDate || "—"}</TableCell>
                     <TableCell className="whitespace-nowrap">{r.submitDate || "—"}</TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      {r.submissionMonth ? (
+                        <span className="inline-flex items-center gap-1">
+                          {r.submissionMonth}
+                          {r.submissionMonthManual && (
+                            <Badge variant="secondary" className="px-1 py-0 text-[10px]">
+                              手動
+                            </Badge>
+                          )}
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
                     <TableCell className="whitespace-nowrap">{r.paymentDate || "—"}</TableCell>
                     <TableCell className="whitespace-nowrap font-medium">{r.staffName}</TableCell>
                     <TableCell className="max-w-[200px] truncate" title={r.storeName}>
@@ -603,6 +733,92 @@ export default function StaffReimbursePage() {
         </Card>
       )}
 
+      {/* 提出月の一括変更 */}
+      {showSubmissionMonthModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg border bg-background p-5 shadow-lg">
+            <h2 className="text-base font-semibold">提出月を変更</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              税理士提出フォルダの振り分け先を手動で指定します。指定した月が自動判定（提出日の20日締め）より優先されます。
+            </p>
+
+            {!submissionMonthResult ? (
+              <>
+                <div className="mt-4 flex items-center gap-2">
+                  <Input
+                    type="month"
+                    value={submissionMonthInput}
+                    onChange={(e) => setSubmissionMonthInput(e.target.value)}
+                    className="w-[180px]"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    {selectedReceiptIds.size}件に適用します
+                  </span>
+                </div>
+                <div className="mt-5 flex flex-wrap justify-end gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowSubmissionMonthModal(false)}
+                    disabled={isSavingSubmissionMonth}
+                  >
+                    閉じる
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void applySubmissionMonth(null)}
+                    disabled={isSavingSubmissionMonth}
+                  >
+                    手動指定を解除（自動判定に戻す）
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => void applySubmissionMonth(submissionMonthInput)}
+                    disabled={isSavingSubmissionMonth || !submissionMonthInput}
+                  >
+                    {isSavingSubmissionMonth && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+                    この月に変更
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className="mt-4 space-y-3 text-sm">
+                <p>
+                  ✅ {submissionMonthResult.updated}件の提出月を
+                  {submissionMonthResult.month ? `「${submissionMonthResult.month}」に変更` : "自動判定に戻"}しました。
+                  次回の税理士フォルダコピーから反映されます。
+                </p>
+                {submissionMonthResult.leftoverFiles.length > 0 && (
+                  <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-amber-900">
+                    <p className="font-medium">
+                      ⚠️ 変更前の月フォルダに、コピー済みのファイルが
+                      {submissionMonthResult.leftoverFiles.length}件残っています
+                    </p>
+                    <p className="mt-1 text-xs">
+                      このままだと同じ資料が2ヶ月分の提出物に現れます。Dropboxで下記のファイルを手動で削除（または移動）してください。
+                      安全のため、アプリからは自動で削除・移動しません。
+                    </p>
+                    <ul className="mt-2 space-y-0.5 text-xs">
+                      {submissionMonthResult.leftoverFiles.map((f) => (
+                        <li key={`${f.id}-${f.path}`} className="break-all">
+                          {f.fromMonthLabel}：{f.path}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="flex justify-end">
+                  <Button size="sm" onClick={() => setShowSubmissionMonthModal(false)}>
+                    閉じる
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <FilePreviewModal target={previewTarget} onClose={() => setPreviewTarget(null)} />
       <EditDialog row={editRow} onClose={() => setEditRow(null)} onSaved={fetchData} />
       <DeleteDialog row={deleteRow} onClose={() => setDeleteRow(null)} onDeleted={fetchData} />
@@ -613,6 +829,8 @@ export default function StaffReimbursePage() {
 /** ソート用の値を取り出す */
 function valueOf(r: Row, key: SortKey): string | number {
   switch (key) {
+    case "submissionMonth":
+      return r.submissionMonth
     case "amount":
       return r.amount
     case "subsidy":

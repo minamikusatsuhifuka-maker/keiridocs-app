@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import type { Database } from "@/types/database"
 import { calcSubsidy, subsidyRate } from "@/lib/subsidy"
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
+import { resolveStaffSubmissionMonth, type YearMonth } from "@/lib/submission-month"
 
 /**
  * 会計士向け「スタッフ立替まとめ」の集計（共通ロジック）。
@@ -119,16 +120,22 @@ function parseStoreFromDescription(text: string | null): string {
 }
 
 /**
- * 期間（申請日ベース・[start, endExclusive)）でスタッフ立替を集計する。
+ * スタッフ立替を集計する。絞り込みは次のどちらか。
+ *  - submissionMonth 指定あり: 「提出月」（手動指定があればそれ、無ければ提出日の20日締め）で絞る。
+ *    税理士提出フォルダへのファイル配置と同じ基準なので、フォルダの中身とCSVの中身が一致する。
+ *  - submissionMonth 指定なし: 従来どおり申請日ベースの期間 [start, endExclusive) で絞る
+ *    （画面の任意期間指定用）。
  * @param params.start        開始日（YYYY-MM-DD・JST・含む）
  * @param params.endExclusive 終了日（YYYY-MM-DD・JST・含まない）
+ * @param params.submissionMonth 提出月で絞る場合に指定
  */
 export async function buildStaffReimburse(params: {
   supabase: SupabaseClient<Database>
   start: string
   endExclusive: string
+  submissionMonth?: YearMonth
 }): Promise<StaffReimburseResult> {
-  const { supabase, start, endExclusive } = params
+  const { supabase, start, endExclusive, submissionMonth } = params
 
   // 1. スタッフ立替の取引行（全件）を取得し、JSで申請日フィルタ
   // ※ PostgREST の max-rows（Supabase既定1000）で暗黙に打ち切られないようページングする
@@ -149,7 +156,7 @@ export async function buildStaffReimburse(params: {
   )
   const receiptMap = new Map<
     string,
-    { store_name: string | null; created_at: string; issueDate: string }
+    { store_name: string | null; created_at: string; issueDate: string; aiRaw: unknown }
   >()
   // .in() のURL長制限・行数上限を避けるため200件ずつ引く
   for (let i = 0; i < receiptIds.length; i += 200) {
@@ -169,6 +176,8 @@ export async function buildStaffReimburse(params: {
         created_at: r.created_at,
         // 支払年月日はOCR発行日（読み取れない場合は ""＝「—」。アップロード日では埋めない）
         issueDate: extractIssueDate(r.ai_raw),
+        // 提出月の手動指定（ai_raw.submission_month）を読むために保持する
+        aiRaw: r.ai_raw,
       })
     }
   }
@@ -199,7 +208,15 @@ export async function buildStaffReimburse(params: {
     const receipt = t.staff_receipt_id ? receiptMap.get(t.staff_receipt_id) : undefined
     // 申請日（アップロード日）: 領収書のcreated_atを優先、無ければ取引のcreated_at
     const applicationDate = toJstDate(receipt?.created_at ?? t.created_at)
-    if (!applicationDate || applicationDate < start || applicationDate >= endExclusive) continue
+    if (submissionMonth) {
+      // 提出月ベース（ファイル配置と同じ基準）
+      const resolved = resolveStaffSubmissionMonth(receipt?.aiRaw, applicationDate).month
+      if (!resolved || resolved.year !== submissionMonth.year || resolved.month !== submissionMonth.month) {
+        continue
+      }
+    } else if (!applicationDate || applicationDate < start || applicationDate >= endExclusive) {
+      continue
+    }
 
     const amount = typeof t.amount === "number" ? t.amount : 0
     const storeName =

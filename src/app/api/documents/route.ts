@@ -5,6 +5,8 @@ import { getCurrentUserRole } from "@/lib/auth"
 import { normalizePaymentMethod, normalizeBankInfo } from "@/lib/gemini"
 import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
 import type { Database, Json } from "@/types/database"
+import { resolveDocumentSubmissionMonth, parseYearMonth, sameYearMonth } from "@/lib/submission-month"
+import { fetchAllRows } from "@/lib/supabase/fetch-all"
 
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"]
 type DocumentUpdate = Database["public"]["Tables"]["documents"]["Update"]
@@ -66,6 +68,35 @@ export async function GET(request: NextRequest) {
   const safeSort = allowedSortFields.includes(sortField) ? sortField : "created_at"
   const ascending = sortDirection === "asc"
 
+  // 提出月フィルタ（"YYYY-MM"）。手動指定と自動判定の複合なのでSQLでは絞れず、
+  // 必要列だけを全件走査して該当IDを求め、in() で絞り込む（documents は数百件規模）。
+  const submissionMonthParam = parseYearMonth(searchParams.get("submission_month"))
+  let submissionMonthIds: string[] | null = null
+  if (submissionMonthParam) {
+    type MonthRow = {
+      id: string
+      ocr_raw: unknown
+      issue_date: string | null
+      due_date: string | null
+      created_at: string
+      user_id: string | null
+    }
+    const rows = await fetchAllRows<MonthRow>((from, to) => {
+      let q = supabase.from("documents").select("id, ocr_raw, issue_date, due_date, created_at, user_id")
+      if (!isAdminUser) q = q.eq("user_id", user.id)
+      return q.order("id", { ascending: true }).range(from, to) as unknown as PromiseLike<{
+        data: MonthRow[] | null
+        error: { message: string } | null
+      }>
+    })
+    submissionMonthIds = rows
+      .filter((r) => {
+        const baseDate = r.issue_date ?? r.due_date ?? r.created_at
+        return sameYearMonth(resolveDocumentSubmissionMonth(r.ocr_raw, baseDate).month, submissionMonthParam)
+      })
+      .map((r) => r.id)
+  }
+
   let query = supabase
     .from("documents")
     .select("*, registrant:registrants(id, name)", { count: "exact" })
@@ -77,6 +108,11 @@ export async function GET(request: NextRequest) {
   // admin以外は自分の書類のみ
   if (!isAdminUser) {
     query = query.eq("user_id", user.id)
+  }
+
+  if (submissionMonthIds) {
+    // 0件のときは in() が空配列を受け付けないため、必ず一致しない値で空結果にする
+    query = query.in("id", submissionMonthIds.length > 0 ? submissionMonthIds : ["00000000-0000-0000-0000-000000000000"])
   }
 
   if (status) {

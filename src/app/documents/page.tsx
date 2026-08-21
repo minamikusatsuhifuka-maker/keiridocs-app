@@ -21,7 +21,9 @@ import {
 } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { DocumentTable } from "@/components/documents/document-table"
-import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput, FolderPlus, Wallet, Upload, History, FileSpreadsheet } from "lucide-react"
+import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput, FolderPlus, Wallet, Upload, History, FileSpreadsheet,
+  CalendarRange,
+} from "lucide-react"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
 
@@ -129,6 +131,17 @@ export default function DocumentsPage() {
   const totalPages = Math.ceil(totalCount / PAGE_SIZE)
 
   // データ取得
+  // 提出月（税理士提出フォルダの振り分け先）の絞り込みと一括変更
+  const [submissionMonthFilter, setSubmissionMonthFilter] = useState("")
+  const [showSubmissionMonthModal, setShowSubmissionMonthModal] = useState(false)
+  const [submissionMonthInput, setSubmissionMonthInput] = useState("")
+  const [isSavingSubmissionMonth, setIsSavingSubmissionMonth] = useState(false)
+  const [submissionMonthResult, setSubmissionMonthResult] = useState<{
+    updated: number
+    month: string | null
+    leftoverFiles: { id: string; fileName: string; fromMonthLabel: string; path: string }[]
+  } | null>(null)
+
   const fetchDocuments = useCallback(async () => {
     setIsLoading(true)
     setSelectedDocIds(new Set())
@@ -161,6 +174,7 @@ export default function DocumentsPage() {
         params.set("require_transfer", "1")
         params.set("unpaid", "1")
       }
+      if (submissionMonthFilter) params.set("submission_month", submissionMonthFilter)
 
       const res = await fetch(`/api/documents?${params.toString()}`)
       if (!res.ok) throw new Error("データの取得に失敗しました")
@@ -202,7 +216,7 @@ export default function DocumentsPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [search, typeFilter, dateFrom, dateTo, sortField, sortDirection, page, activeTab, transferUnpaidOnly])
+  }, [search, typeFilter, dateFrom, dateTo, sortField, sortDirection, page, activeTab, transferUnpaidOnly, submissionMonthFilter])
 
   useEffect(() => {
     fetchDocuments()
@@ -432,6 +446,33 @@ export default function DocumentsPage() {
   useEffect(() => {
     void loadUncopied()
   }, [loadUncopied])
+
+  // 選択中の書類の提出月を一括変更（month=null で自動判定に戻す）
+  async function applySubmissionMonth(month: string | null) {
+    if (selectedDocIds.size === 0) return
+    setIsSavingSubmissionMonth(true)
+    setSubmissionMonthResult(null)
+    try {
+      const res = await fetch("/api/submission-month", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: "document", ids: Array.from(selectedDocIds), month }),
+      })
+      const json = await res.json()
+      if (!res.ok) {
+        alert(json?.error ?? "提出月の変更に失敗しました")
+        return
+      }
+      setSubmissionMonthResult(json)
+      setSelectedDocIds(new Set())
+      await fetchDocuments()
+      void loadUncopied()
+    } catch {
+      alert("提出月の変更に失敗しました")
+    } finally {
+      setIsSavingSubmissionMonth(false)
+    }
+  }
 
   function openTaxCopyModal() {
     setTaxCopyResults(null)
@@ -1157,6 +1198,22 @@ export default function DocumentsPage() {
             </Button>
           )}
 
+          {/* 提出月フィルタ（税理士提出フォルダの振り分け先） */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">提出月</span>
+            <Input
+              type="month"
+              value={submissionMonthFilter}
+              onChange={(e) => { setSubmissionMonthFilter(e.target.value); setPage(0) }}
+              className="w-[140px]"
+            />
+            {submissionMonthFilter && (
+              <Button variant="ghost" size="sm" onClick={() => { setSubmissionMonthFilter(""); setPage(0) }}>
+                <X className="size-3.5" />
+              </Button>
+            )}
+          </div>
+
           {hasFilters && (
             <Button variant="ghost" size="sm" onClick={handleReset}>
               <X className="size-3.5" />
@@ -1297,6 +1354,24 @@ export default function DocumentsPage() {
             disabled={isBulkDeleting || isReanalyzing}
           >
             選択を解除
+          </Button>
+
+          <span className="text-muted-foreground/40 select-none">|</span>
+
+          {/* 提出月の一括変更 */}
+          <Button
+            variant="outline"
+            size="sm"
+            className="btn-float"
+            disabled={isBulkDeleting || isReanalyzing || isSavingSubmissionMonth}
+            onClick={() => {
+              setSubmissionMonthResult(null)
+              setSubmissionMonthInput("")
+              setShowSubmissionMonthModal(true)
+            }}
+          >
+            <CalendarRange className="mr-1.5 size-3.5" />
+            提出月を変更
           </Button>
 
           <span className="text-muted-foreground/40 select-none">|</span>
@@ -1588,6 +1663,94 @@ export default function DocumentsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 提出月の一括変更モーダル */}
+      {showSubmissionMonthModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg border bg-background p-5 shadow-lg">
+            <h2 className="text-base font-semibold">提出月を変更</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              税理士提出フォルダの振り分け先を手動で指定します。指定した月が自動判定より優先されます。
+            </p>
+
+            {!submissionMonthResult ? (
+              <>
+                <div className="mt-4 flex items-center gap-2">
+                  <Input
+                    type="month"
+                    value={submissionMonthInput}
+                    onChange={(e) => setSubmissionMonthInput(e.target.value)}
+                    className="w-[180px]"
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    {selectedDocIds.size}件に適用します
+                  </span>
+                </div>
+
+                <div className="mt-5 flex flex-wrap justify-end gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowSubmissionMonthModal(false)}
+                    disabled={isSavingSubmissionMonth}
+                  >
+                    閉じる
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void applySubmissionMonth(null)}
+                    disabled={isSavingSubmissionMonth}
+                  >
+                    手動指定を解除（自動判定に戻す）
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => void applySubmissionMonth(submissionMonthInput)}
+                    disabled={isSavingSubmissionMonth || !submissionMonthInput}
+                  >
+                    {isSavingSubmissionMonth && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+                    この月に変更
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className="mt-4 space-y-3 text-sm">
+                <p>
+                  ✅ {submissionMonthResult.updated}件の提出月を
+                  {submissionMonthResult.month ? `「${submissionMonthResult.month}」に変更` : "自動判定に戻"}しました。
+                  次回の税理士フォルダコピーから反映されます。
+                </p>
+
+                {submissionMonthResult.leftoverFiles.length > 0 && (
+                  <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-amber-900">
+                    <p className="font-medium">
+                      ⚠️ 変更前の月フォルダに、コピー済みのファイルが{submissionMonthResult.leftoverFiles.length}件残っています
+                    </p>
+                    <p className="mt-1 text-xs">
+                      このままだと同じ資料が2ヶ月分の提出物に現れます。Dropboxで下記のファイルを手動で削除（または移動）してください。
+                      安全のため、アプリからは自動で削除・移動しません。
+                    </p>
+                    <ul className="mt-2 space-y-0.5 text-xs">
+                      {submissionMonthResult.leftoverFiles.map((f) => (
+                        <li key={`${f.id}-${f.path}`} className="break-all">
+                          {f.fromMonthLabel}：{f.path}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <div className="flex justify-end">
+                  <Button size="sm" onClick={() => setShowSubmissionMonthModal(false)}>
+                    閉じる
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 税理士フォルダへの一括コピー 期間・対象フォルダ選択 + 進捗/結果表示モーダル */}
       <Dialog open={showTaxCopyModal} onOpenChange={(o) => { if (!isCopyingToTax) setShowTaxCopyModal(o) }}>

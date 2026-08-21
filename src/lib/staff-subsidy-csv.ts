@@ -11,7 +11,12 @@ import { buildStaffReimburse, buildStaffReimburseCsv } from "@/lib/staff-reimbur
  *
  * 旧サマリーCSV（小口支給額・給与支給額・保管のみ件数）は廃止（全件給与支給のため不要）。
  * 集計・支給額計算（calcSubsidy）は buildStaffReimburse に集約し、本ファイルはCSV出力の入口のみ担う。
- * 支払年月日は領収書のOCR発行日（未取得は申請日を代用し明記）。期間は申請日ベース。
+ * 支払年月日は領収書のOCR発行日（未取得は申請日を代用し明記）。
+ *
+ * 集計期間は「提出月」＝税理士提出フォルダへのファイル配置と同じ基準
+ * （手動指定があればそれ、無ければ提出日の20日締め）。
+ * 旧実装は暦月（申請日ベース）で、たとえば 8/21 申請分が「ファイルは9月分フォルダ・明細は8月分CSV」と
+ * 食い違っていたため、フォルダの中身とCSVの中身が一致するように統一した。
  */
 
 export interface StaffSubsidyCsvResult {
@@ -19,15 +24,6 @@ export interface StaffSubsidyCsvResult {
   fileName: string
   /** 明細行数（領収書件数）。0なら税理士フォルダへのCSV作成をスキップする判定に使う */
   rowCount: number
-}
-
-/** 月の範囲（[start, endExclusive)）を YYYY-MM-DD で返す */
-function monthRange(year: number, month: number): { start: string; endExclusive: string } {
-  const start = `${year}-${String(month).padStart(2, "0")}-01`
-  const endYear = month === 12 ? year + 1 : year
-  const endMonth = month === 12 ? 1 : month + 1
-  const endExclusive = `${endYear}-${String(endMonth).padStart(2, "0")}-01`
-  return { start, endExclusive }
 }
 
 /**
@@ -42,11 +38,16 @@ export async function buildStaffSubsidyCsv(params: {
   month: number
 }): Promise<StaffSubsidyCsvResult> {
   const { supabase, year, month } = params
-  const { start, endExclusive } = monthRange(year, month)
   const monthStr = String(month).padStart(2, "0")
   const periodLabel = `${year}年${monthStr}月`
 
-  const result = await buildStaffReimburse({ supabase, start, endExclusive })
+  // 提出月ベース（ファイル配置と同一基準）。start/endExclusive は使わないので同月の便宜値を渡す
+  const result = await buildStaffReimburse({
+    supabase,
+    start: `${year}-${monthStr}-01`,
+    endExclusive: `${year}-${monthStr}-01`,
+    submissionMonth: { year, month },
+  })
   const csvWithBom = buildStaffReimburseCsv(result, periodLabel)
 
   return {

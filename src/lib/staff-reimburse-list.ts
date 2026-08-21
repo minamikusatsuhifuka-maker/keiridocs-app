@@ -21,6 +21,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import type { Database } from "@/types/database"
 import { calcSubsidy, subsidyRate, STAFF_EXPENSE_DETAILS } from "@/lib/subsidy"
 import { getSplitGroupInfo, parseAiRawObject } from "@/lib/staff-receipt-split"
+import { resolveStaffSubmissionMonth, formatYearMonth } from "@/lib/submission-month"
 import { extractIssueDate } from "@/lib/staff-reimburse"
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
 
@@ -65,6 +66,12 @@ export interface StaffReimburseRow {
   fileName: string
   /** 資料のDropboxパス（Dropboxウェブを開くリンク用。資料なしは ""） */
   dropboxPath: string
+  /** 提出月（税理士フォルダの振り分け先。"YYYY-MM"。判定不能は ""） */
+  submissionMonth: string
+  /** 提出月が手動指定か（false は提出日20日締めの自動判定） */
+  submissionMonthManual: boolean
+  /** 自動判定した場合の提出月（手動指定を解除したときに戻る月。"YYYY-MM"） */
+  autoSubmissionMonth: string
   /** 同一ファイル由来の分割グループID（分割でない行は null） */
   splitGroup: string | null
   /** 分割の何件目か（1始まり。分割でない行は 0） */
@@ -102,6 +109,8 @@ export interface ListFilter {
   staffMemberId?: string
   /** 費用区分のフル名称で絞り込み */
   expenseDetail?: string
+  /** 提出月で絞り込み（"YYYY-MM"） */
+  submissionMonth?: string
 }
 
 interface TxRow {
@@ -247,6 +256,8 @@ export async function buildStaffReimburseList(params: {
       STAFF_EXPENSE_DETAILS.find((d) => d.fullLabel === (t.expense_detail ?? ""))?.key ||
       ""
     const dropboxPath = receipt?.dropbox_path?.trim() ?? ""
+    // 提出月＝手動指定（ai_raw.submission_month）優先、無ければ提出日の20日締め
+    const submission = resolveStaffSubmissionMonth(receipt?.ai_raw, submitDate)
 
     rows.push({
       transactionId: t.id,
@@ -265,6 +276,9 @@ export async function buildStaffReimburseList(params: {
       subsidy: calcSubsidy(amount, t.subsidy_category),
       source: detectSource(t.registered_by, aiRaw, !!receipt),
       registeredBy: t.registered_by ?? "",
+      submissionMonth: submission.month ? formatYearMonth(submission.month) : "",
+      submissionMonthManual: submission.source === "manual",
+      autoSubmissionMonth: submission.autoMonth ? formatYearMonth(submission.autoMonth) : "",
       hasFile: dropboxPath !== "",
       fileName: dropboxPath ? (dropboxPath.split("/").pop() ?? "") : "",
       dropboxPath,
@@ -305,6 +319,7 @@ export async function buildStaffReimburseList(params: {
   const filtered = rows.filter((r) => {
     if (filter.staffMemberId && r.staffMemberId !== filter.staffMemberId) return false
     if (filter.expenseDetail && r.expenseDetail !== filter.expenseDetail) return false
+    if (filter.submissionMonth && r.submissionMonth !== filter.submissionMonth) return false
     const d = dateOf(r)
     // 基準日が空（支払年月日が読み取れていない等）の行は期間指定時に除外しない＝取りこぼしを防ぐ
     if (d) {

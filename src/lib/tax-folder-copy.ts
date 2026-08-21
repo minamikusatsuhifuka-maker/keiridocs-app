@@ -16,14 +16,17 @@ import { buildStaffSubsidyCsv } from "@/lib/staff-subsidy-csv"
 import {
   ensureMonthStructure,
   taxSubfolderForSourceFolder,
-  staffCutoffMonth,
   staffReceiptFolderName,
   submitDateStr,
-  processingMonthOfDate,
   STAFF_RECEIPT_SUBFOLDER,
 } from "@/lib/tax-folder-structure"
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
 import { loadSnapshots, periodOf, saveSnapshot } from "@/lib/tax-submission-snapshot"
+import {
+  resolveDocumentSubmissionMonth,
+  resolveStaffSubmissionMonth,
+  type YearMonth,
+} from "@/lib/submission-month"
 import type { createClient } from "@/lib/supabase/server"
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
@@ -105,6 +108,8 @@ interface RunOpts {
  *   - 通常書類: 基準日（①発行日 issue_date → ②支払期日 due_date → ③取込日 created_at）が
  *     前月1日〜末日の資料を当月フォルダへ入れる（processingMonthOfDate で判定）。
  *   - スタッフ領収書: 提出日の20日締め（前月21日〜当月20日提出分 → 当月フォルダ。従来どおり）。
+ *   - いずれも「提出月の手動指定」（ocr_raw / ai_raw の submission_month）があればそちらを優先する
+ *     （lib/submission-month.ts に集約。未指定なら上記の自動判定のまま）。
  *
  * 処理フロー:
  *   a. DBの書類（基準日が前月・選択フォルダ範囲内・アーカイブ除く）をコピー
@@ -148,13 +153,15 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
     due_date: string | null
     created_at: string
     status: string
+    /** 提出月の手動指定（ocr_raw.submission_month）を読むために取得する */
+    ocr_raw: unknown
   }
   let dbDocs: CopyDocRow[]
   try {
     dbDocs = await fetchAllRows<CopyDocRow>((from, to) => {
       let q = supabase
         .from("documents")
-        .select("id, dropbox_path, vendor_name, amount, type, issue_date, due_date, created_at, status")
+        .select("id, dropbox_path, vendor_name, amount, type, issue_date, due_date, created_at, status, ocr_raw")
         .neq("status", "アーカイブ")
         .not("dropbox_path", "is", null)
       if (!isAdmin) {
@@ -201,10 +208,10 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
     if (typeof d.dropbox_path !== "string" || d.dropbox_path.length === 0) return false
     // 選択フォルダ配下のみ
     if (!targetFolderPrefixes.some((prefix) => d.dropbox_path!.startsWith(prefix))) return false
-    // 基準日（発行日→支払期日→取込日）の処理月（＝基準月の翌月）が対象月のものだけ
+    // 提出月（手動指定があればそれ。無ければ基準日の処理月＝基準月の翌月）が対象月のものだけ
     const baseDate = d.issue_date ?? d.due_date ?? d.created_at
-    const processing = processingMonthOfDate(baseDate)
-    return processing?.year === yearNum && processing?.month === monthNum
+    const submission = resolveDocumentSubmissionMonth(d.ocr_raw, baseDate).month
+    return submission?.year === yearNum && submission?.month === monthNum
   })
 
   for (const doc of dbDocsForCopy) {
@@ -363,14 +370,16 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
           )
         )
         const receiptCreatedAt = new Map<string, string>()
+        // 提出月の手動指定（ai_raw.submission_month）も同じ取得でまとめて読む
+        const receiptAiRaw = new Map<string, unknown>()
         if (receiptIds.length > 0) {
-          type ReceiptRow = { id: string; created_at: string }
+          type ReceiptRow = { id: string; created_at: string; ai_raw: unknown }
           // .in() のURL長制限を避けるため200件ずつ引く
           for (let i = 0; i < receiptIds.length; i += 200) {
             const chunk = receiptIds.slice(i, i + 200)
             const { data, error } = await supabase
               .from("staff_receipts")
-              .select("id, created_at")
+              .select("id, created_at, ai_raw")
               .in("id", chunk)
             if (error) {
               console.error("スタッフ領収書の提出日取得エラー:", error)
@@ -378,6 +387,7 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
             }
             for (const r of (data ?? []) as ReceiptRow[]) {
               receiptCreatedAt.set(r.id, r.created_at)
+              receiptAiRaw.set(r.id, r.ai_raw)
             }
           }
         }
@@ -396,7 +406,9 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
             (tx.staff_receipt_id ? receiptCreatedAt.get(tx.staff_receipt_id) : undefined) ??
             tx.created_at
           const submitDate = submitDateStr(submitSource)
-          const cutoff = staffCutoffMonth(submitDate)
+          // 提出月は手動指定を優先（無ければ従来どおり提出日の20日締め）
+          const aiRaw = tx.staff_receipt_id ? receiptAiRaw.get(tx.staff_receipt_id) : undefined
+          const cutoff: YearMonth | null = resolveStaffSubmissionMonth(aiRaw, submitDate).month
           if (!cutoff) continue
           if (cutoff.year !== yearNum || cutoff.month !== monthNum) continue
 

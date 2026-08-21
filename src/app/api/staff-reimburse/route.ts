@@ -61,6 +61,8 @@ export async function GET(req: NextRequest) {
     const basis = parseBasis(searchParams.get("basis"))
     const staffMemberId = searchParams.get("staffMemberId") ?? undefined
     const expenseDetail = searchParams.get("expenseDetail") ?? undefined
+    // 提出月（"YYYY-MM"）＝税理士提出フォルダの振り分け先での絞り込み
+    const submissionMonth = searchParams.get("submissionMonth") ?? undefined
 
     if (start && !DATE_RE.test(start)) {
       return NextResponse.json({ error: "開始日は YYYY-MM-DD 形式で指定してください" }, { status: 400 })
@@ -75,7 +77,7 @@ export async function GET(req: NextRequest) {
     const service = createServiceClient()
     const result = await buildStaffReimburseList({
       supabase: service,
-      filter: { basis, start, end, staffMemberId, expenseDetail },
+      filter: { basis, start, end, staffMemberId, expenseDetail, submissionMonth },
     })
 
     const periodLabel =

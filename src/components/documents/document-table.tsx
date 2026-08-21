@@ -55,6 +55,7 @@ import {
 import { CSS } from "@dnd-kit/utilities"
 import type { Database } from "@/types/database"
 import { toast } from "sonner"
+import { resolveDocumentSubmissionMonth, labelYearMonth } from "@/lib/submission-month"
 
 type Document = Database["public"]["Tables"]["documents"]["Row"] & {
   registrant?: { id: string; name: string } | null
@@ -79,6 +80,7 @@ type ColumnId =
   | "type"
   | "vendor_name"
   | "amount"
+  | "submission_month"
   | "created_at"
   | "registrant"
   | "issue_date"
@@ -92,6 +94,7 @@ const DEFAULT_COLUMN_ORDER: ColumnId[] = [
   "type",
   "vendor_name",
   "amount",
+  "submission_month",
   "created_at",
   "registrant",
   "issue_date",
@@ -507,6 +510,27 @@ export function DocumentTable({
         ) : (
           formatAmount(doc.amount)
         ),
+    },
+    submission_month: {
+      id: "submission_month",
+      // 税理士提出フォルダの振り分け先。手動指定があればそれ、無ければ基準日からの自動判定
+      label: "提出月",
+      cellClassName: "text-sm whitespace-nowrap",
+      renderCell: (doc) => {
+        const baseDate = doc.issue_date ?? doc.due_date ?? doc.created_at
+        const resolved = resolveDocumentSubmissionMonth(doc.ocr_raw, baseDate)
+        if (!resolved.month) return "—"
+        return (
+          <span className="inline-flex items-center gap-1">
+            {labelYearMonth(resolved.month)}
+            {resolved.source === "manual" && (
+              <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                手動
+              </span>
+            )}
+          </span>
+        )
+      },
     },
     created_at: {
       id: "created_at",
