@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { runTaxFolderCopy, ALL_SOURCE_FOLDERS, type CopyDetail } from "@/lib/tax-folder-copy"
+import { deleteExpiredTransitSessions } from "@/lib/line-transit"
 import type { createClient } from "@/lib/supabase/server"
 import type { Database, Json } from "@/types/database"
 
@@ -28,6 +29,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
   }
 
+  const serviceClient = createServiceClient()
+
+  // 期限切れのLINE申請セッションを掃除する（毎日実行。削除対象はセッションのみで登録済みデータには触れない）
+  const expiredSessions = await deleteExpiredTransitSessions(serviceClient)
+  if (expiredSessions > 0) {
+    console.log(`[cron] 期限切れのLINE申請セッションを削除: ${expiredSessions}件`)
+  }
+
   // JST基準の日付判定（UTC日付で判定しない）
   const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000)
   const year = jstNow.getUTCFullYear()
@@ -48,11 +57,11 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       skipped: true,
       reason: `JST ${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")} は実行日（20日・月末${lastDayOfMonth}日）ではありません`,
+      expiredSessionsDeleted: expiredSessions,
     })
   }
 
   const monthStr = String(month).padStart(2, "0")
-  const serviceClient = createServiceClient()
 
   try {
     // 当月分を全フォルダ対象で一括コピー（手動実行と同じ本体ロジック）

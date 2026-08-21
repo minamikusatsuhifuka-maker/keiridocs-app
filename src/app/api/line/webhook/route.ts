@@ -18,11 +18,13 @@ import {
 import { estimateTrainFare } from "@/lib/transit-fare"
 import {
   getTransitSession,
+  loadTransitSession,
   setTransitSession,
   clearTransitSession,
   finalizeTransitClaim,
   updateStaffHomeStation,
   NEARBY_PREFECTURES,
+  SESSION_TIMEOUT_MINUTES,
   type TransitData,
   type TransitSession,
 } from "@/lib/line-transit"
@@ -937,6 +939,13 @@ function normalizeTrigger(text: string): string {
     .toLowerCase()
 }
 
+/** 入力待ちメッセージに添える自動リセットの注意（値は line-transit.ts の定数1箇所で決まる） */
+const TIMEOUT_NOTE = `\n\n⏳ ${SESSION_TIMEOUT_MINUTES}分操作がないとリセットされます。`
+
+/** セッションが失効していた場合の案内 */
+const SESSION_EXPIRED_TEXT =
+  "⌛ 前回の申請は時間が経過したためリセットされました。\nもう一度「申請」と送ってください。"
+
 /* ---------- 申請メニューの項目定義（ここに1件追加すればメニューにもトリガーにも反映される） ---------- */
 
 /**
@@ -1168,7 +1177,7 @@ async function sendTransitExpired(replyToken: string, userId: string): Promise<v
   await sendLineMessage(
     replyToken,
     userId,
-    "⌛ 申請の途中経過が見つかりませんでした。\n「申請」と送ると申請メニューから最初にやり直せます。"
+    SESSION_EXPIRED_TEXT
   )
 }
 
@@ -1177,7 +1186,7 @@ async function sendTransitModeChoice(replyToken: string, userId: string): Promis
   await sendLineQuickReply(
     replyToken,
     userId,
-    "🚃 交通費（領収書なし）の申請です。\n交通手段を選んでください。",
+    "🚃 交通費（領収書なし）の申請です。\n交通手段を選んでください。" + TIMEOUT_NOTE,
     [
       { type: "postback", label: "電車", data: "action=trm&m=train", displayText: "電車" },
       { type: "postback", label: "その他（バス・車など）", data: "action=trm&m=other", displayText: "その他（バス・車など）" },
@@ -1441,7 +1450,7 @@ async function askOtherAmount(replyToken: string, userId: string): Promise<void>
   await sendLineQuickReply(
     replyToken,
     userId,
-    "🚌 バス・自家用車などの交通費ですね。\n金額（円）をテキストで送ってください。\n例：1200",
+    "🚌 バス・自家用車などの交通費ですね。\n金額（円）をテキストで送ってください。\n例：1200" + TIMEOUT_NOTE,
     [transitCancelItem()]
   )
 }
@@ -1526,7 +1535,8 @@ async function startTrainTransit(
     replyToken,
     source.userId,
     `🚃 電車代（領収書なし）の申請です。\n🏠 出発：${s.home_station}${s.home_station_pref ? `（${s.home_station_pref}）` : ""}\n\n` +
-      "到着駅（会場の最寄り駅）の名前をテキストで送ってください。\n例：梅田",
+      "到着駅（会場の最寄り駅）の名前をテキストで送ってください。\n例：梅田" +
+      TIMEOUT_NOTE,
     [transitCancelItem()]
   )
 }
@@ -1555,7 +1565,8 @@ async function promptHomeStationForTrain(
     source.userId,
     "🏠 自宅最寄り駅がまだ登録されていません。\n" +
       "まず自宅最寄り駅を登録します。駅名を送信してください。（例：草津駅）\n\n" +
-      "登録が終わると、そのまま電車代の申請に進みます。",
+      "登録が終わると、そのまま電車代の申請に進みます。" +
+      TIMEOUT_NOTE,
     [homeCancelItem()]
   )
 }
@@ -1860,7 +1871,7 @@ async function handleHomeStationEntry(
     ? `🏠 現在の登録：${c.home_station}${c.home_station_pref ? `（${c.home_station_pref}）` : ""}\n` +
       "変更する場合は新しい駅名を送信してください。（例：草津駅）"
     : "🏠 自宅の最寄り駅を登録します。最寄り駅名を送信してください。（例：草津駅）"
-  await sendLineQuickReply(replyToken, source.userId, text, [homeCancelItem()])
+  await sendLineQuickReply(replyToken, source.userId, text + TIMEOUT_NOTE, [homeCancelItem()])
 }
 
 /** 駅名テキストをGeminiで判定し、確認 or 候補提示 or 再入力に分岐 */
@@ -2346,14 +2357,26 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
   const supabase = createServiceClient()
 
   // 0. 進行中の対話セッションがあれば最優先で処理（テキスト入力を取りこぼさない）
-  const transitSession = await getTransitSession(supabase, source.userId)
+  //    ただし最終操作から SESSION_TIMEOUT_MINUTES 分を過ぎたセッションは失効させ、続きとしては扱わない。
+  const { session: transitSession, expired } = await loadTransitSession(supabase, source.userId)
+  if (expired) {
+    await sendLineMessage(replyToken, source.userId, SESSION_EXPIRED_TEXT)
+    return
+  }
   if (transitSession) {
-    if (transitSession.step.startsWith("home_")) {
+    // 申請の途中でも「申請」「電車代」等の別トリガーが送られたら、前の申請を破棄して新しいフローに切り替える
+    // （「キャンセル」「最初から」は各フロー側で従来どおり処理する）
+    if (isApplicationMenuEntry(inputText) || findMenuItemByText(inputText)) {
+      await clearTransitSession(supabase, source.userId)
+      // replyToken は新しいフローの案内に使うため、切り替えの一言は push で先に送る
+      await pushMessage(source.userId, "✋ 前の申請を中止して、新しく開始します。")
+    } else if (transitSession.step.startsWith("home_")) {
       await handleHomeStationText(event, supabase, transitSession, inputText)
+      return
     } else {
       await handleTransitText(event, supabase, transitSession, inputText)
+      return
     }
-    return
   }
 
   const staffMembers = await fetchStaffMembers(supabase)

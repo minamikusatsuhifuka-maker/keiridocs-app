@@ -62,6 +62,24 @@ export interface TransitSession {
   data: TransitData
 }
 
+/* ---------- 対話セッションの有効期限 ---------- */
+
+/**
+ * 対話セッションの有効期限（分）。最終操作（updated_at）からこの時間が過ぎたセッションは失効する。
+ * タイムアウト値の変更はこの定数1箇所で行う（webhook の案内文もこの値を参照する）。
+ */
+export const SESSION_TIMEOUT_MINUTES = 30
+
+/** 有効期限（ミリ秒） */
+const SESSION_TIMEOUT_MS = SESSION_TIMEOUT_MINUTES * 60 * 1000
+
+/** セッション読み込み結果（失効した場合は呼び出し側で案内メッセージを返す） */
+export interface SessionLoadResult {
+  session: TransitSession | null
+  /** 期限切れのため破棄した場合 true */
+  expired: boolean
+}
+
 /* ---------- 都道府県（到着駅の県・QuickReply用） ---------- */
 
 /**
@@ -86,28 +104,60 @@ export const NEARBY_PREFECTURES = [
 /* ---------- セッションCRUD ---------- */
 
 /**
- * セッションを取得する。存在しない・テーブル未適用（migration034未実行）・エラー時は null。
+ * セッションを取得する（有効期限つき）。
+ *
+ * - 最終操作（updated_at）から SESSION_TIMEOUT_MINUTES を過ぎていたら、その場で削除して
+ *   { session: null, expired: true } を返す（失効判定はサーバー側で行い、クライアント入力に依存しない）。
+ * - 存在しない・テーブル未適用（migration034未実行）・エラー時は { session: null, expired: false }。
+ */
+export async function loadTransitSession(
+  supabase: Client,
+  lineUserId: string
+): Promise<SessionLoadResult> {
+  const { data, error } = await supabase
+    .from("line_transit_sessions")
+    .select("staff_member_id, step, data, updated_at")
+    .eq("line_user_id", lineUserId)
+    .maybeSingle()
+  if (error) {
+    console.warn("[line-transit] セッション取得スキップ（migration034未実行?）:", error.message)
+    return { session: null, expired: false }
+  }
+  if (!data) return { session: null, expired: false }
+  const row = data as {
+    staff_member_id: string | null
+    step: string
+    data: unknown
+    updated_at: string | null
+  }
+
+  // 有効期限の判定（updated_at が読めない異常時は従来どおり有効として扱う）
+  const updatedAt = row.updated_at ? Date.parse(row.updated_at) : NaN
+  if (Number.isFinite(updatedAt) && Date.now() - updatedAt > SESSION_TIMEOUT_MS) {
+    await clearTransitSession(supabase, lineUserId)
+    return { session: null, expired: true }
+  }
+
+  return {
+    session: {
+      staffMemberId: row.staff_member_id,
+      step: row.step as TransitStep,
+      data: (row.data && typeof row.data === "object" ? row.data : {}) as TransitData,
+    },
+    expired: false,
+  }
+}
+
+/**
+ * セッションを取得する。存在しない・失効済み・エラー時は null。
+ * 失効したかどうかを区別したい場合は loadTransitSession を使う。
  */
 export async function getTransitSession(
   supabase: Client,
   lineUserId: string
 ): Promise<TransitSession | null> {
-  const { data, error } = await supabase
-    .from("line_transit_sessions")
-    .select("staff_member_id, step, data")
-    .eq("line_user_id", lineUserId)
-    .maybeSingle()
-  if (error) {
-    console.warn("[line-transit] セッション取得スキップ（migration034未実行?）:", error.message)
-    return null
-  }
-  if (!data) return null
-  const row = data as { staff_member_id: string | null; step: string; data: unknown }
-  return {
-    staffMemberId: row.staff_member_id,
-    step: row.step as TransitStep,
-    data: (row.data && typeof row.data === "object" ? row.data : {}) as TransitData,
-  }
+  const { session } = await loadTransitSession(supabase, lineUserId)
+  return session
 }
 
 /**
@@ -157,6 +207,25 @@ export async function updateStaffHomeStation(
     return false
   }
   return true
+}
+
+/**
+ * 期限切れの対話セッションを一括削除する（cronからの定期掃除用）。
+ * 削除対象は line_transit_sessions のみで、領収書・取引データには一切触れない。
+ * 戻り値は削除件数（エラー時は 0）。
+ */
+export async function deleteExpiredTransitSessions(supabase: Client): Promise<number> {
+  const threshold = new Date(Date.now() - SESSION_TIMEOUT_MS).toISOString()
+  const { data, error } = await supabase
+    .from("line_transit_sessions")
+    .delete()
+    .lt("updated_at", threshold)
+    .select("line_user_id")
+  if (error) {
+    console.warn("[line-transit] 期限切れセッションの削除失敗:", error.message)
+    return 0
+  }
+  return data?.length ?? 0
 }
 
 /** セッションを削除する（確定・キャンセル時）。 */
