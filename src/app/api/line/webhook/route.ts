@@ -876,8 +876,138 @@ async function handleConfirmPostback(
 
 /* ========== 領収書なし交通費フロー（電車＝AI推定＋確認 / その他＝手動） ========== */
 
-/** 「交通費（領収書なし）」開始キーワードか判定（質問文に誤反応しないよう3語一致を要求） */
+/* ---------- リッチメニュー用トリガー文言 ---------- */
+
+/**
+ * トリガー判定用の正規化。
+ * リッチメニューのボタン文言とスタッフの手入力の表記ゆれを吸収するため、
+ * 空白（半角/全角）・各種括弧・区切り記号を除去し、全角英数を半角小文字にする。
+ * 例：「交通費（領収書なし）」「交通費(領収書なし)」「 交通費 領収書なし 」→ 交通費領収書なし
+ */
+function normalizeTrigger(text: string): string {
+  return text
+    .replace(/[\s　]/g, "")
+    .replace(/[（）()［］[\]｛｝{}【】〔〕「」『』<>＜＞]/g, "")
+    .replace(/[・,、.．。!！?？:：;；'"”’＇＂/／|｜]/g, "")
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .toLowerCase()
+}
+
+/** 「電車代」系＝交通手段の選択を飛ばして電車フローに直行するトリガー */
+const TRAIN_TRIGGERS = new Set([
+  "電車代",
+  "電車",
+  "電車の交通費",
+  "電車代申請",
+  "電車代の申請",
+  "電車代を申請",
+  "電車申請",
+  "電車の交通費申請",
+  "電車交通費",
+  "電車賃",
+  "でんしゃだい",
+])
+
+/** 「交通費」系＝従来どおり交通手段の選択から開始するトリガー */
+const TRANSIT_TRIGGERS = new Set([
+  "交通費",
+  "交通費申請",
+  "交通費の申請",
+  "交通費を申請",
+  "交通費領収書なし",
+  "交通費領収書無し",
+  "領収書なし交通費",
+  "領収書なしの交通費",
+  "領収書無し交通費",
+  "こうつうひ",
+  "バス代",
+  "その他の交通費",
+])
+
+/** 「最寄り駅」系＝自宅最寄り駅の登録トリガー */
+const HOME_STATION_TRIGGERS = new Set([
+  "最寄り駅",
+  "最寄駅",
+  "駅登録",
+  "駅の登録",
+  "最寄り駅登録",
+  "最寄駅登録",
+  "最寄り駅の登録",
+  "自宅最寄り駅",
+  "もよりえき",
+])
+
+/** 「領収書」系＝写真送信の案内トリガー */
+const RECEIPT_TRIGGERS = new Set([
+  "領収書",
+  "領収書を送る",
+  "領収書送る",
+  "領収書の送り方",
+  "領収書提出",
+  "領収書を提出",
+  "レシート",
+  "りょうしゅうしょ",
+])
+
+/** 「ヘルプ」系＝操作一覧のトリガー */
+const HELP_TRIGGERS = new Set([
+  "ヘルプ",
+  "へるぷ",
+  "help",
+  "使い方",
+  "つかいかた",
+  "メニュー",
+  "menu",
+  "操作一覧",
+  "できること",
+  "コマンド",
+])
+
+/** 操作一覧（ヘルプ）の本文 */
+const HELP_TEXT =
+  "📋 使える操作の一覧\n" +
+  "─────────────\n" +
+  "🚃「電車代」\n" +
+  "　電車の交通費を申請します。\n" +
+  "　出発駅は登録済みの自宅最寄り駅を自動で使います。\n\n" +
+  "🚌「交通費」\n" +
+  "　バス・自家用車なども含む交通費（領収書なし）の申請です。\n\n" +
+  "🏠「最寄り駅」\n" +
+  "　自宅の最寄り駅を登録・変更します。\n\n" +
+  "🧾「領収書」\n" +
+  "　領収書はこのトークに写真を送るだけで登録できます。\n\n" +
+  "💬 そのほか\n" +
+  "・「受付の手順は？」→ マニュアル検索\n" +
+  "・「田中さんの連絡先」→ 名刺検索\n" +
+  "・お名前を送信 → スタッフ登録\n\n" +
+  "困ったときは「ヘルプ」と送ってください。"
+
+/** 領収書の送り方の案内文 */
+const RECEIPT_GUIDE_TEXT =
+  "🧾 領収書の送り方\n" +
+  "─────────────\n" +
+  "領収書の写真をこのトークにそのまま送ってください。\n" +
+  "内容を自動で読み取り、区分を選ぶだけで登録できます。\n\n" +
+  "※ 領収書が出ない交通費は「電車代」または「交通費」と送ってください。"
+
+/** 「電車代」系の開始キーワードか（正規化後の完全一致＝意図が明確なものだけ拾う） */
+function isTrainTransitEntry(text: string): boolean {
+  return TRAIN_TRIGGERS.has(normalizeTrigger(text))
+}
+
+/** 「ヘルプ」系の開始キーワードか */
+function isHelpEntry(text: string): boolean {
+  return HELP_TRIGGERS.has(normalizeTrigger(text))
+}
+
+/** 「領収書」系の開始キーワードか */
+function isReceiptGuideEntry(text: string): boolean {
+  return RECEIPT_TRIGGERS.has(normalizeTrigger(text))
+}
+
+/** 「交通費（領収書なし）」開始キーワードか判定（完全一致の語彙 or 質問文に誤反応しない3語一致） */
 function isTransitEntry(text: string): boolean {
+  if (TRANSIT_TRIGGERS.has(normalizeTrigger(text))) return true
   const t = text.replace(/[\s　]/g, "")
   return t.includes("交通費") && t.includes("領収書") && (t.includes("なし") || t.includes("無"))
 }
@@ -928,7 +1058,7 @@ async function sendTransitExpired(replyToken: string, userId: string): Promise<v
   await sendLineMessage(
     replyToken,
     userId,
-    "⌛ 申請の途中経過が見つかりませんでした。\n「交通費（領収書なし）」と送ると最初からやり直せます。"
+    "⌛ 申請の途中経過が見つかりませんでした。\n「電車代」または「交通費」と送ると最初からやり直せます。"
   )
 }
 
@@ -1197,6 +1327,90 @@ async function handleTransitEntry(
   await sendTransitModeChoice(replyToken, source.userId)
 }
 
+/**
+ * 「電車代」トリガー → 交通手段の選択をスキップして電車のフローを直接開始する。
+ * 自宅最寄り駅が未登録なら、その場で登録フローへ誘導し（pendingTrain）、登録完了後に自動で電車代へ戻る。
+ */
+async function startTrainTransit(
+  event: LineEvent,
+  supabase: ReturnType<typeof createServiceClient>,
+  staffMembers: { id: string; name: string; line_user_id?: string | null }[]
+): Promise<void> {
+  const { replyToken, source } = event
+  const staff = resolveStaffForUser(staffMembers, source.userId)
+  if (!staff) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "🚃 電車代（領収書なし）の申請を始めます。\nまずお名前をテキストで送って登録してください。\n例：楠葉"
+    )
+    return
+  }
+
+  const { data: cur } = await supabase
+    .from("staff_members")
+    .select("home_station, home_station_pref")
+    .eq("id", staff.id)
+    .single()
+  const s = cur as { home_station: string | null; home_station_pref: string | null } | null
+
+  // 出発駅（自宅最寄り駅）が無ければ、中断せずその場で登録フローへ
+  if (!s?.home_station) {
+    await promptHomeStationForTrain(supabase, event, staff.id)
+    return
+  }
+
+  const ok = await setTransitSession(supabase, source.userId, staff.id, "train_arrival_station", {
+    mode: "train",
+    fromStation: s.home_station,
+    fromPref: s.home_station_pref ?? "",
+  })
+  if (!ok) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ 交通費申請機能の準備が未完了です（DBの更新待ち）。管理者にご連絡ください。"
+    )
+    return
+  }
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    `🚃 電車代（領収書なし）の申請です。\n🏠 出発：${s.home_station}${s.home_station_pref ? `（${s.home_station_pref}）` : ""}\n\n` +
+      "到着駅（会場の最寄り駅）の名前をテキストで送ってください。\n例：梅田",
+    [transitCancelItem()]
+  )
+}
+
+/**
+ * 電車代の申請中に自宅最寄り駅が未登録だった場合の誘導。
+ * pendingTrain を立てた最寄り駅登録セッションを作り、登録完了後に電車代の申請へ自動復帰させる。
+ */
+async function promptHomeStationForTrain(
+  supabase: ReturnType<typeof createServiceClient>,
+  event: LineEvent,
+  staffId: string
+): Promise<void> {
+  const { replyToken, source } = event
+  const ok = await setTransitSession(supabase, source.userId, staffId, "home_input", { pendingTrain: true })
+  if (!ok) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ 登録機能の準備が未完了です（DBの更新待ち）。管理者にご連絡ください。"
+    )
+    return
+  }
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    "🏠 自宅最寄り駅がまだ登録されていません。\n" +
+      "まず自宅最寄り駅を登録します。駅名を送信してください。（例：草津駅）\n\n" +
+      "登録が終わると、そのまま電車代の申請に進みます。",
+    [homeCancelItem()]
+  )
+}
+
 /** 交通手段の選択 */
 async function handleTransitModePostback(event: LineEvent, params: URLSearchParams): Promise<void> {
   const { replyToken, source } = event
@@ -1214,15 +1428,9 @@ async function handleTransitModePostback(event: LineEvent, params: URLSearchPara
       .eq("id", session.staffMemberId)
       .single()
     const s = staff as { name: string; home_station: string | null; home_station_pref: string | null } | null
+    // 未登録でも中断せず、その場で最寄り駅の登録フローへ誘導する（登録後に電車代へ自動復帰）
     if (!s?.home_station) {
-      await clearTransitSession(supabase, source.userId)
-      await sendLineMessage(
-        replyToken,
-        source.userId,
-        "⚠️ 自宅最寄り駅が未登録のため電車代を推定できません。\n" +
-          "院長／管理者に、管理画面（/mkadmin → LINEスタッフ管理）で「自宅最寄り駅」の登録を依頼してください。\n" +
-          "登録後にもう一度「交通費（領収書なし）」と送ってください。"
-      )
+      await promptHomeStationForTrain(supabase, event, session.staffMemberId)
       return
     }
     const data: TransitData = {
@@ -1461,6 +1669,7 @@ async function handleTransitText(
 
 /** 「最寄り駅」「最寄駅」開始キーワードか */
 function isHomeStationEntry(text: string): boolean {
+  if (HOME_STATION_TRIGGERS.has(normalizeTrigger(text))) return true
   const t = text.replace(/[\s　]/g, "")
   return t.includes("最寄り駅") || t.includes("最寄駅")
 }
@@ -1515,30 +1724,33 @@ async function runHomeStationJudge(
   supabase: ReturnType<typeof createServiceClient>,
   event: LineEvent,
   staffId: string,
-  inputText: string
+  inputText: string,
+  pendingTrain = false
 ): Promise<void> {
   const { replyToken, source } = event
   const judge = await judgeStation(inputText)
   const cands = judge.candidates.slice(0, 4)
+  // 「電車代」から誘導された登録は、各ステップをまたいでも復帰フラグを保持する
+  const keep = pendingTrain ? { pendingTrain: true } : {}
 
   if (cands.length >= 2) {
-    await setTransitSession(supabase, source.userId, staffId, "home_pick", { homeStationCandidates: cands })
+    await setTransitSession(supabase, source.userId, staffId, "home_pick", { ...keep, homeStationCandidates: cands })
     await sendHomeStationCandidates(replyToken, source.userId, cands)
     return
   }
   if (judge.station && judge.pref) {
     const pick = { station: judge.station, pref: judge.pref, line: judge.line }
-    await setTransitSession(supabase, source.userId, staffId, "home_confirm", { homeStationPick: pick })
+    await setTransitSession(supabase, source.userId, staffId, "home_confirm", { ...keep, homeStationPick: pick })
     await sendHomeStationConfirm(replyToken, source.userId, pick)
     return
   }
   if (cands.length === 1) {
-    await setTransitSession(supabase, source.userId, staffId, "home_confirm", { homeStationPick: cands[0] })
+    await setTransitSession(supabase, source.userId, staffId, "home_confirm", { ...keep, homeStationPick: cands[0] })
     await sendHomeStationConfirm(replyToken, source.userId, cands[0])
     return
   }
   // 判定不能 → 県名付き再入力
-  await setTransitSession(supabase, source.userId, staffId, "home_input", {})
+  await setTransitSession(supabase, source.userId, staffId, "home_input", keep)
   await sendLineQuickReply(
     replyToken,
     source.userId,
@@ -1594,16 +1806,38 @@ async function saveHomeStation(
   event: LineEvent,
   staffId: string,
   station: string,
-  pref: string | null
+  pref: string | null,
+  pendingTrain = false
 ): Promise<void> {
   const { replyToken, source } = event
   const normalized = toStationName(station)
   const ok = await updateStaffHomeStation(supabase, staffId, normalized, pref || null)
-  await clearTransitSession(supabase, source.userId)
   if (!ok) {
+    await clearTransitSession(supabase, source.userId)
     await sendLineMessage(replyToken, source.userId, "⚠️ 登録に失敗しました。お手数ですが、もう一度お試しください。")
     return
   }
+
+  // 「電車代」から誘導された登録なら、そのまま電車代の申請（到着駅の入力）へ戻す
+  if (pendingTrain) {
+    const started = await setTransitSession(supabase, source.userId, staffId, "train_arrival_station", {
+      mode: "train",
+      fromStation: normalized,
+      fromPref: pref || "",
+    })
+    if (started) {
+      await sendLineQuickReply(
+        replyToken,
+        source.userId,
+        `✅ 自宅最寄り駅を「${normalized}（${pref || "県未設定"}）」で登録しました。\n\n` +
+          "続けて電車代の申請に進みます。\n到着駅（会場の最寄り駅）の名前をテキストで送ってください。\n例：梅田",
+        [transitCancelItem()]
+      )
+      return
+    }
+  }
+
+  await clearTransitSession(supabase, source.userId)
   await sendLineMessage(
     replyToken,
     source.userId,
@@ -1632,7 +1866,13 @@ async function handleHomeStationText(
     return
   }
   if (/^(最初から|やり直し|やりなおし|入力し直す|入力しなおす)$/.test(inputText)) {
-    await setTransitSession(supabase, source.userId, staffId, "home_input", {})
+    await setTransitSession(
+      supabase,
+      source.userId,
+      staffId,
+      "home_input",
+      session.data.pendingTrain ? { pendingTrain: true } : {}
+    )
     await sendLineQuickReply(
       replyToken,
       source.userId,
@@ -1642,7 +1882,7 @@ async function handleHomeStationText(
     return
   }
   // home_input / home_confirm / home_pick のいずれでも、テキストは駅名（再）入力として判定し直す
-  await runHomeStationJudge(supabase, event, staffId, inputText)
+  await runHomeStationJudge(supabase, event, staffId, inputText, !!session.data.pendingTrain)
 }
 
 /** 確認OK → 保存 */
@@ -1665,7 +1905,14 @@ async function handleHomeStationConfirmPostback(event: LineEvent): Promise<void>
     )
     return
   }
-  await saveHomeStation(supabase, event, session.staffMemberId, pick.station, pick.pref)
+  await saveHomeStation(
+    supabase,
+    event,
+    session.staffMemberId,
+    pick.station,
+    pick.pref,
+    !!session.data.pendingTrain
+  )
 }
 
 /** 候補選択 → 保存 */
@@ -1690,7 +1937,7 @@ async function handleHomeStationPickPostback(event: LineEvent, params: URLSearch
     )
     return
   }
-  await saveHomeStation(supabase, event, session.staffMemberId, c.station, c.pref)
+  await saveHomeStation(supabase, event, session.staffMemberId, c.station, c.pref, !!session.data.pendingTrain)
 }
 
 /** 入力し直す → 駅名入力へ戻す */
@@ -1702,7 +1949,13 @@ async function handleHomeStationFixPostback(event: LineEvent): Promise<void> {
     await sendTransitExpired(replyToken, source.userId)
     return
   }
-  await setTransitSession(supabase, source.userId, session.staffMemberId, "home_input", {})
+  await setTransitSession(
+    supabase,
+    source.userId,
+    session.staffMemberId,
+    "home_input",
+    session.data.pendingTrain ? { pendingTrain: true } : {}
+  )
   await sendLineQuickReply(
     replyToken,
     source.userId,
@@ -1969,15 +2222,33 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
     return
   }
 
-  // 0b. 領収書なし交通費の開始キーワード（例「交通費（領収書なし）」）
+  // 0b. ヘルプ（「ヘルプ」「使い方」「メニュー」など）→ 操作一覧
+  if (isHelpEntry(inputText)) {
+    await sendLineMessage(replyToken, source.userId, HELP_TEXT)
+    return
+  }
+
+  // 0c. 「電車代」系 → 交通手段の選択をスキップして電車フローに直行
+  if (isTrainTransitEntry(inputText)) {
+    await startTrainTransit(event, supabase, staffMembers)
+    return
+  }
+
+  // 0d. 領収書なし交通費の開始キーワード（例「交通費（領収書なし）」）→ 交通手段の選択から
   if (isTransitEntry(inputText)) {
     await handleTransitEntry(event, supabase, staffMembers, inputText)
     return
   }
 
-  // 0c. 自宅最寄り駅 自己登録の開始キーワード（「最寄り駅」「最寄駅」）
+  // 0e. 自宅最寄り駅 自己登録の開始キーワード（「最寄り駅」「最寄駅」「駅登録」）
   if (isHomeStationEntry(inputText)) {
     await handleHomeStationEntry(event, supabase, staffMembers)
+    return
+  }
+
+  // 0f. 「領収書」系 → 写真送信の案内
+  if (isReceiptGuideEntry(inputText)) {
+    await sendLineMessage(replyToken, source.userId, RECEIPT_GUIDE_TEXT)
     return
   }
 
@@ -2023,11 +2294,17 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
     return
   }
 
-  // d. その他 → ガイドメッセージ
+  // d. その他 → 無反応にせず、ヘルプへ誘導する短い案内
   await sendLineMessage(
     replyToken,
     source.userId,
-    "📎 領収書の写真を送るか、質問をどうぞ\n\n💡 例:\n・領収書の写真を送信 → 自動登録\n・「受付の手順は？」→ マニュアル検索\n・「田中さんの連絡先」→ 名刺検索\n・スタッフ名を送信 → 名前登録"
+    "🤔 操作として認識できませんでした。\n" +
+      "「ヘルプ」と送ると、使える操作の一覧をお送りします。\n\n" +
+      "💡 よく使う操作\n" +
+      "・「電車代」→ 電車の交通費を申請\n" +
+      "・「交通費」→ バス・車などの交通費を申請\n" +
+      "・「最寄り駅」→ 自宅最寄り駅の登録\n" +
+      "・領収書は写真をそのまま送信"
   )
 }
 

@@ -52,6 +52,8 @@ export interface TransitData {
   // 自宅最寄り駅 自己登録フロー用
   homeStationPick?: { station: string; pref: string; line?: string | null } // 一意判定の確認対象
   homeStationCandidates?: { station: string; pref: string; line?: string | null }[] // 候補選択肢
+  /** 「電車代」トリガーで開始したが最寄り駅が未登録だった場合、登録完了後に電車代申請へ自動復帰させる印 */
+  pendingTrain?: boolean
 }
 
 export interface TransitSession {
