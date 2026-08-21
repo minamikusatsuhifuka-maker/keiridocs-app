@@ -15,7 +15,7 @@ import {
   type ReceiptCandidate,
   type SiblingReceipt,
 } from "@/lib/staff-receipt-split"
-import { estimateTrainFare } from "@/lib/transit-fare"
+import { estimateTrainFare, estimateShinkansenFare } from "@/lib/transit-fare"
 import {
   getTransitSession,
   loadTransitSession,
@@ -478,6 +478,15 @@ async function handlePostback(event: LineEvent): Promise<void> {
     // 領収書なし交通費フロー
     case "trm": // 交通手段の選択（電車/その他）
       await handleTransitModePostback(event, params)
+      return
+    case "trs": // 新幹線の利用有無
+      await handleShinkansenUsePostback(event, params)
+      return
+    case "trsk": // 新幹線駅の候補選択
+      await handleShinkansenPickPostback(event, params)
+      return
+    case "trskfix": // 新幹線駅の入力し直し
+      await handleShinkansenFixPostback(event)
       return
     case "trp": // 到着駅の県の選択
       await handleTransitPrefPostback(event, params)
@@ -1212,12 +1221,220 @@ async function askArrivalPref(replyToken: string, userId: string): Promise<void>
   )
 }
 
-/** 片道/往復の選択を送る（電車代は基本往復のため、往復を既定＝先頭・推奨にする） */
-async function askTrip(replyToken: string, userId: string): Promise<void> {
+/* ---------- 新幹線の利用（電車フローの拡張。区間を①自宅→乗車駅／②新幹線／③降車駅→会場に3分割して算定） ---------- */
+
+/** 駅名が同一か（「○○駅」表記に正規化して比較。①③が0円になるケースの判定） */
+function isSameStation(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false
+  return toStationName(a.trim()) === toStationName(b.trim())
+}
+
+/** 新幹線の利用有無を尋ねる */
+async function askShinkansen(replyToken: string, userId: string): Promise<void> {
   await sendLineQuickReply(
     replyToken,
     userId,
-    "片道／往復を選んでください。\n通常は往復です（往復＝片道×2）。片道のみの場合だけ「片道」を選んでください。",
+    "🚄 新幹線を利用しましたか？\n（利用した場合は、新幹線の区間を分けて計算します）",
+    [
+      { type: "postback", label: "🚄 新幹線を利用した", data: "action=trs&s=1", displayText: "新幹線を利用した" },
+      { type: "postback", label: "利用していない", data: "action=trs&s=0", displayText: "利用していない" },
+      transitCancelItem(),
+    ]
+  )
+}
+
+/** 新幹線の乗車駅／降車駅の入力を促す */
+async function askShinkansenStation(
+  replyToken: string,
+  userId: string,
+  which: "from" | "to",
+  prefix = ""
+): Promise<void> {
+  const text =
+    which === "from"
+      ? "🚄 新幹線に乗った駅（乗車駅）の名前をテキストで送ってください。\n例：京都駅"
+      : "🚄 新幹線を降りた駅（降車駅）の名前をテキストで送ってください。\n例：東京駅"
+  await sendLineQuickReply(replyToken, userId, prefix + text, [transitCancelItem()])
+}
+
+/** 新幹線駅の候補選択を送る */
+async function sendShinkansenCandidates(
+  replyToken: string,
+  userId: string,
+  which: "from" | "to",
+  candidates: { station: string; pref: string; line?: string | null }[]
+): Promise<void> {
+  const items: PostbackAction[] = candidates.map((c, i) => ({
+    type: "postback",
+    label: `${c.pref}の${c.station}`,
+    data: `action=trsk&n=${i}`,
+    displayText: `${c.pref}の${c.station}`,
+  }))
+  items.push({ type: "postback", label: "入力し直す", data: "action=trskfix", displayText: "入力し直す" })
+  items.push(transitCancelItem())
+  await sendLineQuickReply(
+    replyToken,
+    userId,
+    `🚉 ${which === "from" ? "乗車駅" : "降車駅"}の候補が複数あります。該当するものを選んでください。\n` +
+      "（無ければ「入力し直す」で県名を付けて再送信してください）",
+    items
+  )
+}
+
+/** 新幹線駅を確定し、次のステップへ進める */
+async function applyShinkansenStation(
+  supabase: ReturnType<typeof createServiceClient>,
+  event: LineEvent,
+  staffId: string,
+  data: TransitData,
+  which: "from" | "to",
+  pick: { station: string; pref: string }
+): Promise<void> {
+  const { replyToken, source } = event
+  if (which === "from") {
+    const next: TransitData = {
+      ...data,
+      skFromStation: pick.station,
+      skFromPref: pick.pref,
+      skCandidates: undefined,
+    }
+    await setTransitSession(supabase, source.userId, staffId, "train_sk_to", next)
+    await askShinkansenStation(
+      replyToken,
+      source.userId,
+      "to",
+      `🚄 乗車駅：${pick.station}（${pick.pref}）\n\n`
+    )
+    return
+  }
+  const next: TransitData = {
+    ...data,
+    skToStation: pick.station,
+    skToPref: pick.pref,
+    skCandidates: undefined,
+  }
+  await setTransitSession(supabase, source.userId, staffId, "train_trip", next)
+  await askTrip(replyToken, source.userId, `🚄 降車駅：${pick.station}（${pick.pref}）\n\n`)
+}
+
+/** 新幹線駅のテキストを既存の駅判定で解決する（曖昧なら候補提示／県名付き再入力へ） */
+async function runShinkansenStationJudge(
+  supabase: ReturnType<typeof createServiceClient>,
+  event: LineEvent,
+  staffId: string,
+  data: TransitData,
+  which: "from" | "to",
+  inputText: string
+): Promise<void> {
+  const { replyToken, source } = event
+  const judge = await judgeStation(inputText)
+  const cands = judge.candidates.slice(0, 4)
+
+  if (cands.length >= 2) {
+    const pickStep = which === "from" ? "train_sk_from_pick" : "train_sk_to_pick"
+    await setTransitSession(supabase, source.userId, staffId, pickStep, { ...data, skCandidates: cands })
+    await sendShinkansenCandidates(replyToken, source.userId, which, cands)
+    return
+  }
+
+  const pick =
+    judge.station && judge.pref
+      ? { station: judge.station, pref: judge.pref }
+      : cands.length === 1
+        ? { station: cands[0].station, pref: cands[0].pref }
+        : null
+
+  if (!pick) {
+    const inputStep = which === "from" ? "train_sk_from" : "train_sk_to"
+    await setTransitSession(supabase, source.userId, staffId, inputStep, data)
+    await sendLineQuickReply(
+      replyToken,
+      source.userId,
+      "🚉 駅を特定できませんでした。県名を付けてもう一度送信してください。\n例：京都府 京都駅",
+      [transitCancelItem()]
+    )
+    return
+  }
+
+  await applyShinkansenStation(supabase, event, staffId, data, which, pick)
+}
+
+/** 新幹線の利用有無の選択 */
+async function handleShinkansenUsePostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getTransitSession(supabase, source.userId)
+  if (!session?.staffMemberId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  const use = params.get("s") === "1"
+  const data: TransitData = { ...session.data, useShinkansen: use }
+  if (use) {
+    await setTransitSession(supabase, source.userId, session.staffMemberId, "train_sk_from", data)
+    await askShinkansenStation(replyToken, source.userId, "from")
+    return
+  }
+  await setTransitSession(supabase, source.userId, session.staffMemberId, "train_trip", data)
+  await askTrip(replyToken, source.userId)
+}
+
+/** 新幹線駅の候補選択 */
+async function handleShinkansenPickPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getTransitSession(supabase, source.userId)
+  if (!session?.staffMemberId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  const which =
+    session.step === "train_sk_from_pick" ? "from" : session.step === "train_sk_to_pick" ? "to" : null
+  if (!which) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  const n = Number(params.get("n"))
+  const c = Number.isInteger(n) ? session.data.skCandidates?.[n] : undefined
+  if (!c?.station || !c?.pref) {
+    const inputStep = which === "from" ? "train_sk_from" : "train_sk_to"
+    await setTransitSession(supabase, source.userId, session.staffMemberId, inputStep, session.data)
+    await askShinkansenStation(replyToken, source.userId, which, "⚠️ 選択を認識できませんでした。\n\n")
+    return
+  }
+  await applyShinkansenStation(supabase, event, session.staffMemberId, session.data, which, {
+    station: c.station,
+    pref: c.pref,
+  })
+}
+
+/** 新幹線駅の入力し直し */
+async function handleShinkansenFixPostback(event: LineEvent): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getTransitSession(supabase, source.userId)
+  if (!session?.staffMemberId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  const which = session.step === "train_sk_to_pick" || session.step === "train_sk_to" ? "to" : "from"
+  const inputStep = which === "from" ? "train_sk_from" : "train_sk_to"
+  await setTransitSession(supabase, source.userId, session.staffMemberId, inputStep, session.data)
+  await askShinkansenStation(
+    replyToken,
+    source.userId,
+    which,
+    "同名駅がある場合は県名を付けてください（例：京都府 京都駅）。\n\n"
+  )
+}
+
+/** 片道/往復の選択を送る（電車代は基本往復のため、往復を既定＝先頭・推奨にする） */
+async function askTrip(replyToken: string, userId: string, prefix = ""): Promise<void> {
+  await sendLineQuickReply(
+    replyToken,
+    userId,
+    prefix +
+      "片道／往復を選んでください。\n通常は往復です（往復＝片道×2）。片道のみの場合だけ「片道」を選んでください。",
     [
       { type: "postback", label: "往復（おすすめ）", data: "action=trt&t=round", displayText: "往復" },
       { type: "postback", label: "片道", data: "action=trt&t=one", displayText: "片道" },
@@ -1265,6 +1482,13 @@ async function runTrainEstimate(
   data: TransitData
 ): Promise<void> {
   const { replyToken, source } = event
+
+  // 新幹線を利用した場合は3区間に分けて算定する
+  if (data.useShinkansen) {
+    await runShinkansenEstimate(supabase, event, staffId, data)
+    return
+  }
+
   const est = await estimateTrainFare({
     fromStation: data.fromStation || "",
     fromPref: data.fromPref || "",
@@ -1302,6 +1526,128 @@ async function runTrainEstimate(
     `🚃 電車代は ¥${formatAmount(total)}（${tripLabel}・AI推定）と推定しました。\n` +
       `（${data.fromStation} → ${data.toStation}）\n\n` +
       "よろしければ「OK」を押してください。\n違う場合は正しい金額を円で送ってください（例：1480）。",
+    [
+      { type: "postback", label: "✅ OK", data: "action=trok", displayText: "✅ OK" },
+      transitCancelItem(),
+    ]
+  )
+}
+
+/** 内訳1行の金額表示（推定できなかった区間は空欄扱い、同一駅は0円と明示） */
+function formatLegAmount(value: number | null | undefined, sameStation: boolean): string {
+  if (value == null) return "（推定できず）"
+  if (sameStation && value === 0) return "¥0（同じ駅）"
+  return `¥${formatAmount(value)}`
+}
+
+/**
+ * 新幹線利用時の推定（片道を①②③に分けて算定し、往復なら全体を2倍する）。
+ *
+ * ① 自宅最寄り駅 → 新幹線乗車駅：在来線の普通運賃（既存の推定を再利用。同一駅なら0円）
+ * ② 新幹線乗車駅 → 新幹線降車駅：運賃＋普通車指定席の特急料金
+ * ③ 新幹線降車駅 → 会場最寄り駅：在来線の普通運賃（同一駅なら0円）
+ *
+ * 推定はあくまで提案値。指定席特急料金は時期・列車で変動するため、
+ * 最終額はスタッフが内訳を確認・修正した後の値になる。
+ * 1区間でも推定できなければ合計は出さず、その区間を空欄にして手動入力にフォールバックする
+ * （全体が失敗して申請できなくなることを避ける）。
+ */
+async function runShinkansenEstimate(
+  supabase: ReturnType<typeof createServiceClient>,
+  event: LineEvent,
+  staffId: string,
+  data: TransitData
+): Promise<void> {
+  const { replyToken, source } = event
+  const home = data.fromStation || ""
+  const skFrom = data.skFromStation || ""
+  const skTo = data.skToStation || ""
+  const dest = data.toStation || ""
+  const sameHead = isSameStation(home, skFrom)
+  const sameTail = isSameStation(skTo, dest)
+
+  // 3区間を並列で推定（confidence が low の区間は採用せず手動入力に回す）
+  const [legLocalFrom, legShinkansen, legLocalTo] = await Promise.all([
+    sameHead
+      ? Promise.resolve<number | null>(0)
+      : estimateTrainFare({
+          fromStation: home,
+          fromPref: data.fromPref || "",
+          toStation: skFrom,
+          toPref: data.skFromPref || "",
+        }).then((r) => (r.fare != null && r.confidence === "high" ? r.fare : null)),
+    estimateShinkansenFare({
+      fromStation: skFrom,
+      fromPref: data.skFromPref || "",
+      toStation: skTo,
+      toPref: data.skToPref || "",
+    }).then((r) => (r.fare != null && r.confidence === "high" ? r.fare : null)),
+    sameTail
+      ? Promise.resolve<number | null>(0)
+      : estimateTrainFare({
+          fromStation: skTo,
+          fromPref: data.skToPref || "",
+          toStation: dest,
+          toPref: data.toPref || "",
+        }).then((r) => (r.fare != null && r.confidence === "high" ? r.fare : null)),
+  ])
+
+  const tripLabel = data.trip === "round" ? "往復" : "片道"
+  // 見出しは推定できたときだけ「AI推定」と書く（失敗時に推定済みと誤解させない）
+  const rows =
+    "─────────────\n" +
+    `① ${home} → ${skFrom}　${formatLegAmount(legLocalFrom, sameHead)}\n` +
+    `② ${skFrom} → ${skTo}（新幹線・普通車指定席）　${formatLegAmount(legShinkansen, false)}\n` +
+    `③ ${skTo} → ${dest}　${formatLegAmount(legLocalTo, sameTail)}\n` +
+    "─────────────\n"
+  const breakdown = `🚃 交通費（${tripLabel}・AI推定）\n` + rows
+
+  const legs = { legLocalFrom, legShinkansen, legLocalTo }
+
+  // 推定できない区間があれば合計を出さず、手動入力で確定してもらう
+  if (legLocalFrom == null || legShinkansen == null || legLocalTo == null) {
+    const newData: TransitData = {
+      ...data,
+      ...legs,
+      estimateMethod: "manual",
+      oneWayFare: null,
+      estimatedTotal: null,
+      amount: undefined,
+    }
+    await setTransitSession(supabase, source.userId, staffId, "train_confirm", newData)
+    await sendLineQuickReply(
+      replyToken,
+      source.userId,
+      `🚃 交通費（${tripLabel}）の内訳\n` +
+        rows +
+        "🤖 一部の区間を自動で推定できませんでした。\n" +
+        `実際に支払った金額（${tripLabel}ならその合計）を円で送ってください。\n例：29180`,
+      [transitCancelItem()]
+    )
+    return
+  }
+
+  const oneWay = legLocalFrom + legShinkansen + legLocalTo
+  const total = data.trip === "round" ? oneWay * 2 : oneWay
+  const newData: TransitData = {
+    ...data,
+    ...legs,
+    estimateMethod: "ai",
+    oneWayFare: oneWay,
+    estimatedTotal: total,
+    amount: total,
+  }
+  await setTransitSession(supabase, source.userId, staffId, "train_confirm", newData)
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    breakdown +
+      (data.trip === "round"
+        ? `片道合計 ¥${formatAmount(oneWay)} / 往復 ¥${formatAmount(total)}\n\n`
+        : `合計 ¥${formatAmount(total)}\n\n`) +
+      "よろしければ「OK」を押してください。\n" +
+      `違う場合は正しい金額（${tripLabel}の合計）を円で送ってください。\n` +
+      "※ 指定席特急料金は時期・列車により変動します。実額と違う場合は金額を送って上書きしてください。",
     [
       { type: "postback", label: "✅ OK", data: "action=trok", displayText: "✅ OK" },
       transitCancelItem(),
@@ -1360,7 +1706,12 @@ async function doTransitFinalize(
   if (data.mode === "train") {
     const tripLabel = data.trip === "round" ? "往復" : "片道"
     const method = data.estimateMethod === "ai" ? "AI推定" : "手動"
-    storeName = `電車：${data.fromStation}→${data.toStation}（${tripLabel}・${method}）`
+    // 新幹線利用時は経由（乗車駅→降車駅）も摘要に入れ、税理士提出リスト・会計士CSVで内容が読めるようにする
+    const useSk = !!data.useShinkansen && !!data.skFromStation && !!data.skToStation
+    const route = useSk
+      ? `${data.fromStation}→${data.skFromStation}→${data.skToStation}→${data.toStation}`
+      : `${data.fromStation}→${data.toStation}`
+    storeName = `電車：${route}（${useSk ? "新幹線指定席・" : ""}${tripLabel}・${method}）`
     meta = {
       source: "line_transit",
       transit_mode: "train",
@@ -1372,6 +1723,19 @@ async function doTransitFinalize(
       to_pref: data.toPref,
       one_way_fare: data.oneWayFare ?? null,
       estimated_total: data.estimatedTotal ?? null,
+      shinkansen: useSk,
+      sk_from_station: data.skFromStation ?? null,
+      sk_from_pref: data.skFromPref ?? null,
+      sk_to_station: data.skToStation ?? null,
+      sk_to_pref: data.skToPref ?? null,
+      // 片道の内訳（①自宅→乗車駅 ②新幹線 ③降車駅→会場）。推定できなかった区間は null
+      legs: useSk
+        ? {
+            local_from: data.legLocalFrom ?? null,
+            shinkansen: data.legShinkansen ?? null,
+            local_to: data.legLocalTo ?? null,
+          }
+        : null,
     }
   } else {
     const purpose = data.otherPurpose?.trim()
@@ -1627,8 +1991,8 @@ async function handleTransitPrefPostback(event: LineEvent, params: URLSearchPara
   }
   const pref = params.get("p") || ""
   const data: TransitData = { ...session.data, toPref: pref }
-  await setTransitSession(supabase, source.userId, session.staffMemberId, "train_trip", data)
-  await askTrip(replyToken, source.userId)
+  await setTransitSession(supabase, source.userId, session.staffMemberId, "train_shinkansen", data)
+  await askShinkansen(replyToken, source.userId)
 }
 
 /** 片道/往復の選択 */
@@ -1732,8 +2096,22 @@ async function handleTransitText(
     case "train_arrival_pref": {
       // 一覧に無い県はテキストで受け付ける
       const data: TransitData = { ...session.data, toPref: inputText.trim() }
-      await setTransitSession(supabase, source.userId, staffId, "train_trip", data)
-      await askTrip(replyToken, source.userId)
+      await setTransitSession(supabase, source.userId, staffId, "train_shinkansen", data)
+      await askShinkansen(replyToken, source.userId)
+      return
+    }
+    case "train_shinkansen": {
+      await askShinkansen(replyToken, source.userId) // ボタンで選んでもらう
+      return
+    }
+    case "train_sk_from":
+    case "train_sk_from_pick": {
+      await runShinkansenStationJudge(supabase, event, staffId, session.data, "from", inputText)
+      return
+    }
+    case "train_sk_to":
+    case "train_sk_to_pick": {
+      await runShinkansenStationJudge(supabase, event, staffId, session.data, "to", inputText)
       return
     }
     case "train_trip": {

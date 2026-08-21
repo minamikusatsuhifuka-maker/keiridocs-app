@@ -20,6 +20,11 @@ export type TransitStep =
   | "mode" // 交通手段の選択待ち（電車/その他）
   | "train_arrival_station" // 到着駅名の入力待ち（テキスト）
   | "train_arrival_pref" // 到着駅の県の選択待ち（QuickReply or テキスト）
+  | "train_shinkansen" // 新幹線の利用有無の選択待ち
+  | "train_sk_from" // 新幹線の乗車駅の入力待ち（テキスト）
+  | "train_sk_from_pick" // 新幹線の乗車駅の候補選択待ち
+  | "train_sk_to" // 新幹線の降車駅の入力待ち（テキスト）
+  | "train_sk_to_pick" // 新幹線の降車駅の候補選択待ち
   | "train_trip" // 片道/往復の選択待ち
   | "train_date" // 利用日の入力待ち（今日 or 日付）
   | "train_confirm" // 推定額の確認待ち（OK or 金額入力で上書き）
@@ -44,6 +49,20 @@ export interface TransitData {
   oneWayFare?: number | null
   estimatedTotal?: number | null
   estimateMethod?: "ai" | "manual"
+  // 新幹線利用時（電車モードの拡張）。区間を ①自宅→乗車駅 ②新幹線 ③降車駅→会場 の3つに分けて算定する
+  useShinkansen?: boolean
+  skFromStation?: string // 新幹線の乗車駅
+  skFromPref?: string
+  skToStation?: string // 新幹線の降車駅
+  skToPref?: string
+  /** 新幹線駅の候補選択肢（train_sk_from_pick / train_sk_to_pick で使用） */
+  skCandidates?: { station: string; pref: string; line?: string | null }[]
+  /** ① 自宅最寄り駅→新幹線乗車駅の片道普通運賃（同一駅なら0／推定不能なら null） */
+  legLocalFrom?: number | null
+  /** ② 新幹線区間の片道（運賃＋普通車指定席特急料金／推定不能なら null） */
+  legShinkansen?: number | null
+  /** ③ 新幹線降車駅→会場最寄り駅の片道普通運賃（同一駅なら0／推定不能なら null） */
+  legLocalTo?: number | null
   // その他
   otherPurpose?: string
   // 共通
