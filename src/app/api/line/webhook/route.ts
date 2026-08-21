@@ -383,6 +383,21 @@ export async function POST(request: NextRequest) {
 }
 
 /** スタッフ一覧からスタッフ名を部分一致検索 */
+/** LINEの振り分けで使うスタッフ行（staff_members の必要最小限） */
+type StaffRow = { id: string; name: string; line_user_id?: string | null }
+
+/** スタッフ一覧を取得する（取得できなければ null） */
+async function fetchStaffMembers(
+  supabase: ReturnType<typeof createServiceClient>
+): Promise<StaffRow[] | null> {
+  const { data, error } = await supabase.from("staff_members").select("id, name, line_user_id")
+  if (error || !data) {
+    console.error("staff_members取得エラー:", error)
+    return null
+  }
+  return data as StaffRow[]
+}
+
 function findStaffByName(
   staffMembers: { id: string; name: string; line_user_id?: string | null }[],
   searchName: string
@@ -435,6 +450,17 @@ async function handlePostback(event: LineEvent): Promise<void> {
   const action = params.get("action")
 
   switch (action) {
+    // 申請メニュー
+    case "apm": // 申請項目の選択
+      await handleApplicationMenuPostback(event, params)
+      return
+    case "apx": // メニューを閉じる
+      await sendLineMessage(
+        event.replyToken,
+        event.source.userId,
+        "メニューを閉じました。\n「申請」と送るといつでも表示できます。"
+      )
+      return
     case "t1":
       await handleTier1Postback(event, params)
       return
@@ -480,6 +506,24 @@ async function handlePostback(event: LineEvent): Promise<void> {
       await handleHomeStationCancelPostback(event)
       return
   }
+}
+
+/** 申請メニューで選ばれた項目の開始処理へ振り分ける */
+async function handleApplicationMenuPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const key = params.get("k")
+  const item = APPLICATION_MENU.find((m) => m.key === key)
+  if (!item) {
+    await sendApplicationMenu(replyToken, source.userId)
+    return
+  }
+  const supabase = createServiceClient()
+  const staffMembers = await fetchStaffMembers(supabase)
+  if (!staffMembers) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ システムエラーが発生しました。管理者にご連絡ください。")
+    return
+  }
+  await item.start(event, supabase, staffMembers)
 }
 
 /**
@@ -893,94 +937,146 @@ function normalizeTrigger(text: string): string {
     .toLowerCase()
 }
 
-/** 「電車代」系＝交通手段の選択を飛ばして電車フローに直行するトリガー */
-const TRAIN_TRIGGERS = new Set([
-  "電車代",
-  "電車",
-  "電車の交通費",
-  "電車代申請",
-  "電車代の申請",
-  "電車代を申請",
-  "電車申請",
-  "電車の交通費申請",
-  "電車交通費",
-  "電車賃",
-  "でんしゃだい",
-])
+/* ---------- 申請メニューの項目定義（ここに1件追加すればメニューにもトリガーにも反映される） ---------- */
 
-/** 「交通費」系＝従来どおり交通手段の選択から開始するトリガー */
-const TRANSIT_TRIGGERS = new Set([
-  "交通費",
-  "交通費申請",
-  "交通費の申請",
-  "交通費を申請",
-  "交通費領収書なし",
-  "交通費領収書無し",
-  "領収書なし交通費",
-  "領収書なしの交通費",
-  "領収書無し交通費",
-  "こうつうひ",
-  "バス代",
-  "その他の交通費",
-])
+/**
+ * 申請メニューの1項目。
+ *
+ * 【項目を増やす手順】
+ *  1. この下の APPLICATION_MENU に要素を1つ追加する（key は postback データに載るので変更禁止・重複禁止）
+ *  2. start に、その申請の開始処理（既存フローの起動関数）を書く
+ * → 申請メニューのQuick Reply・テキストのトリガー判定・postbackの振り分けの3つすべてに自動で反映される。
+ */
+interface ApplicationMenuItem {
+  /** postback の識別子（英数字。既存の値は変更しない） */
+  key: string
+  /** Quick Reply のボタン文言（LINE仕様で20文字以内） */
+  label: string
+  /** テキストで直接開始できるトリガー文言（正規化後の完全一致で判定） */
+  triggers: string[]
+  /** 選択・トリガー時の開始処理 */
+  start: (
+    event: LineEvent,
+    supabase: ReturnType<typeof createServiceClient>,
+    staffMembers: StaffRow[]
+  ) => Promise<void>
+}
 
-/** 「最寄り駅」系＝自宅最寄り駅の登録トリガー */
-const HOME_STATION_TRIGGERS = new Set([
-  "最寄り駅",
-  "最寄駅",
-  "駅登録",
-  "駅の登録",
-  "最寄り駅登録",
-  "最寄駅登録",
-  "最寄り駅の登録",
-  "自宅最寄り駅",
-  "もよりえき",
-])
+/** 申請メニューに並べる項目（Quick Reply は最大13個。キャンセルの1枠を除き12件まで） */
+const APPLICATION_MENU: ApplicationMenuItem[] = [
+  {
+    key: "train",
+    label: "🚃 電車代（領収書なし）",
+    triggers: [
+      "電車代",
+      "電車",
+      "電車の交通費",
+      "電車代申請",
+      "電車代の申請",
+      "電車代を申請",
+      "電車申請",
+      "電車の交通費申請",
+      "電車交通費",
+      "電車賃",
+      "でんしゃだい",
+    ],
+    start: (event, supabase, staffMembers) => startTrainTransit(event, supabase, staffMembers),
+  },
+  {
+    key: "other",
+    label: "🚌 交通費（バス・車など）",
+    triggers: [
+      "交通費その他",
+      "その他の交通費",
+      "バス代",
+      "バス代申請",
+      "ガソリン代",
+      "駐車場代",
+    ],
+    start: (event, supabase, staffMembers) => startOtherTransit(event, supabase, staffMembers),
+  },
+  {
+    key: "transit",
+    label: "🚏 交通費（手段を選ぶ）",
+    triggers: [
+      "交通費",
+      "交通費申請",
+      "交通費の申請",
+      "交通費を申請",
+      "交通費領収書なし",
+      "交通費領収書無し",
+      "領収書なし交通費",
+      "領収書なしの交通費",
+      "領収書無し交通費",
+      "こうつうひ",
+    ],
+    start: (event, supabase, staffMembers) => handleTransitEntry(event, supabase, staffMembers),
+  },
+  {
+    key: "receipt",
+    label: "🧾 領収書を送る",
+    triggers: [
+      "領収書",
+      "領収書を送る",
+      "領収書送る",
+      "領収書の送り方",
+      "領収書提出",
+      "領収書を提出",
+      "レシート",
+      "りょうしゅうしょ",
+    ],
+    start: async (event) => {
+      await sendLineMessage(event.replyToken, event.source.userId, RECEIPT_GUIDE_TEXT)
+    },
+  },
+  {
+    key: "station",
+    label: "🏠 自宅最寄り駅の登録",
+    triggers: [
+      "最寄り駅",
+      "最寄駅",
+      "駅登録",
+      "駅の登録",
+      "最寄り駅登録",
+      "最寄駅登録",
+      "最寄り駅の登録",
+      "自宅最寄り駅",
+      "もよりえき",
+    ],
+    start: (event, supabase, staffMembers) => handleHomeStationEntry(event, supabase, staffMembers),
+  },
+]
 
-/** 「領収書」系＝写真送信の案内トリガー */
-const RECEIPT_TRIGGERS = new Set([
-  "領収書",
-  "領収書を送る",
-  "領収書送る",
-  "領収書の送り方",
-  "領収書提出",
-  "領収書を提出",
-  "レシート",
-  "りょうしゅうしょ",
-])
+/** 正規化済みトリガー → 申請メニュー項目の索引（起動時に1度だけ構築） */
+const MENU_TRIGGER_INDEX: Map<string, ApplicationMenuItem> = (() => {
+  const index = new Map<string, ApplicationMenuItem>()
+  for (const item of APPLICATION_MENU) {
+    for (const t of item.triggers) {
+      const key = normalizeTrigger(t)
+      // 先に定義された項目を優先（例：「電車の交通費」は電車代に寄せる）
+      if (!index.has(key)) index.set(key, item)
+    }
+  }
+  return index
+})()
 
-/** 「ヘルプ」系＝操作一覧のトリガー */
-const HELP_TRIGGERS = new Set([
+/** 「申請」系＝申請メニュー（Quick Reply）を表示するトリガー */
+const APPLICATION_MENU_TRIGGERS = new Set([
+  "申請",
+  "申請したい",
+  "申請メニュー",
+  "しんせい",
+  "メニュー",
+  "menu",
   "ヘルプ",
   "へるぷ",
   "help",
   "使い方",
   "つかいかた",
-  "メニュー",
-  "menu",
   "操作一覧",
   "できること",
   "コマンド",
 ])
-
-/** 操作一覧（ヘルプ）の本文 */
-const HELP_TEXT =
-  "📋 使える操作の一覧\n" +
-  "─────────────\n" +
-  "🚃「電車代」\n" +
-  "　電車の交通費を申請します。\n" +
-  "　出発駅は登録済みの自宅最寄り駅を自動で使います。\n\n" +
-  "🚌「交通費」\n" +
-  "　バス・自家用車なども含む交通費（領収書なし）の申請です。\n\n" +
-  "🏠「最寄り駅」\n" +
-  "　自宅の最寄り駅を登録・変更します。\n\n" +
-  "🧾「領収書」\n" +
-  "　領収書はこのトークに写真を送るだけで登録できます。\n\n" +
-  "💬 そのほか\n" +
-  "・「受付の手順は？」→ マニュアル検索\n" +
-  "・「田中さんの連絡先」→ 名刺検索\n" +
-  "・お名前を送信 → スタッフ登録\n\n" +
-  "困ったときは「ヘルプ」と送ってください。"
 
 /** 領収書の送り方の案内文 */
 const RECEIPT_GUIDE_TEXT =
@@ -988,26 +1084,40 @@ const RECEIPT_GUIDE_TEXT =
   "─────────────\n" +
   "領収書の写真をこのトークにそのまま送ってください。\n" +
   "内容を自動で読み取り、区分を選ぶだけで登録できます。\n\n" +
-  "※ 領収書が出ない交通費は「電車代」または「交通費」と送ってください。"
+  "※ 領収書が出ない交通費は「電車代」または「交通費」と送ってください。\n" +
+  "※ PDFファイルはLINEでは受け付けていません。経理担当にお渡しください。"
 
-/** 「電車代」系の開始キーワードか（正規化後の完全一致＝意図が明確なものだけ拾う） */
-function isTrainTransitEntry(text: string): boolean {
-  return TRAIN_TRIGGERS.has(normalizeTrigger(text))
+/** 「申請」系の開始キーワードか */
+function isApplicationMenuEntry(text: string): boolean {
+  return APPLICATION_MENU_TRIGGERS.has(normalizeTrigger(text))
 }
 
-/** 「ヘルプ」系の開始キーワードか */
-function isHelpEntry(text: string): boolean {
-  return HELP_TRIGGERS.has(normalizeTrigger(text))
+/** テキストに対応する申請メニュー項目（無ければ null） */
+function findMenuItemByText(text: string): ApplicationMenuItem | null {
+  return MENU_TRIGGER_INDEX.get(normalizeTrigger(text)) ?? null
 }
 
-/** 「領収書」系の開始キーワードか */
-function isReceiptGuideEntry(text: string): boolean {
-  return RECEIPT_TRIGGERS.has(normalizeTrigger(text))
+/** 申請メニュー（Quick Reply）を送る */
+async function sendApplicationMenu(replyToken: string, userId: string): Promise<void> {
+  const items: PostbackAction[] = APPLICATION_MENU.map((m) => ({
+    type: "postback",
+    label: m.label,
+    data: `action=apm&k=${encodeURIComponent(m.key)}`,
+    displayText: m.label,
+  }))
+  items.push({ type: "postback", label: "✖ 閉じる", data: "action=apx", displayText: "✖ 閉じる" })
+  await sendLineQuickReply(
+    replyToken,
+    userId,
+    "📋 申請メニュー\n下のボタンから選んでください。\n\n" +
+      "💬 マニュアル検索（例「受付の手順は？」）や名刺検索（例「田中さんの連絡先」）は、そのまま質問を送ってください。",
+    items
+  )
 }
 
 /** 「交通費（領収書なし）」開始キーワードか判定（完全一致の語彙 or 質問文に誤反応しない3語一致） */
 function isTransitEntry(text: string): boolean {
-  if (TRANSIT_TRIGGERS.has(normalizeTrigger(text))) return true
+  if (findMenuItemByText(text)?.key === "transit") return true
   const t = text.replace(/[\s　]/g, "")
   return t.includes("交通費") && t.includes("領収書") && (t.includes("なし") || t.includes("無"))
 }
@@ -1058,7 +1168,7 @@ async function sendTransitExpired(replyToken: string, userId: string): Promise<v
   await sendLineMessage(
     replyToken,
     userId,
-    "⌛ 申請の途中経過が見つかりませんでした。\n「電車代」または「交通費」と送ると最初からやり直せます。"
+    "⌛ 申請の途中経過が見つかりませんでした。\n「申請」と送ると申請メニューから最初にやり直せます。"
   )
 }
 
@@ -1302,8 +1412,7 @@ async function doTransitFinalize(
 async function handleTransitEntry(
   event: LineEvent,
   supabase: ReturnType<typeof createServiceClient>,
-  staffMembers: { id: string; name: string; line_user_id?: string | null }[],
-  _inputText: string
+  staffMembers: StaffRow[]
 ): Promise<void> {
   const { replyToken, source } = event
   const staff = resolveStaffForUser(staffMembers, source.userId)
@@ -1327,6 +1436,46 @@ async function handleTransitEntry(
   await sendTransitModeChoice(replyToken, source.userId)
 }
 
+/** その他（バス・車など）の金額入力を促す */
+async function askOtherAmount(replyToken: string, userId: string): Promise<void> {
+  await sendLineQuickReply(
+    replyToken,
+    userId,
+    "🚌 バス・自家用車などの交通費ですね。\n金額（円）をテキストで送ってください。\n例：1200",
+    [transitCancelItem()]
+  )
+}
+
+/**
+ * 申請メニューの「交通費（バス・車など）」→ 交通手段の選択をスキップして手動金額入力から開始する。
+ */
+async function startOtherTransit(
+  event: LineEvent,
+  supabase: ReturnType<typeof createServiceClient>,
+  staffMembers: StaffRow[]
+): Promise<void> {
+  const { replyToken, source } = event
+  const staff = resolveStaffForUser(staffMembers, source.userId)
+  if (!staff) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "🚌 交通費（領収書なし）の申請を始めます。\nまずお名前をテキストで送って登録してください。\n例：楠葉"
+    )
+    return
+  }
+  const ok = await setTransitSession(supabase, source.userId, staff.id, "other_amount", { mode: "other" })
+  if (!ok) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ 交通費申請機能の準備が未完了です（DBの更新待ち）。管理者にご連絡ください。"
+    )
+    return
+  }
+  await askOtherAmount(replyToken, source.userId)
+}
+
 /**
  * 「電車代」トリガー → 交通手段の選択をスキップして電車のフローを直接開始する。
  * 自宅最寄り駅が未登録なら、その場で登録フローへ誘導し（pendingTrain）、登録完了後に自動で電車代へ戻る。
@@ -1334,7 +1483,7 @@ async function handleTransitEntry(
 async function startTrainTransit(
   event: LineEvent,
   supabase: ReturnType<typeof createServiceClient>,
-  staffMembers: { id: string; name: string; line_user_id?: string | null }[]
+  staffMembers: StaffRow[]
 ): Promise<void> {
   const { replyToken, source } = event
   const staff = resolveStaffForUser(staffMembers, source.userId)
@@ -1450,12 +1599,7 @@ async function handleTransitModePostback(event: LineEvent, params: URLSearchPara
   } else if (mode === "other") {
     const data: TransitData = { ...session.data, mode: "other" }
     await setTransitSession(supabase, source.userId, session.staffMemberId, "other_amount", data)
-    await sendLineQuickReply(
-      replyToken,
-      source.userId,
-      "🚌 バス・自家用車などの交通費ですね。\n金額（円）をテキストで送ってください。\n例：1200",
-      [transitCancelItem()]
-    )
+    await askOtherAmount(replyToken, source.userId)
   } else {
     await sendTransitModeChoice(replyToken, source.userId)
   }
@@ -1669,7 +1813,7 @@ async function handleTransitText(
 
 /** 「最寄り駅」「最寄駅」開始キーワードか */
 function isHomeStationEntry(text: string): boolean {
-  if (HOME_STATION_TRIGGERS.has(normalizeTrigger(text))) return true
+  if (findMenuItemByText(text)?.key === "station") return true
   const t = text.replace(/[\s　]/g, "")
   return t.includes("最寄り駅") || t.includes("最寄駅")
 }
@@ -1683,7 +1827,7 @@ function homeCancelItem(): PostbackAction {
 async function handleHomeStationEntry(
   event: LineEvent,
   supabase: ReturnType<typeof createServiceClient>,
-  staffMembers: { id: string; name: string; line_user_id?: string | null }[]
+  staffMembers: StaffRow[]
 ): Promise<void> {
   const { replyToken, source } = event
   const staff = resolveStaffForUser(staffMembers, source.userId)
@@ -2212,43 +2356,34 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
     return
   }
 
-  const { data: staffMembers, error: staffError } = await supabase
-    .from("staff_members")
-    .select("id, name, line_user_id")
-
-  if (staffError || !staffMembers) {
-    console.error("staff_members取得エラー:", staffError)
+  const staffMembers = await fetchStaffMembers(supabase)
+  if (!staffMembers) {
     await sendLineMessage(replyToken, source.userId, "⚠️ システムエラーが発生しました。管理者にご連絡ください。")
     return
   }
 
-  // 0b. ヘルプ（「ヘルプ」「使い方」「メニュー」など）→ 操作一覧
-  if (isHelpEntry(inputText)) {
-    await sendLineMessage(replyToken, source.userId, HELP_TEXT)
+  // 0b. 「申請」系 → 申請メニュー（Quick Reply）を表示
+  if (isApplicationMenuEntry(inputText)) {
+    await sendApplicationMenu(replyToken, source.userId)
     return
   }
 
-  // 0c. 「電車代」系 → 交通手段の選択をスキップして電車フローに直行
-  if (isTrainTransitEntry(inputText)) {
-    await startTrainTransit(event, supabase, staffMembers)
+  // 0c. 申請メニューの各項目のトリガー（電車代／交通費／領収書／最寄り駅）→ 各フローを直接開始
+  const menuItem = findMenuItemByText(inputText)
+  if (menuItem) {
+    await menuItem.start(event, supabase, staffMembers)
     return
   }
 
-  // 0d. 領収書なし交通費の開始キーワード（例「交通費（領収書なし）」）→ 交通手段の選択から
+  // 0d. 「交通費」＋「領収書」＋「なし」を含む文（従来の部分一致）→ 交通手段の選択から
   if (isTransitEntry(inputText)) {
-    await handleTransitEntry(event, supabase, staffMembers, inputText)
+    await handleTransitEntry(event, supabase, staffMembers)
     return
   }
 
-  // 0e. 自宅最寄り駅 自己登録の開始キーワード（「最寄り駅」「最寄駅」「駅登録」）
+  // 0e. 「最寄り駅」「最寄駅」を含む文（従来の部分一致）→ 自宅最寄り駅の登録
   if (isHomeStationEntry(inputText)) {
     await handleHomeStationEntry(event, supabase, staffMembers)
-    return
-  }
-
-  // 0f. 「領収書」系 → 写真送信の案内
-  if (isReceiptGuideEntry(inputText)) {
-    await sendLineMessage(replyToken, source.userId, RECEIPT_GUIDE_TEXT)
     return
   }
 
@@ -2294,17 +2429,13 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
     return
   }
 
-  // d. その他 → 無反応にせず、ヘルプへ誘導する短い案内
+  // d. その他 → 無反応にせず、申請メニューへ誘導する短い案内
   await sendLineMessage(
     replyToken,
     source.userId,
     "🤔 操作として認識できませんでした。\n" +
-      "「ヘルプ」と送ると、使える操作の一覧をお送りします。\n\n" +
-      "💡 よく使う操作\n" +
-      "・「電車代」→ 電車の交通費を申請\n" +
-      "・「交通費」→ バス・車などの交通費を申請\n" +
-      "・「最寄り駅」→ 自宅最寄り駅の登録\n" +
-      "・領収書は写真をそのまま送信"
+      "「申請」と送ると申請メニューが表示されます。\n\n" +
+      "📎 領収書はこのトークに写真を送るだけで登録できます。"
   )
 }
 
