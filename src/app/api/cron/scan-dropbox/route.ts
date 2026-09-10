@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createHash } from "crypto"
 import { listFiles, downloadFile, moveFile, getDocumentPath } from "@/lib/dropbox"
 import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
+import { createKnownVendorChecker } from "@/lib/known-vendor"
 import { analyzeDocument, analyzeDocumentFromText, applyAutoClassifyRules, resolveGeminiModel } from "@/lib/gemini"
 import type { OcrResult, AutoClassifyRule } from "@/lib/gemini"
 import type { Database } from "@/types/database"
@@ -361,7 +362,11 @@ async function processFile(
   } else {
     // 画像/PDF: Base64でGeminiに送信
     const base64Data = buffer.toString("base64")
-    ocrResult = await analyzeDocument(base64Data, mimeType, { modelId, documentTypes })
+    ocrResult = await analyzeDocument(base64Data, mimeType, {
+      modelId,
+      documentTypes,
+      isKnownVendor: createKnownVendorChecker(supabase, userId),
+    })
   }
 
   // 自動仕分けルール適用

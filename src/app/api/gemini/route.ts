@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { createKnownVendorChecker } from "@/lib/known-vendor"
 import { analyzeDocument, analyzeDocumentFromText, applyAutoClassifyRules, resolveGeminiModel } from "@/lib/gemini"
 import type { AutoClassifyRule } from "@/lib/gemini"
 import mammoth from "mammoth"
@@ -183,7 +184,11 @@ export async function POST(request: NextRequest) {
       result = await analyzeDocumentFromText(text, { modelId, documentTypes })
     } else {
       // 画像/PDF: 既存のBase64処理
-      result = await analyzeDocument(base64, mimeType as string, { modelId, documentTypes })
+      result = await analyzeDocument(base64, mimeType as string, {
+        modelId,
+        documentTypes,
+        isKnownVendor: createKnownVendorChecker(supabase, user.id),
+      })
     }
 
     // 自動仕分けルールを取得して適用（AIの判定より優先）

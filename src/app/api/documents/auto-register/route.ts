@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { createKnownVendorChecker } from "@/lib/known-vendor"
 import { createHash } from "crypto"
 import { uploadFile, getDocumentPath } from "@/lib/dropbox"
 import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
@@ -220,7 +221,11 @@ export async function POST(request: NextRequest) {
       const text = extractedText.length > 30000 ? extractedText.slice(0, 30000) : extractedText
       ocrResult = await analyzeDocumentFromText(text, { modelId, documentTypes })
     } else {
-      ocrResult = await analyzeDocument(base64Data, mimeType, { modelId, documentTypes })
+      ocrResult = await analyzeDocument(base64Data, mimeType, {
+        modelId,
+        documentTypes,
+        isKnownVendor: createKnownVendorChecker(supabase, user.id),
+      })
     }
 
     // 自動仕分けルール適用

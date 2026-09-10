@@ -172,6 +172,12 @@ interface AnalyzeOptions {
   documentTypes?: string[]
   /** 追加プロンプト指示（書類種別ごとに優先抽出項目を伝えるなど） */
   extraHint?: string
+  /**
+   * 取引先名が「過去に取引実績のある名前」かを判定する関数（任意）。
+   * 社名がロゴ画像にしか無い書類（テキストレイヤーに社名が出てこない）で
+   * 毎回警告が出るのを防ぐため、既知の取引先なら警告を出さない。
+   */
+  isKnownVendor?: (vendorName: string) => Promise<boolean>
 }
 
 /**
@@ -298,7 +304,7 @@ ${MULTI_PAYMENT_RULES}`
 
       const responseText = result.response.text()
       const parsed = parseOcrResponse(responseText)
-      const verified = verifyAgainstSourceText(parsed, pdfText)
+      const verified = await verifyAgainstSourceText(parsed, pdfText, options?.isKnownVendor)
       return { ...verified, model_used: modelId }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
@@ -322,17 +328,23 @@ ${MULTI_PAYMENT_RULES}`
 
 /**
  * 解析結果を書類の実テキストと突き合わせて検証する。
- * 取引先名が書類のどこにも見当たらない場合は警告を付け、確信度を引き下げる。
+ * 取引先名が書類のどこにも見当たらず、過去の取引実績にも無い場合は
+ * 警告を付けて確信度を引き下げる。
  * テキストレイヤーが無いPDF（スキャン画像）では検証できないため何もしない。
  */
-function verifyAgainstSourceText(
+async function verifyAgainstSourceText(
   result: OcrResult,
-  pdfText: { text: string; hasMeaningfulText: boolean } | null
-): OcrResult {
+  pdfText: { text: string; hasMeaningfulText: boolean } | null,
+  isKnownVendor?: (vendorName: string) => Promise<boolean>
+): Promise<OcrResult> {
   if (!pdfText?.hasMeaningfulText) return result
 
   const supported = isVendorSupportedByText(result.vendor_name, pdfText.text)
   if (supported !== false) return result
+
+  // 社名がロゴ画像にしか無い書類（スズケン・ZO Skin Health等の定期請求書）は
+  // テキストに社名が出てこないため、過去に取引実績があれば正しい読み取りとみなす
+  if (isKnownVendor && (await isKnownVendor(result.vendor_name))) return result
 
   return {
     ...result,
