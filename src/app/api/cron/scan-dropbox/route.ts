@@ -5,6 +5,7 @@ import { createHash } from "crypto"
 import { listFiles, downloadFile, moveFile, getDocumentPath } from "@/lib/dropbox"
 import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
 import { createKnownVendorChecker } from "@/lib/known-vendor"
+import { createVendorResolver } from "@/lib/vendor-identity"
 import { analyzeDocument, analyzeDocumentFromText, applyAutoClassifyRules, resolveGeminiModel } from "@/lib/gemini"
 import type { OcrResult, AutoClassifyRule } from "@/lib/gemini"
 import type { Database } from "@/types/database"
@@ -366,6 +367,7 @@ async function processFile(
       modelId,
       documentTypes,
       isKnownVendor: createKnownVendorChecker(supabase, userId),
+      resolveVendorByIdentifiers: createVendorResolver(supabase, userId),
     })
   }
 

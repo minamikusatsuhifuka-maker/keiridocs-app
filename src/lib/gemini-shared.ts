@@ -105,8 +105,25 @@ export interface SplitPayment {
   account_title: string | null
 }
 
+/**
+ * 発行元を特定するための補助情報。
+ * 社名が印影で隠れている・ロゴ画像でしか印字されていない等で社名を読み取れない場合に、
+ * 過去の登録実績と突き合わせて取引先を確定するために使う。
+ */
+export interface VendorIdentifiers {
+  /** 適格請求書発行事業者の登録番号（例: T9010701000537）。無ければ空文字 */
+  vendor_registration_number: string
+  /** 発行元の住所。無ければ空文字 */
+  vendor_address: string
+  /** 発行元の電話番号。無ければ空文字 */
+  vendor_phone: string
+}
+
+/** 取引先名を何によって確定したか */
+export type VendorResolvedBy = "registration_number" | "phone" | "address"
+
 /** AI解析結果の型 */
-export interface OcrResult {
+export interface OcrResult extends VendorIdentifiers {
   vendor_name: string
   amount: number | null
   issue_date: string | null
@@ -128,8 +145,20 @@ export interface OcrResult {
    * 例: 取引先名が書類のテキストに見つからない（AIの推測の可能性）。
    */
   warnings: string[]
+  /**
+   * 社名を読み取れず、補助情報（登録番号など）から過去の取引先を特定して採用した場合、
+   * その根拠。AIが読み取った社名をそのまま採用した場合は null。
+   */
+  vendor_resolved_by: VendorResolvedBy | null
 }
 
-/** 取引先名がAIの推測だった疑いがあるときの警告文 */
-export const VENDOR_UNVERIFIED_WARNING =
-  "取引先名が書類内の文字と一致しません。AIの推測の可能性があるため必ず確認してください"
+/** 取引先名を確定できず空欄にしたときの警告文 */
+export const VENDOR_UNRESOLVED_WARNING =
+  "取引先名を読み取れませんでした。書類を見て入力してください"
+
+/** 補助情報から取引先を特定したときの根拠ラベル */
+export const VENDOR_RESOLVED_LABEL: Record<VendorResolvedBy, string> = {
+  registration_number: "登録番号",
+  phone: "電話番号",
+  address: "住所",
+}

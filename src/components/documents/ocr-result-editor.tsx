@@ -15,7 +15,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { AlertTriangle, Loader2, Save, Sparkles } from "lucide-react"
-import { type OcrResult, TAX_CATEGORIES, ACCOUNT_TITLES } from "@/lib/gemini-shared"
+import { type OcrResult, TAX_CATEGORIES, ACCOUNT_TITLES, VENDOR_RESOLVED_LABEL } from "@/lib/gemini-shared"
 
 export interface DocumentFormData {
   type: string
@@ -158,6 +158,14 @@ export function OcrResultEditor({
                 placeholder="取引先名を入力"
                 {...register("vendor_name", { required: "取引先名は必須です" })}
               />
+              {/* 社名を読み取れず、登録番号などから過去の取引先を特定した場合はその根拠を示す */}
+              {ocrResult?.vendor_resolved_by && (
+                <p className="text-xs text-muted-foreground">
+                  書類の社名を読み取れなかったため、
+                  {VENDOR_RESOLVED_LABEL[ocrResult.vendor_resolved_by]}
+                  が一致する過去の取引先から補完しました
+                </p>
+              )}
               {errors.vendor_name && (
                 <p className="text-xs text-destructive">{errors.vendor_name.message}</p>
               )}

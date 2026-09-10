@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createKnownVendorChecker } from "@/lib/known-vendor"
+import { createVendorResolver } from "@/lib/vendor-identity"
 import { analyzeDocument, analyzeDocumentFromText, applyAutoClassifyRules, resolveGeminiModel } from "@/lib/gemini"
 import type { AutoClassifyRule } from "@/lib/gemini"
 import mammoth from "mammoth"
@@ -188,6 +189,7 @@ export async function POST(request: NextRequest) {
         modelId,
         documentTypes,
         isKnownVendor: createKnownVendorChecker(supabase, user.id),
+        resolveVendorByIdentifiers: createVendorResolver(supabase, user.id),
       })
     }
 

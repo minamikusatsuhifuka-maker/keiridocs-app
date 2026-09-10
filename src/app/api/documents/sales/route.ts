@@ -168,6 +168,10 @@ const EMPTY_OCR_RESULT: OcrResult = {
   items: [],
   payments: [],
   warnings: [],
+  vendor_registration_number: "",
+  vendor_address: "",
+  vendor_phone: "",
+  vendor_resolved_by: null,
 }
 
 /** 渡された任意のオブジェクトを安全にOcrResult形に整形する */
@@ -203,6 +207,13 @@ function coerceOcrResult(input: unknown): OcrResult {
     // 売上登録では分割候補は使わない（型整合のため空配列）
     payments: [],
     warnings: Array.isArray(o.warnings) ? o.warnings.filter((w): w is string => typeof w === "string") : [],
+    vendor_registration_number: typeof o.vendor_registration_number === "string" ? o.vendor_registration_number : "",
+    vendor_address: typeof o.vendor_address === "string" ? o.vendor_address : "",
+    vendor_phone: typeof o.vendor_phone === "string" ? o.vendor_phone : "",
+    vendor_resolved_by:
+      o.vendor_resolved_by === "registration_number" || o.vendor_resolved_by === "phone" || o.vendor_resolved_by === "address"
+        ? o.vendor_resolved_by
+        : null,
   }
 }
 

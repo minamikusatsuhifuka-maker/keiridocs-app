@@ -104,6 +104,25 @@ const DEFAULT_COLUMN_ORDER: ColumnId[] = [
   "payment_purpose",
 ]
 
+/**
+ * AI解析時の警告（取引先名を確定できなかった等）を取り出す。
+ * ocr_raw に保存された解析結果から読む。取引先名が空のレコードも要確認として扱う。
+ */
+function reviewWarnings(doc: Document): string[] {
+  const warnings: string[] = []
+  const raw = doc.ocr_raw
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const list = (raw as Record<string, unknown>).warnings
+    if (Array.isArray(list)) {
+      warnings.push(...list.filter((w): w is string => typeof w === "string"))
+    }
+  }
+  if (!doc.vendor_name?.trim() && warnings.length === 0) {
+    warnings.push("取引先名が未入力です")
+  }
+  return warnings
+}
+
 // カラム定義（ヘッダーラベル・ソート対象・セル描画）
 interface ColumnDef {
   id: ColumnId
@@ -478,9 +497,17 @@ export function DocumentTable({
       cellClassName: "max-w-[240px]",
       // 銀行振込が必要な請求書（要振込）だけにマークを付ける（それ以外は表示なし）。
       // onDocumentUpdate があればボタン化し、クリックでその場で振込完了にできる
-      renderCell: (doc) => (
+      renderCell: (doc) => {
+        // AIが取引先名を確定できなかったレコードは、気づけるようマークを出す
+        const warnings = reviewWarnings(doc)
+        return (
         <span className="flex items-center gap-1.5">
-          <span className="truncate">{doc.vendor_name}</span>
+          {warnings.length > 0 && (
+            <span title={`要確認：${warnings.join(" / ")}`}>
+              <AlertTriangle className="size-3.5 shrink-0 text-amber-600" aria-label="要確認" />
+            </span>
+          )}
+          <span className="truncate">{doc.vendor_name || "（取引先名なし）"}</span>
           {onDocumentUpdate ? (
             <TransferBadgeButton
               doc={doc}
@@ -491,7 +518,8 @@ export function DocumentTable({
             doc.status === "要振込" && <StatusBadge status="要振込" className="shrink-0" />
           )}
         </span>
-      ),
+        )
+      },
     },
     amount: {
       id: "amount",

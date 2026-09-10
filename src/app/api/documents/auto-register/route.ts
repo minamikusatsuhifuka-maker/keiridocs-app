@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createKnownVendorChecker } from "@/lib/known-vendor"
+import { createVendorResolver } from "@/lib/vendor-identity"
 import { createHash } from "crypto"
 import { uploadFile, getDocumentPath } from "@/lib/dropbox"
 import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
@@ -225,6 +226,7 @@ export async function POST(request: NextRequest) {
         modelId,
         documentTypes,
         isKnownVendor: createKnownVendorChecker(supabase, user.id),
+        resolveVendorByIdentifiers: createVendorResolver(supabase, user.id),
       })
     }
 

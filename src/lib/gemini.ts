@@ -8,13 +8,15 @@ import { extractPdfText, isVendorSupportedByText } from "@/lib/pdf-text"
 import {
   DEFAULT_GEMINI_MODEL,
   PAYMENT_METHODS,
-  VENDOR_UNVERIFIED_WARNING,
+  VENDOR_UNRESOLVED_WARNING,
   type BankInfo,
   type OcrItem,
   type OcrResult,
   type PaymentMethod,
   type SplitPayment,
+  type VendorIdentifiers,
 } from "@/lib/gemini-shared"
+import type { ResolvedVendor } from "@/lib/vendor-identity"
 
 export * from "@/lib/gemini-shared"
 
@@ -66,6 +68,20 @@ export const STAFF_RECEIPT_ANALYSIS_EXTRA_HINT = `
 - 1枚の領収証の中の内訳明細（品目の行）は分割しない。迷う場合は分割しない（payments は空配列）。
 `
 
+/** 発行元の補助情報のJSON項目（プロンプトのJSONテンプレートに差し込む） */
+const VENDOR_IDENTIFIER_JSON_FIELDS = `  "vendor_registration_number": "発行元の適格請求書発行事業者の登録番号（T+13桁。例: T9010701000537。無ければ空文字）",
+  "vendor_address": "発行元の住所（無ければ空文字）",
+  "vendor_phone": "発行元の電話番号（無ければ空文字）",`
+
+/** 発行元の補助情報の抽出ルール（プロンプト末尾に差し込む） */
+const VENDOR_IDENTIFIER_RULES = `【発行元の補助情報（vendor_registration_number / vendor_address / vendor_phone）】
+社名が印影で隠れている等で読めない場合でも、これらが取れていれば後から取引先を特定できる。
+社名を読めなかったときこそ、これらは必ず拾うこと。
+- いずれも「発行元（請求元・支払先）」のものを返す。宛先（御中と書かれている側＝当院）のものを返してはならない。
+- vendor_registration_number は "T" と数字13桁をそのまま返す（ハイフン・空白は入れない）。
+- vendor_phone は書類の表記のまま返してよい（例: 03-6858-0311）。FAX番号は使わない。
+- 読み取れないものは空文字 "" を返す。ここも推測してはならない。`
+
 /** 支払方法・振込先のJSON項目（プロンプトのJSONテンプレートに差し込む） */
 const PAYMENT_JSON_FIELDS = `  "payment_method": "支払方法（bank_transfer=振込が必要/auto_debit=口座振替・自動引落し/credit_card=カード払い/unknown=判別不能）",
   "bank_info": {
@@ -110,10 +126,15 @@ const MULTI_PAYMENT_RULES = `【payments（複数支払いの分割候補）の�
  * 書類から日本語が読み取れないPDF（非埋め込みCIDフォント等）で、
  * モデルが"それらしい会社名"を creative に埋めてしまう事故への歯止め。
  */
-const NO_GUESS_RULES = `【厳守・最優先】
+const NO_GUESS_RULES = `【厳守・最優先 — 推測の禁止】
 - 書類に実際に書かれている文字だけを使うこと。書類に無い会社名・人名・品目名を創作してはならない。
-- vendor_name は、書類に印字されている発行元の名称をそのまま写すこと。読み取れない場合は空文字 "" を返す。
-- 読み取れない項目は推測で埋めず、null（文字列項目は ""）を返すこと。
+- vendor_name は、書類に印字されている発行元の名称をそのまま写すこと。
+- 「それらしい値」で埋めることを禁止する。読み取れない項目は推測せず、
+  null（文字列項目は ""）を返すこと。空欄で返すほうが、間違った値を入れるより常に良い。
+- 社名の一部しか読めない場合（例: 先頭の「ア」だけ読める）、残りを推測して社名を組み立ててはならない。
+  読み切れないなら vendor_name は "" とすること。
+- 赤い社印・角印・スタンプが文字に重なっている場合は、重なった部分を推測で補完しないこと。
+  印影の下の文字が判別できるときだけ採用し、判別できなければ "" とする。
 - 文字がかすれている・文字化けしている・そもそも文字が見当たらない場合は、
   無理に補完せず confidence を 0.5 未満にすること。`
 
@@ -162,6 +183,10 @@ const FALLBACK_RESULT: OcrResult = {
   items: [],
   payments: [],
   warnings: [],
+  vendor_registration_number: "",
+  vendor_address: "",
+  vendor_phone: "",
+  vendor_resolved_by: null,
 }
 
 /** analyzeDocument のオプション */
@@ -178,6 +203,11 @@ interface AnalyzeOptions {
    * 毎回警告が出るのを防ぐため、既知の取引先なら警告を出さない。
    */
   isKnownVendor?: (vendorName: string) => Promise<boolean>
+  /**
+   * 社名を読み取れなかった場合に、補助情報（登録番号・電話番号・住所）から
+   * 過去の取引先を特定する関数（任意）。
+   */
+  resolveVendorByIdentifiers?: (identifiers: VendorIdentifiers) => Promise<ResolvedVendor | null>
 }
 
 /**
@@ -234,7 +264,8 @@ ${NO_GUESS_RULES}${sourceTextBlock}${extraHintBlock}
 必ず以下のJSON形式のみで回答してください。余計なテキストは含めないでください。
 
 {
-  "vendor_name": "取引先名（会社名・店舗名）",
+  "vendor_name": "取引先名（会社名・店舗名）。読み取れない場合は空文字",
+${VENDOR_IDENTIFIER_JSON_FIELDS}
   "amount": 金額（数値、税込。見つからない場合はnull）,
   "issue_date": "発行日（YYYY-MM-DD形式。見つからない場合はnull）",
   "due_date": "支払期日（YYYY-MM-DD形式。見つからない場合はnull）",
@@ -283,6 +314,8 @@ ${MULTI_PAYMENT_JSON_FIELD}
 - スタッフ関連（食事補助等） → 福利厚生費
 - その他 → 雑費
 
+${VENDOR_IDENTIFIER_RULES}
+
 ${PAYMENT_EXTRACTION_RULES}
 
 ${MULTI_PAYMENT_RULES}`
@@ -304,7 +337,7 @@ ${MULTI_PAYMENT_RULES}`
 
       const responseText = result.response.text()
       const parsed = parseOcrResponse(responseText)
-      const verified = await verifyAgainstSourceText(parsed, pdfText, options?.isKnownVendor)
+      const verified = await resolveVendorName(parsed, pdfText, options)
       return { ...verified, model_used: modelId }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
@@ -327,30 +360,53 @@ ${MULTI_PAYMENT_RULES}`
 }
 
 /**
- * 解析結果を書類の実テキストと突き合わせて検証する。
- * 取引先名が書類のどこにも見当たらず、過去の取引実績にも無い場合は
- * 警告を付けて確信度を引き下げる。
- * テキストレイヤーが無いPDF（スキャン画像）では検証できないため何もしない。
+ * 取引先名を確定する。
+ *
+ * AIが返した社名をそのまま信じてよいかを順に確かめ、裏づけが取れない場合は
+ * 補助情報（登録番号・電話番号・住所）から過去の取引先を特定する。
+ * それも出来なければ取引先名を空欄にし、警告を付けて人の確認に回す。
+ * 「読めない箇所を推測で埋めた社名」をそのまま登録しないことが目的。
  */
-async function verifyAgainstSourceText(
+async function resolveVendorName(
   result: OcrResult,
   pdfText: { text: string; hasMeaningfulText: boolean } | null,
-  isKnownVendor?: (vendorName: string) => Promise<boolean>
+  options?: AnalyzeOptions
 ): Promise<OcrResult> {
-  if (!pdfText?.hasMeaningfulText) return result
+  const guessed = result.vendor_name.trim()
 
-  const supported = isVendorSupportedByText(result.vendor_name, pdfText.text)
-  if (supported !== false) return result
+  if (guessed) {
+    // テキストレイヤーが無いPDF・画像は照合しようがないので、そのまま採用する
+    if (!pdfText?.hasMeaningfulText) return result
 
-  // 社名がロゴ画像にしか無い書類（スズケン・ZO Skin Health等の定期請求書）は
-  // テキストに社名が出てこないため、過去に取引実績があれば正しい読み取りとみなす
-  if (isKnownVendor && (await isKnownVendor(result.vendor_name))) return result
+    // 書類の文字として実在すれば確定
+    if (isVendorSupportedByText(guessed, pdfText.text) !== false) return result
 
+    // 社名がロゴ画像にしか無い書類（スズケン・ZO Skin Health等の定期請求書）は
+    // テキストに社名が出てこないため、過去に取引実績があれば正しい読み取りとみなす
+    if (options?.isKnownVendor && (await options.isKnownVendor(guessed))) return result
+  }
+
+  // ここに到達するのは「社名が空」または「書類の文字と一致せず取引実績も無い」場合。
+  // 社名以外の識別情報から過去の取引先を特定できないか試す。
+  if (options?.resolveVendorByIdentifiers) {
+    const resolved = await options.resolveVendorByIdentifiers(result)
+    if (resolved) {
+      return { ...result, vendor_name: resolved.vendor_name, vendor_resolved_by: resolved.resolved_by }
+    }
+  }
+
+  // 特定できなかった。推測値を登録してしまわないよう空欄にして人に確認してもらう
   return {
     ...result,
+    vendor_name: "",
     // 人が必ず確認するよう、確信度を要確認の閾値未満まで落とす
     confidence: Math.min(result.confidence, 0.5),
-    warnings: [...result.warnings, VENDOR_UNVERIFIED_WARNING],
+    warnings: [
+      ...result.warnings,
+      guessed
+        ? `${VENDOR_UNRESOLVED_WARNING}（AIの読み取り候補「${guessed}」は書類の文字と一致しないため採用していません）`
+        : VENDOR_UNRESOLVED_WARNING,
+    ],
   }
 }
 
@@ -414,10 +470,13 @@ export async function analyzeDocumentFromText(
 
   const prompt = `以下は経理書類（${typeList}など）のテキストデータです。以下の情報をJSON形式で抽出してください。
 
+${NO_GUESS_RULES}
+
 必ず以下のJSON形式のみで回答してください。余計なテキストは含めないでください。
 
 {
-  "vendor_name": "取引先名（会社名・店舗名）",
+  "vendor_name": "取引先名（会社名・店舗名）。読み取れない場合は空文字",
+${VENDOR_IDENTIFIER_JSON_FIELDS}
   "amount": 金額（数値、税込。見つからない場合はnull）,
   "issue_date": "発行日（YYYY-MM-DD形式。見つからない場合はnull）",
   "due_date": "支払期日（YYYY-MM-DD形式。見つからない場合はnull）",
@@ -465,6 +524,8 @@ ${MULTI_PAYMENT_JSON_FIELD}
 - 社会保険・損害保険 → 保険料
 - スタッフ関連（食事補助等） → 福利厚生費
 - その他 → 雑費
+
+${VENDOR_IDENTIFIER_RULES}
 
 ${PAYMENT_EXTRACTION_RULES}
 
@@ -648,6 +709,9 @@ function parseOcrResponse(responseText: string): OcrResult {
 
     const parsed = JSON.parse(cleaned) as Record<string, unknown>
 
+    /** 文字列項目を安全に取り出す（未指定・型違いは空文字） */
+    const str = (v: unknown) => (typeof v === "string" ? v.trim() : "")
+
     // 明細行をパース
     const items: OcrItem[] = []
     if (Array.isArray(parsed.items)) {
@@ -704,6 +768,10 @@ function parseOcrResponse(responseText: string): OcrResult {
       items,
       payments: payments.length >= 2 ? payments : [],
       warnings: [],
+      vendor_registration_number: str(parsed.vendor_registration_number),
+      vendor_address: str(parsed.vendor_address),
+      vendor_phone: str(parsed.vendor_phone),
+      vendor_resolved_by: null,
     }
   } catch {
     console.error("Gemini応答のJSONパースに失敗:", responseText)
