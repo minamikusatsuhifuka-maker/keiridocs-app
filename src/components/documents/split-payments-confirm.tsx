@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Loader2, Split, Trash2, FileStack, AlertTriangle } from "lucide-react"
-import { type SplitPayment, TAX_CATEGORIES, ACCOUNT_TITLES } from "@/lib/gemini"
+import { type SplitPayment, TAX_CATEGORIES, ACCOUNT_TITLES } from "@/lib/gemini-shared"
 
 /** 編集用の行データ（金額は入力しやすいよう文字列で保持） */
 interface SplitPaymentDraft {

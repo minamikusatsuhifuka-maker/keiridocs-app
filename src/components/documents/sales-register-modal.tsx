@@ -23,7 +23,7 @@ import {
   Trash2,
 } from "lucide-react"
 import { toast } from "sonner"
-import type { OcrResult } from "@/lib/gemini"
+import type { OcrResult } from "@/lib/gemini-shared"
 
 interface UploadedFile {
   base64: string

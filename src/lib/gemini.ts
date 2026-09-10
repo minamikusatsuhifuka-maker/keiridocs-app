@@ -1,41 +1,22 @@
-// Gemini API ラッパー
+// Gemini API ラッパー（サーバー専用）
+//
+// クライアントからも参照する型・選択肢・モデル定数は lib/gemini-shared.ts にある。
+// このファイルはNode専用処理（PDFテキスト抽出など）を含むため、
+// クライアントコンポーネントから直接importしないこと。
 import { GoogleGenerativeAI } from "@google/generative-ai"
+import { extractPdfText, isVendorSupportedByText } from "@/lib/pdf-text"
+import {
+  DEFAULT_GEMINI_MODEL,
+  PAYMENT_METHODS,
+  VENDOR_UNVERIFIED_WARNING,
+  type BankInfo,
+  type OcrItem,
+  type OcrResult,
+  type PaymentMethod,
+  type SplitPayment,
+} from "@/lib/gemini-shared"
 
-/**
- * 現行のGeminiモデル。モデル移行時はこの1行だけを書き換える。
- * ロールバック: この値を PREVIOUS_GEMINI_MODEL の値に戻して再デプロイすれば全AI機能が旧モデルに戻る。
- */
-export const CURRENT_GEMINI_MODEL = "gemini-3.7-flash"
-
-/** 直前世代のモデル（ロールバック先） */
-export const PREVIOUS_GEMINI_MODEL = "gemini-3.5-flash"
-
-/**
- * デフォルトのGeminiモデル。
- * 環境変数 GEMINI_MODEL が最優先（緊急の切り戻し用。設定されていればそのまま使う）。
- * 未設定時は CURRENT_GEMINI_MODEL。
- */
-export const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || CURRENT_GEMINI_MODEL
-
-/**
- * 選択可能なGeminiモデル一覧（設定画面のドロップダウン用）。
- * ここに載っていないモデルIDは resolveGeminiModel で無効として扱う（DBに旧モデルIDが残っていても現行モデルに寄せるため）。
- */
-export const GEMINI_MODELS = [
-  { id: CURRENT_GEMINI_MODEL, label: "Gemini 3.7 Flash", description: "高速・高精度・マルチモーダル対応（デフォルト）" },
-] as const
-
-/**
- * 設定（Supabase settings の gemini_model）に保存されたモデルIDを検証して解決する。
- * GEMINI_MODELS に無い値（旧世代のモデルIDが残っている等）は無視して DEFAULT_GEMINI_MODEL を返す。
- */
-export function resolveGeminiModel(raw: unknown): string {
-  if (typeof raw === "string") {
-    const known = (GEMINI_MODELS as readonly { id: string }[]).some((m) => m.id === raw)
-    if (known) return raw
-  }
-  return DEFAULT_GEMINI_MODEL
-}
+export * from "@/lib/gemini-shared"
 
 /**
  * 思考を抑えたい用途（小さな固定JSONを返させる処理など）に使う thinkingConfig。
@@ -124,6 +105,18 @@ const MULTI_PAYMENT_RULES = `【payments（複数支払いの分割候補）の�
 - 納付書の勘定科目: 消費税・法人税などの税金の納付 → 租税公課（選択肢に無ければそのまま「租税公課」と返してよい）。
 - この payments の判定は【追加指示】の有無にかかわらず必ず行うこと。`
 
+/**
+ * 推測禁止ルール（プロンプト冒頭に差し込む）。
+ * 書類から日本語が読み取れないPDF（非埋め込みCIDフォント等）で、
+ * モデルが"それらしい会社名"を creative に埋めてしまう事故への歯止め。
+ */
+const NO_GUESS_RULES = `【厳守・最優先】
+- 書類に実際に書かれている文字だけを使うこと。書類に無い会社名・人名・品目名を創作してはならない。
+- vendor_name は、書類に印字されている発行元の名称をそのまま写すこと。読み取れない場合は空文字 "" を返す。
+- 読み取れない項目は推測で埋めず、null（文字列項目は ""）を返すこと。
+- 文字がかすれている・文字化けしている・そもそも文字が見当たらない場合は、
+  無理に補完せず confidence を 0.5 未満にすること。`
+
 /** 支払方法・振込先の判定ルール（プロンプト末尾に差し込む） */
 const PAYMENT_EXTRACTION_RULES = `【支払方法（payment_method）の判定基準】
 判定は必ず次の優先順位で行うこと（上から順に確認し、最初に該当したものを採用する）。
@@ -153,91 +146,6 @@ const PAYMENT_EXTRACTION_RULES = `【支払方法（payment_method）の判定�
 - 振込先の記載が一切無ければ bank_info は null を返す
 - 各項目が部分的に欠ける場合、見つかった項目のみ埋め、無い項目は空文字にする`
 
-/** 税区分の選択肢 */
-export const TAX_CATEGORIES = [
-  "課税10%",
-  "課税8%（軽減）",
-  "非課税",
-  "免税",
-  "不課税",
-  "未判定",
-] as const
-
-/** 勘定科目の選択肢（医療クリニック向け） */
-export const ACCOUNT_TITLES = [
-  "仕入高",
-  "消耗品費",
-  "通信費",
-  "水道光熱費",
-  "地代家賃",
-  "リース料",
-  "支払手数料",
-  "広告宣伝費",
-  "修繕費",
-  "保険料",
-  "福利厚生費",
-  "雑費",
-] as const
-
-/** 支払方法の選択肢（bank_transfer/unknown は支払管理の対象、auto_debit/credit_card は除外） */
-export const PAYMENT_METHODS = ["bank_transfer", "auto_debit", "credit_card", "unknown"] as const
-export type PaymentMethod = (typeof PAYMENT_METHODS)[number]
-
-/** 振込先情報の型（bank_info にJSONで保存） */
-export interface BankInfo {
-  /** 銀行名 */
-  bank_name: string
-  /** 支店名 */
-  branch_name: string
-  /** 口座種別（普通/当座 等） */
-  account_type: string
-  /** 口座番号 */
-  account_number: string
-  /** 口座名義 */
-  account_holder: string
-}
-
-/** 明細行の型 */
-export interface OcrItem {
-  item_name: string
-  quantity: number
-  unit_price: number
-  amount: number
-  category: string
-  tax_rate: string
-}
-
-/** 分割支払い候補の型（1ファイルに独立した支払いが複数含まれる場合の1件分） */
-export interface SplitPayment {
-  vendor_name: string
-  amount: number | null
-  issue_date: string | null
-  due_date: string | null
-  description: string | null
-  tax_category: string | null
-  account_title: string | null
-}
-
-/** AI解析結果の型 */
-export interface OcrResult {
-  vendor_name: string
-  amount: number | null
-  issue_date: string | null
-  due_date: string | null
-  description: string | null
-  type: string | null
-  confidence: number
-  tax_category: string | null
-  account_title: string | null
-  /** 支払方法（bank_transfer/auto_debit/credit_card/unknown） */
-  payment_method: PaymentMethod
-  /** 振込先情報（抽出できなければ null） */
-  bank_info: BankInfo | null
-  items: OcrItem[]
-  /** 独立した複数支払いの分割候補（単一支払いの書類なら空配列） */
-  payments: SplitPayment[]
-}
-
 /** フォールバック値 */
 const FALLBACK_RESULT: OcrResult = {
   vendor_name: "",
@@ -253,6 +161,7 @@ const FALLBACK_RESULT: OcrResult = {
   bank_info: null,
   items: [],
   payments: [],
+  warnings: [],
 }
 
 /** analyzeDocument のオプション */
@@ -298,7 +207,23 @@ export async function analyzeDocument(
     ? `\n\n【追加指示】\n${options.extraHint.trim()}\n`
     : ""
 
-  const prompt = `この画像は経理書類（${typeList}など）です。以下の情報をJSON形式で抽出してください。${extraHintBlock}
+  // PDFはテキストレイヤーを先に抽出してプロンプトに添える。
+  // 日本語フォントが非埋め込みのPDFはGeminiが日本語を全く読めないため、
+  // これを渡さないと取引先名などが推測で埋められてしまう（詳細は lib/pdf-text.ts）。
+  const pdfText = mimeType === "application/pdf" ? await extractPdfText(Buffer.from(base64Data, "base64")) : null
+
+  const sourceTextBlock = pdfText?.hasMeaningfulText
+    ? `\n\n【書類のテキストデータ（PDFから機械的に抽出した正確な文字情報）】
+以下は同じ書類から抽出した文字データです。画像の見え方と食い違う場合は必ずこちらを正としてください。
+会社名・人名・品目名は、下記テキストに実在する表記だけを使うこと（レイアウトが崩れていても文字自体は正確です）。
+--- テキストここから ---
+${pdfText.text}
+--- テキストここまで ---\n`
+    : ""
+
+  const prompt = `この画像は経理書類（${typeList}など）です。以下の情報をJSON形式で抽出してください。
+
+${NO_GUESS_RULES}${sourceTextBlock}${extraHintBlock}
 
 必ず以下のJSON形式のみで回答してください。余計なテキストは含めないでください。
 
@@ -373,7 +298,8 @@ ${MULTI_PAYMENT_RULES}`
 
       const responseText = result.response.text()
       const parsed = parseOcrResponse(responseText)
-      return { ...parsed, model_used: modelId }
+      const verified = verifyAgainstSourceText(parsed, pdfText)
+      return { ...verified, model_used: modelId }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
       const is429 = errMsg.includes("429") || errMsg.toLowerCase().includes("too many requests") || errMsg.toLowerCase().includes("resource exhausted")
@@ -392,6 +318,28 @@ ${MULTI_PAYMENT_RULES}`
   }
 
   return { ...FALLBACK_RESULT, model_used: modelId }
+}
+
+/**
+ * 解析結果を書類の実テキストと突き合わせて検証する。
+ * 取引先名が書類のどこにも見当たらない場合は警告を付け、確信度を引き下げる。
+ * テキストレイヤーが無いPDF（スキャン画像）では検証できないため何もしない。
+ */
+function verifyAgainstSourceText(
+  result: OcrResult,
+  pdfText: { text: string; hasMeaningfulText: boolean } | null
+): OcrResult {
+  if (!pdfText?.hasMeaningfulText) return result
+
+  const supported = isVendorSupportedByText(result.vendor_name, pdfText.text)
+  if (supported !== false) return result
+
+  return {
+    ...result,
+    // 人が必ず確認するよう、確信度を要確認の閾値未満まで落とす
+    confidence: Math.min(result.confidence, 0.5),
+    warnings: [...result.warnings, VENDOR_UNVERIFIED_WARNING],
+  }
 }
 
 /** 自動仕分けルールの型 */
@@ -743,6 +691,7 @@ function parseOcrResponse(responseText: string): OcrResult {
       bank_info: normalizeBankInfo(parsed.bank_info),
       items,
       payments: payments.length >= 2 ? payments : [],
+      warnings: [],
     }
   } catch {
     console.error("Gemini応答のJSONパースに失敗:", responseText)

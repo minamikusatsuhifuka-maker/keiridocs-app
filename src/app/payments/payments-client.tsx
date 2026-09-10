@@ -24,7 +24,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { format, differenceInDays } from "date-fns"
 import { toast } from "sonner"
-import type { BankInfo } from "@/lib/gemini"
+import type { BankInfo } from "@/lib/gemini-shared"
 import {
   codeToCategory,
   requiresTransfer,

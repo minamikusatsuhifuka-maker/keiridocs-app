@@ -14,8 +14,8 @@ import {
 } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, Save, Sparkles } from "lucide-react"
-import { type OcrResult, TAX_CATEGORIES, ACCOUNT_TITLES } from "@/lib/gemini"
+import { AlertTriangle, Loader2, Save, Sparkles } from "lucide-react"
+import { type OcrResult, TAX_CATEGORIES, ACCOUNT_TITLES } from "@/lib/gemini-shared"
 
 export interface DocumentFormData {
   type: string
@@ -109,6 +109,21 @@ export function OcrResultEditor({
           </div>
         ) : (
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+            {/* AI読み取りの警告（取引先名が書類の文字と一致しない等） */}
+            {ocrResult?.warnings && ocrResult.warnings.length > 0 && (
+              <div className="flex gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                <div className="space-y-1 text-sm">
+                  <p className="font-medium">AIの読み取りに自信がありません</p>
+                  <ul className="list-disc space-y-0.5 pl-4">
+                    {ocrResult.warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
+
             {/* 書類種別 */}
             <div className="space-y-2">
               <Label htmlFor="type">書類種別</Label>

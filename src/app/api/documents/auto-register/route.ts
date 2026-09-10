@@ -74,6 +74,11 @@ function generateUniqueFileName(
 function checkReviewReasons(ocrResult: OcrResult): string[] {
   const reasons: string[] = []
 
+  // AI解析側の警告（取引先名が書類の文字と一致しない等）は必ず人が確認する
+  if (Array.isArray(ocrResult.warnings) && ocrResult.warnings.length > 0) {
+    reasons.push(...ocrResult.warnings)
+  }
+
   // AI確信度が80%未満
   if (ocrResult.confidence < 0.8) {
     reasons.push(`AI確信度${Math.round(ocrResult.confidence * 100)}%`)

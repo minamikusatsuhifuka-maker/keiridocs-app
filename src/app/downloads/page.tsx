@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { OcrResultEditor, type DocumentFormData } from "@/components/documents/ocr-result-editor"
-import type { OcrResult } from "@/lib/gemini"
+import type { OcrResult } from "@/lib/gemini-shared"
 import type { Database } from "@/types/database"
 import {
   Download,

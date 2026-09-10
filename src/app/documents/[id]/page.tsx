@@ -27,7 +27,7 @@ import { TransferBadgeButton } from "@/components/documents/transfer-badge-butto
 import { SplitPaymentsConfirm } from "@/components/documents/split-payments-confirm"
 import { ArrowLeft, Loader2, Pencil, Trash2, Save, X, RefreshCw, AlertTriangle, Upload } from "lucide-react"
 import type { Database } from "@/types/database"
-import { TAX_CATEGORIES, ACCOUNT_TITLES, type SplitPayment } from "@/lib/gemini"
+import { TAX_CATEGORIES, ACCOUNT_TITLES, type SplitPayment } from "@/lib/gemini-shared"
 import { toast } from "sonner"
 
 type Document = Database["public"]["Tables"]["documents"]["Row"]

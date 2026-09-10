@@ -167,6 +167,7 @@ const EMPTY_OCR_RESULT: OcrResult = {
   bank_info: null,
   items: [],
   payments: [],
+  warnings: [],
 }
 
 /** 渡された任意のオブジェクトを安全にOcrResult形に整形する */
@@ -201,6 +202,7 @@ function coerceOcrResult(input: unknown): OcrResult {
     items,
     // 売上登録では分割候補は使わない（型整合のため空配列）
     payments: [],
+    warnings: Array.isArray(o.warnings) ? o.warnings.filter((w): w is string => typeof w === "string") : [],
   }
 }
 

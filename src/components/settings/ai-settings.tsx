@@ -14,7 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Save } from "lucide-react"
 import { toast } from "sonner"
-import { GEMINI_MODELS, DEFAULT_GEMINI_MODEL, resolveGeminiModel } from "@/lib/gemini"
+import { GEMINI_MODELS, DEFAULT_GEMINI_MODEL, resolveGeminiModel } from "@/lib/gemini-shared"
 
 /** 自動解析モードの選択肢 */
 type AnalyzeMode = "manual" | "auto"

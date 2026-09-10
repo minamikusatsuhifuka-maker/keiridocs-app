@@ -17,7 +17,7 @@ import { FileDropzone } from "@/components/documents/file-dropzone"
 import { OcrResultEditor, type DocumentFormData } from "@/components/documents/ocr-result-editor"
 import { SplitPaymentsConfirm } from "@/components/documents/split-payments-confirm"
 import { SalesRegisterModal } from "@/components/documents/sales-register-modal"
-import type { OcrResult, SplitPayment } from "@/lib/gemini"
+import type { OcrResult, SplitPayment } from "@/lib/gemini-shared"
 import {
   Dialog,
   DialogContent,
