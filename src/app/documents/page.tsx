@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { DocumentTable } from "@/components/documents/document-table"
+import { Pagination } from "@/components/ui/pagination"
 import { Download, Loader2, Plus, Search, X, Copy, Trash2, AlertTriangle, RefreshCw, CheckCircle2, XCircle, ScanLine, FolderInput, FolderPlus, Wallet, Upload, History, FileSpreadsheet,
   CalendarRange,
 } from "lucide-react"
@@ -127,8 +128,16 @@ export default function DocumentsPage() {
 
   // ページネーション
   const [page, setPage] = useState(0)
+  /** 一覧の先頭。ページを送ったときにここへスクロールして戻す */
+  const listTopRef = useRef<HTMLDivElement>(null)
 
   const totalPages = Math.ceil(totalCount / PAGE_SIZE)
+
+  /** ページを移動し、一覧の先頭が見えるようにスクロールする */
+  const goToPage = useCallback((next: number) => {
+    setPage(next)
+    listTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+  }, [])
 
   // データ取得
   // 提出月（税理士提出フォルダの振り分け先）の絞り込みと一括変更
@@ -1418,6 +1427,21 @@ export default function DocumentsPage() {
         </div>
       )}
 
+      {/* ページ送りのスクロール先（一覧の先頭） */}
+      <div ref={listTopRef} className="scroll-mt-20" />
+
+      {/* ページ送り（上部・簡易版。長い一覧で下まで戻らずに送れるように） */}
+      {!isLoading && (
+        <Pagination
+          page={page}
+          totalPages={totalPages}
+          totalCount={totalCount}
+          pageSize={PAGE_SIZE}
+          onPageChange={goToPage}
+          compact
+        />
+      )}
+
       {/* テーブル */}
       {isLoading ? (
         <div className="flex items-center justify-center py-12">
@@ -1439,46 +1463,15 @@ export default function DocumentsPage() {
         />
       )}
 
-      {/* ページネーション */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">
-            全 {totalCount} 件中 {page * PAGE_SIZE + 1}〜{Math.min((page + 1) * PAGE_SIZE, totalCount)} 件
-          </p>
-          <div className="flex gap-1">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page === 0}
-              onClick={() => setPage((p) => p - 1)}
-            >
-              前へ
-            </Button>
-            {Array.from({ length: totalPages }, (_, i) => (
-              <Button
-                key={i}
-                variant={page === i ? "default" : "outline"}
-                size="sm"
-                onClick={() => setPage(i)}
-                className="min-w-[36px]"
-              >
-                {i + 1}
-              </Button>
-            )).slice(
-              Math.max(0, page - 2),
-              Math.min(totalPages, page + 3)
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page >= totalPages - 1}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              次へ
-            </Button>
-          </div>
-        </div>
-      )}
+      {/* ページ送り（下部・中央寄せ。右下のフローティングボタンと重ならない位置） */}
+      <Pagination
+        page={page}
+        totalPages={totalPages}
+        totalCount={totalCount}
+        pageSize={PAGE_SIZE}
+        onPageChange={goToPage}
+        enableKeyboard
+      />
 
       {/* 重複チェック結果モーダル */}
       <Dialog open={showDuplicateModal} onOpenChange={setShowDuplicateModal}>

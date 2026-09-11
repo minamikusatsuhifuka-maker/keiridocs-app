@@ -32,8 +32,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </SheetContent>
         </Sheet>
 
-        {/* メインコンテンツ（モバイル時はボトムナビ分のパディング） */}
-        <main className="flex-1 p-4 pb-20 md:p-6 md:pb-6">{children}</main>
+        {/*
+          メインコンテンツ。
+          下端の余白は「ボトムナビ＋右下のフローティングボタン2段（チャット/AI）」の高さ分を確保する。
+          これが無いと、一番下までスクロールしても最終行・合計行・操作ボタンがボタンの下に隠れて押せない。
+          モバイル: AIボタン上端 = bottom-36(144px) + h-14(56px) = 200px → pb-52(208px)
+          デスクトップ: AIボタン上端 = bottom-24(96px) + h-14(56px) = 152px → pb-40(160px)
+        */}
+        <main className="flex-1 p-4 pb-52 md:p-6 md:pb-40">{children}</main>
       </div>
 
       {/* モバイルボトムナビ */}
