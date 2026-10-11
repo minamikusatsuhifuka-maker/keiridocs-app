@@ -29,6 +29,7 @@ import { ArrowLeft, Loader2, Pencil, Trash2, Save, X, RefreshCw, AlertTriangle, 
 import type { Database } from "@/types/database"
 import { TAX_CATEGORIES, ACCOUNT_TITLES, type SplitPayment } from "@/lib/gemini-shared"
 import { toast } from "sonner"
+import { describeForeignAmount, formatOriginalAmount, readForeignCurrency } from "@/lib/currency"
 
 type Document = Database["public"]["Tables"]["documents"]["Row"]
 
@@ -342,6 +343,9 @@ export default function DocumentDetailPage() {
     )
   }
 
+  // 外貨建て書類の換算情報（円建てなら null）
+  const foreign = readForeignCurrency(doc.ocr_raw)
+
   return (
     <div className="space-y-6">
       {/* ヘッダー */}
@@ -529,8 +533,17 @@ export default function DocumentDetailPage() {
                 <Input value={editVendor} onChange={(e) => setEditVendor(e.target.value)} />
               </div>
               <div className="space-y-2">
-                <Label>金額</Label>
+                <Label>金額（円）</Label>
                 <Input type="number" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} />
+                {foreign && (
+                  <p className="text-xs text-muted-foreground">
+                    外貨建て（{formatOriginalAmount(foreign.currency, foreign.amount_original)}）。
+                    {foreign.amount_jpy !== null
+                      ? `自動換算額は ¥${foreign.amount_jpy.toLocaleString()}（@${foreign.rate}）。`
+                      : "円に換算できていません。"}
+                    カード会社の実際の請求額に合わせる場合は、ここに円額を入力してください。
+                  </p>
+                )}
               </div>
               <div className="space-y-2">
                 <Label>発行日</Label>
@@ -580,6 +593,12 @@ export default function DocumentDetailPage() {
               <div>
                 <dt className="text-sm text-muted-foreground">金額</dt>
                 <dd className="font-medium">{formatAmount(doc.amount)}</dd>
+                {foreign && (
+                  <dd className="text-xs text-muted-foreground">
+                    {describeForeignAmount(foreign, doc.amount)}
+                    {foreign.evidence && <span className="block break-all">根拠: {foreign.evidence}</span>}
+                  </dd>
+                )}
               </div>
               <div>
                 <dt className="text-sm text-muted-foreground">発行日</dt>

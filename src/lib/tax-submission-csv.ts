@@ -7,6 +7,7 @@ import { SALES_SUBFOLDER, LEGACY_SALES_SUBFOLDER } from "@/lib/tax-folder-struct
 import { calcSubsidy, subsidyRate } from "@/lib/subsidy"
 import { getSplitGroupInfo } from "@/lib/staff-receipt-split"
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
+import { describeForeignAmountForAccountant, readForeignCurrency } from "@/lib/currency"
 import {
   diffSnapshots,
   formatFieldChanges,
@@ -55,6 +56,11 @@ export interface TaxListRow {
   amount: number | null
   subsidyLabel: string
   subsidyAmount: number | null
+  /**
+   * 外貨建て書類の原通貨・原金額・換算レート（税理士の検算用。円建ては ""）。
+   * 例: "USD 220.00 × 158.17 = ¥34,797（請求書記載レート）"
+   */
+  foreignNote: string
   /** 発行日（スタッフ領収書は支払年月日） */
   date: string
   /** 取り込み日（スタッフ領収書は提出日）YYYY-MM-DD */
@@ -382,6 +388,8 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
     expense_detail: string
     subsidy_label: string
     subsidy_amount: number | null
+    // 外貨建て書類の原通貨・換算レートの説明（円建ては ""）
+    foreign_note: string
     // 売上記録専用: 振込元・振込日・振込金額
     transfer_from: string | null
     transfer_date: string | null
@@ -434,6 +442,10 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       expense_detail: "",
       subsidy_label: "",
       subsidy_amount: null,
+      foreign_note: (() => {
+        const fc = readForeignCurrency(d.ocr_raw)
+        return fc ? describeForeignAmountForAccountant(fc, typeof d.amount === "number" ? d.amount : null) : ""
+      })(),
       transfer_from: transferFrom,
       transfer_date: transferDate,
       transfer_total: transferTotal,
@@ -555,6 +567,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
         expense_detail: tx?.expense_detail ?? "",
         subsidy_label: subsidyBase !== null ? (subsidyRate(category) === 0.5 ? "半額" : "全額") : "",
         subsidy_amount: subsidyBase !== null ? calcSubsidy(subsidyBase, category) : null,
+        foreign_note: "",
         transfer_from: null,
         transfer_date: null,
         transfer_total: null,
@@ -610,6 +623,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
         expenseDetail: meta?.expense_detail ?? "",
         subsidyLabel: meta?.subsidy_label ?? "",
         subsidyAmount: meta?.subsidy_amount ?? null,
+        foreignNote: meta?.foreign_note ?? "",
         taxCategory: meta?.tax_category ?? "",
         accountTitle: meta?.account_title ?? "",
         path: file.path_display,
@@ -663,6 +677,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       expenseDetail: rm.expenseDetail,
       subsidyLabel: rm.subsidyLabel,
       subsidyAmount: rm.subsidyAmount,
+      foreignNote: "",
       taxCategory: rm.taxCategory,
       accountTitle: rm.accountTitle,
       path: rm.path,
@@ -730,7 +745,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   // 支払先（店名）・目的用途・支給割合・支給額はスタッフ領収書行のみ値が入る（通常書類は空欄）
   const detailHeaders = [
     "No", "状態", "ファイル名", "種別", "取引先 / 振込元", "支払先（店名）", "目的・用途",
-    "金額 / 振込金額", "支給割合", "支給額",
+    "金額 / 振込金額", "外貨（原通貨・換算レート）", "支給割合", "支給額",
     "発行日 / 振込日", "基準日（月割り判定）", "取り込み日", "更新日", "変更内容",
     "税区分", "勘定科目", "コピー先パス", "ステータス",
   ]
@@ -748,6 +763,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
       r.isSales && r.transferTotal !== null
         ? formatAmount(r.transferTotal)
         : r.amount !== null ? formatAmount(r.amount) : "",
+      r.foreignNote,
       r.subsidyLabel,
       r.subsidyAmount !== null ? formatAmount(r.subsidyAmount) : "",
       r.isSales && r.transferDate ? r.transferDate : r.date,
@@ -767,6 +783,7 @@ export async function buildTaxSubmissionCsv(opts: BuildOpts): Promise<BuildResul
   const totalRow = [
     "合計", "", "", "", "", "", "",
     formatAmount(grandTotal),
+    "",
     "",
     staffSubsidyTotal > 0 ? formatAmount(staffSubsidyTotal) : "",
     "", "", "", "", "", "", "", `${grandCount}件`, "",

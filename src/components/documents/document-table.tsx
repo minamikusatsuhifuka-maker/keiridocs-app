@@ -56,6 +56,7 @@ import { CSS } from "@dnd-kit/utilities"
 import type { Database } from "@/types/database"
 import { toast } from "sonner"
 import { resolveDocumentSubmissionMonth, labelYearMonth } from "@/lib/submission-month"
+import { CURRENCY_UNCONVERTED_WARNING_PREFIX, describeForeignAmount, readForeignCurrency } from "@/lib/currency"
 
 type Document = Database["public"]["Tables"]["documents"]["Row"] & {
   registrant?: { id: string; name: string } | null
@@ -114,7 +115,14 @@ function reviewWarnings(doc: Document): string[] {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     const list = (raw as Record<string, unknown>).warnings
     if (Array.isArray(list)) {
-      warnings.push(...list.filter((w): w is string => typeof w === "string"))
+      warnings.push(
+        ...list.filter(
+          (w): w is string =>
+            typeof w === "string" &&
+            // 外貨の換算不能警告は、円の金額が入力された時点で解消済みとみなす
+            !(w.startsWith(CURRENCY_UNCONVERTED_WARNING_PREFIX) && doc.amount !== null && doc.amount !== 0)
+        )
+      )
     }
   }
   if (!doc.vendor_name?.trim() && warnings.length === 0) {
@@ -526,18 +534,32 @@ export function DocumentTable({
       label: "金額",
       sortField: "amount",
       cellClassName: "text-right",
-      renderCell: (doc) =>
-        doc.amount === null || doc.amount === 0 ? (
-          <span
-            className="inline-flex items-center justify-end gap-1 font-medium text-red-600 dark:text-red-400"
-            title="金額が未抽出です。再解析または手動修正してください"
-          >
-            <AlertTriangle className="size-3.5" />
-            {formatAmount(doc.amount)}
+      renderCell: (doc) => {
+        // 外貨建ての書類は原通貨額・換算レートを副次表示する
+        const foreign = readForeignCurrency(doc.ocr_raw)
+        const foreignNote = foreign ? describeForeignAmount(foreign, doc.amount) : null
+        const main =
+          doc.amount === null || doc.amount === 0 ? (
+            <span
+              className="inline-flex items-center justify-end gap-1 font-medium text-red-600 dark:text-red-400"
+              title={foreign ? "外貨建ての書類です。円の金額を入力してください" : "金額が未抽出です。再解析または手動修正してください"}
+            >
+              <AlertTriangle className="size-3.5" />
+              {formatAmount(doc.amount)}
+            </span>
+          ) : (
+            formatAmount(doc.amount)
+          )
+        if (!foreignNote) return main
+        return (
+          <span className="flex flex-col items-end">
+            {main}
+            <span className="text-[11px] whitespace-nowrap text-muted-foreground" title={foreign?.evidence ?? undefined}>
+              {foreignNote}
+            </span>
           </span>
-        ) : (
-          formatAmount(doc.amount)
-        ),
+        )
+      },
     },
     submission_month: {
       id: "submission_month",

@@ -16,6 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { AlertTriangle, Loader2, Save, Sparkles } from "lucide-react"
 import { type OcrResult, TAX_CATEGORIES, ACCOUNT_TITLES, VENDOR_RESOLVED_LABEL } from "@/lib/gemini-shared"
+import { describeForeignAmount } from "@/lib/currency"
 
 export interface DocumentFormData {
   type: string
@@ -180,6 +181,12 @@ export function OcrResultEditor({
                 placeholder="0"
                 {...register("amount")}
               />
+              {ocrResult?.foreign_currency && (
+                <p className="text-xs text-muted-foreground">
+                  外貨建て：{describeForeignAmount(ocrResult.foreign_currency, ocrResult.foreign_currency.amount_jpy)}
+                  。カード会社の実際の請求額に合わせる場合は円額を直接入力してください。
+                </p>
+              )}
             </div>
 
             {/* 日付（横並び） */}

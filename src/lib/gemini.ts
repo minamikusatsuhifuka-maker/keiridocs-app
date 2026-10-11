@@ -17,6 +17,16 @@ import {
   type VendorIdentifiers,
 } from "@/lib/gemini-shared"
 import type { ResolvedVendor } from "@/lib/vendor-identity"
+import {
+  CURRENCY_UNCONVERTED_WARNING_PREFIX,
+  convertToJpy,
+  decideCurrency,
+  extractStatedRate,
+  formatOriginalAmount,
+  isPlausibleJpyRate,
+  type ConversionMethod,
+  type ForeignCurrencyInfo,
+} from "@/lib/currency"
 
 export * from "@/lib/gemini-shared"
 
@@ -81,6 +91,20 @@ const VENDOR_IDENTIFIER_RULES = `【発行元の補助情報（vendor_registrati
 - vendor_registration_number は "T" と数字13桁をそのまま返す（ハイフン・空白は入れない）。
 - vendor_phone は書類の表記のまま返してよい（例: 03-6858-0311）。FAX番号は使わない。
 - 読み取れないものは空文字 "" を返す。ここも推測してはならない。`
+
+/** 通貨・円換算のJSON項目（プロンプトのJSONテンプレートに差し込む） */
+const CURRENCY_JSON_FIELDS = `  "currency": "金額の通貨コード（ISO 4217。円なら JPY、$ や USD 表記なら USD、€ なら EUR）",
+  "exchange_rate": 書類に記載された円への換算レート（例: "conversion rate of 158.17" → 158.17。記載が無ければnull）,
+  "total_amount_jpy": 書類に記載された円建ての合計額（数値。記載が無ければnull）,
+  "tax_amount_original": 消費税額（書類の通貨のまま。無ければnull）,
+  "tax_amount_jpy": 書類に記載された円建ての消費税額（例: "JCT amount in JPY ¥3,163" → 3163。記載が無ければnull）,`
+
+/** 通貨の判定ルール（プロンプト末尾に差し込む） */
+const CURRENCY_RULES = `【通貨（currency）— 重要】
+- 金額の通貨記号・通貨コードを必ず確認する。$・US$・USD → USD、€・EUR → EUR、£・GBP → GBP、¥・円・JPY → JPY。
+- amount・items・payments の金額は書類に書かれた通貨のまま返す（$220.00 なら 220）。自分で円に換算してはならない。
+- 円建ての記載（"JCT amount in JPY" など）は total_amount_jpy / tax_amount_jpy にだけ入れ、amount には入れない。
+- exchange_rate は書類に換算レートが書かれている場合だけ返す。書かれていなければ null（推測で入れない）。`
 
 /** 支払方法・振込先のJSON項目（プロンプトのJSONテンプレートに差し込む） */
 const PAYMENT_JSON_FIELDS = `  "payment_method": "支払方法（bank_transfer=振込が必要/auto_debit=口座振替・自動引落し/credit_card=カード払い/unknown=判別不能）",
@@ -187,6 +211,7 @@ const FALLBACK_RESULT: OcrResult = {
   vendor_address: "",
   vendor_phone: "",
   vendor_resolved_by: null,
+  foreign_currency: null,
 }
 
 /** analyzeDocument のオプション */
@@ -266,7 +291,8 @@ ${NO_GUESS_RULES}${sourceTextBlock}${extraHintBlock}
 {
   "vendor_name": "取引先名（会社名・店舗名）。読み取れない場合は空文字",
 ${VENDOR_IDENTIFIER_JSON_FIELDS}
-  "amount": 金額（数値、税込。見つからない場合はnull）,
+  "amount": 金額（数値、税込。書類に記載の通貨のまま。見つからない場合はnull）,
+${CURRENCY_JSON_FIELDS}
   "issue_date": "発行日（YYYY-MM-DD形式。見つからない場合はnull）",
   "due_date": "支払期日（YYYY-MM-DD形式。見つからない場合はnull）",
   "description": "摘要・品目の要約",
@@ -316,6 +342,8 @@ ${MULTI_PAYMENT_JSON_FIELD}
 
 ${VENDOR_IDENTIFIER_RULES}
 
+${CURRENCY_RULES}
+
 ${PAYMENT_EXTRACTION_RULES}
 
 ${MULTI_PAYMENT_RULES}`
@@ -338,7 +366,8 @@ ${MULTI_PAYMENT_RULES}`
       const responseText = result.response.text()
       const parsed = parseOcrResponse(responseText)
       const verified = await resolveVendorName(parsed, pdfText, options)
-      return { ...verified, model_used: modelId }
+      const converted = await applyCurrencyConversion(verified, responseText, pdfText?.text ?? "")
+      return { ...converted, model_used: modelId }
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
       const is429 = errMsg.includes("429") || errMsg.toLowerCase().includes("too many requests") || errMsg.toLowerCase().includes("resource exhausted")
@@ -410,6 +439,165 @@ async function resolveVendorName(
   }
 }
 
+/** AI応答から読む通貨関連の項目 */
+interface CurrencyHints {
+  currency: unknown
+  exchange_rate: number | null
+  total_amount_jpy: number | null
+  tax_amount_original: number | null
+  tax_amount_jpy: number | null
+}
+
+/** AI応答のJSONから通貨関連の項目だけを取り出す（パース失敗時は全て空） */
+function parseCurrencyHints(responseText: string): CurrencyHints {
+  try {
+    const cleaned = responseText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim()
+    const o = JSON.parse(cleaned) as Record<string, unknown>
+    return {
+      currency: o.currency,
+      exchange_rate: normalizeAmount(o.exchange_rate),
+      total_amount_jpy: normalizeAmount(o.total_amount_jpy),
+      tax_amount_original: normalizeAmount(o.tax_amount_original),
+      tax_amount_jpy: normalizeAmount(o.tax_amount_jpy),
+    }
+  } catch {
+    return { currency: null, exchange_rate: null, total_amount_jpy: null, tax_amount_original: null, tax_amount_jpy: null }
+  }
+}
+
+/**
+ * 市場レート（ECB参照レート・Frankfurter API）を取得する。
+ * 書類に換算レートの記載が無いときの代替。取得できなければ null（＝手動入力を求める）。
+ * @param date 基準日 YYYY-MM-DD（未来日・不正値は最新レート）
+ */
+async function fetchMarketRate(currency: string, date: string | null): Promise<{ rate: number; date: string } | null> {
+  const today = new Date().toISOString().slice(0, 10)
+  const day = date && /^\d{4}-\d{2}-\d{2}$/.test(date) && date <= today ? date : "latest"
+  try {
+    const res = await fetch(
+      `https://api.frankfurter.dev/v1/${day}?base=${encodeURIComponent(currency)}&symbols=JPY`,
+      { signal: AbortSignal.timeout(5000), cache: "no-store" }
+    )
+    if (!res.ok) return null
+    const json = (await res.json()) as { date?: unknown; rates?: { JPY?: unknown } }
+    const rate = json.rates?.JPY
+    if (!isPlausibleJpyRate(rate)) return null
+    return { rate, date: typeof json.date === "string" ? json.date : day }
+  } catch (error) {
+    console.warn("市場レートの取得に失敗:", error)
+    return null
+  }
+}
+
+/**
+ * 外貨建て書類の金額を円に換算する。円建ての書類は何も変えずに返す。
+ *
+ * レートの優先順位:
+ *   1. 請求書に記載の換算レート（テキストから正規表現で取得 → 無ければAIの読み取り）
+ *   2. 請求書の円建て記載（合計額 or 消費税額）から逆算
+ *   3. 発行日（無ければ当日）の市場レート
+ *   4. いずれも無ければ換算せず、金額を空欄にして警告（推測の円額を入れない）
+ *
+ * 換算後は amount が円額、原通貨額・レート・方法は foreign_currency に残る。
+ */
+async function applyCurrencyConversion(
+  result: OcrResult,
+  responseText: string,
+  sourceText: string
+): Promise<OcrResult> {
+  const hints = parseCurrencyHints(responseText)
+  const currency = decideCurrency(hints.currency, sourceText)
+  if (currency === "JPY") return { ...result, foreign_currency: null }
+
+  const amountOriginal = result.amount
+  let rate: number | null = null
+  let method: ConversionMethod | null = null
+  let rateDate: string | null = null
+  let evidence: string | null = null
+  let amountJpy: number | null = null
+
+  // 1. 請求書に記載の換算レート
+  const stated = extractStatedRate(sourceText)
+  if (stated) {
+    rate = stated.rate
+    method = "invoice_rate"
+    evidence = stated.evidence
+  } else if (isPlausibleJpyRate(hints.exchange_rate)) {
+    rate = hints.exchange_rate
+    method = "invoice_rate"
+    evidence = "AIが書類から読み取った換算レート"
+  }
+
+  // 2. 円建ての記載から逆算（合計額があればその円額をそのまま採用する）
+  if (rate === null && amountOriginal) {
+    if (hints.total_amount_jpy && isPlausibleJpyRate(hints.total_amount_jpy / amountOriginal)) {
+      rate = Math.round((hints.total_amount_jpy / amountOriginal) * 100) / 100
+      method = "invoice_jpy_derived"
+      amountJpy = Math.round(hints.total_amount_jpy)
+      evidence = `書類記載の円建て合計 ¥${amountJpy.toLocaleString()}`
+    } else if (
+      hints.tax_amount_jpy &&
+      hints.tax_amount_original &&
+      isPlausibleJpyRate(hints.tax_amount_jpy / hints.tax_amount_original)
+    ) {
+      rate = Math.round((hints.tax_amount_jpy / hints.tax_amount_original) * 100) / 100
+      method = "invoice_jpy_derived"
+      evidence = `書類記載の円建て消費税 ¥${hints.tax_amount_jpy.toLocaleString()} ÷ ${formatOriginalAmount(currency, hints.tax_amount_original)}`
+    }
+  }
+
+  // 3. 市場レート（発行日 → 当日）
+  if (rate === null && amountOriginal) {
+    const market = await fetchMarketRate(currency, result.issue_date)
+    if (market) {
+      rate = market.rate
+      method = "market_rate"
+      rateDate = market.date
+      evidence = `ECB参照レート（${market.date}）`
+    }
+  }
+
+  if (rate !== null && amountOriginal !== null && amountJpy === null) {
+    amountJpy = convertToJpy(amountOriginal, rate)
+  }
+
+  const foreign: ForeignCurrencyInfo = {
+    currency,
+    amount_original: amountOriginal,
+    rate,
+    method,
+    rate_date: rateDate,
+    amount_jpy: amountJpy,
+    evidence,
+  }
+
+  // 明細・分割候補の金額も円に揃える（換算できなければ0/空にして円と誤認させない）
+  const toJpy = (v: number) => (rate !== null ? convertToJpy(v, rate) : 0)
+  const items = result.items.map((it) => ({ ...it, unit_price: toJpy(it.unit_price), amount: toJpy(it.amount) }))
+  const payments = result.payments.map((p) => ({
+    ...p,
+    amount: p.amount !== null && rate !== null ? convertToJpy(p.amount, rate) : null,
+  }))
+
+  if (amountJpy === null) {
+    // 4. 換算できなかった。推測の円額は入れず、空欄＋警告で人に入力してもらう
+    return {
+      ...result,
+      amount: null,
+      items,
+      payments,
+      foreign_currency: foreign,
+      confidence: Math.min(result.confidence, 0.5),
+      warnings: [
+        ...result.warnings,
+        `${CURRENCY_UNCONVERTED_WARNING_PREFIX}（${formatOriginalAmount(currency, amountOriginal)}）。円の金額を入力してください`,
+      ],
+    }
+  }
+
+  return { ...result, amount: amountJpy, items, payments, foreign_currency: foreign }
+}
+
 /** 自動仕分けルールの型 */
 export interface AutoClassifyRule {
   keyword: string
@@ -477,7 +665,8 @@ ${NO_GUESS_RULES}
 {
   "vendor_name": "取引先名（会社名・店舗名）。読み取れない場合は空文字",
 ${VENDOR_IDENTIFIER_JSON_FIELDS}
-  "amount": 金額（数値、税込。見つからない場合はnull）,
+  "amount": 金額（数値、税込。書類に記載の通貨のまま。見つからない場合はnull）,
+${CURRENCY_JSON_FIELDS}
   "issue_date": "発行日（YYYY-MM-DD形式。見つからない場合はnull）",
   "due_date": "支払期日（YYYY-MM-DD形式。見つからない場合はnull）",
   "description": "摘要・品目の要約",
@@ -527,6 +716,8 @@ ${MULTI_PAYMENT_JSON_FIELD}
 
 ${VENDOR_IDENTIFIER_RULES}
 
+${CURRENCY_RULES}
+
 ${PAYMENT_EXTRACTION_RULES}
 
 ${MULTI_PAYMENT_RULES}
@@ -538,7 +729,8 @@ ${text}`
     const result = await model.generateContent(prompt)
     const responseText = result.response.text()
     const parsed = parseOcrResponse(responseText)
-    return { ...parsed, model_used: modelId }
+    const converted = await applyCurrencyConversion(parsed, responseText, text)
+    return { ...converted, model_used: modelId }
   } catch (error) {
     console.error("Gemini API エラー (テキスト解析):", error)
     return { ...FALLBACK_RESULT, model_used: modelId }
@@ -772,6 +964,7 @@ function parseOcrResponse(responseText: string): OcrResult {
       vendor_address: str(parsed.vendor_address),
       vendor_phone: str(parsed.vendor_phone),
       vendor_resolved_by: null,
+      foreign_currency: null,
     }
   } catch {
     console.error("Gemini応答のJSONパースに失敗:", responseText)

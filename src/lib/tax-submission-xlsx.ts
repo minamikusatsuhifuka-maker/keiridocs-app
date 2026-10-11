@@ -40,6 +40,7 @@ const COLUMN_WIDTHS: Record<string, number> = {
   "目的・用途": 18,
   "金額 / 振込金額": 14,
   "金額（立替額）": 14,
+  "外貨（原通貨・換算レート）": 40,
   "支給割合": 10,
   "支給額": 12,
   "発行日 / 振込日": 14,
@@ -277,7 +278,7 @@ export async function buildTaxSubmissionXlsxBuffer(table: TaxSubmissionTable): P
   const sheet = workbook.addWorksheet("経費書類")
   const headers = [
     "No", "状態", "ファイル名", "種別", "取引先 / 振込元", "金額 / 振込金額",
-    "発行日 / 振込日", "取り込み日", "更新日", "変更内容",
+    "外貨（原通貨・換算レート）", "発行日 / 振込日", "取り込み日", "更新日", "変更内容",
     "基準日（月割り判定）", "税区分", "勘定科目", "コピー先パス", "ステータス",
   ]
   addLegend(sheet, headers.length)
@@ -306,6 +307,7 @@ export async function buildTaxSubmissionXlsxBuffer(table: TaxSubmissionTable): P
       r.isSales && r.transferTotal !== null
         ? formatAmount(r.transferTotal)
         : formatAmount(r.amount),
+      r.foreignNote,
       r.isSales && r.transferDate ? r.transferDate : r.date,
       r.createdDate,
       r.updatedDate,

@@ -3,6 +3,7 @@
 // クライアントコンポーネントからも読まれるため、このファイルには
 // Node専用API（node:module / node:path など）やサーバー専用の処理を置かないこと。
 // 実際のAI呼び出しはサーバー専用の lib/gemini.ts 側に置く。
+import type { ForeignCurrencyInfo } from "@/lib/currency"
 
 /**
  * 現行のGeminiモデル。モデル移行時はこの1行だけを書き換える。
@@ -150,6 +151,11 @@ export interface OcrResult extends VendorIdentifiers {
    * その根拠。AIが読み取った社名をそのまま採用した場合は null。
    */
   vendor_resolved_by: VendorResolvedBy | null
+  /**
+   * 外貨建て書類の換算情報（円建ての書類は null）。
+   * 外貨のとき amount は円換算額（換算できなければ null）で、原通貨額・レート・換算方法はここに残す。
+   */
+  foreign_currency?: ForeignCurrencyInfo | null
 }
 
 /** 取引先名を確定できず空欄にしたときの警告文 */

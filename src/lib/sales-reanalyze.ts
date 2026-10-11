@@ -148,6 +148,8 @@ export async function reanalyzeDocument(
       ocr_raw: result as unknown as Json,
     }
     if (result.amount !== null) update.amount = result.amount
+    // 外貨建てで円に換算できなかった場合は、既存の金額（外貨の数値を円とみなした誤登録の可能性）を残さず空欄にする
+    else if (result.foreign_currency) update.amount = null
     if (result.vendor_name) update.vendor_name = result.vendor_name
     if (result.issue_date) update.issue_date = result.issue_date
     if (result.description) update.description = result.description
