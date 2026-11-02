@@ -130,6 +130,10 @@
   * {
     @apply border-border outline-ring/50;
   }
+  /* 縦スクロールバーの出入りで本文が数px横にずれないよう、領域を常に確保する */
+  html {
+    scrollbar-gutter: stable;
+  }
   body {
     @apply text-foreground;
     background: var(--dusk-bg-main);

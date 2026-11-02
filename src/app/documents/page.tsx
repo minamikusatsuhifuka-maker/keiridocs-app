@@ -115,7 +115,12 @@ export default function DocumentsPage() {
   const [activeTab, setActiveTab] = useState<"expense" | "sales">("expense")
 
   // フィルタ
+  // search = 実際に検索へ使う値（確定済み）。searchInput = 入力欄に表示している値。
+  // 1文字ごと・IME変換途中で検索して一覧が「0件⇄結果あり」と入れ替わり画面が揺れないよう、
+  // 入力は 300ms 落ち着いてから、IME変換中は確定するまで search へ反映しない。
   const [search, setSearch] = useState("")
+  const [searchInput, setSearchInput] = useState("")
+  const [isComposing, setIsComposing] = useState(false)
   const [typeFilter, setTypeFilter] = useState("all")
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo] = useState("")
@@ -231,6 +236,16 @@ export default function DocumentsPage() {
     fetchDocuments()
   }, [fetchDocuments])
 
+  // 検索入力のデバウンス（IME変換中は走らせない）
+  useEffect(() => {
+    if (isComposing || searchInput === search) return
+    const timer = setTimeout(() => {
+      setSearch(searchInput)
+      setPage(0)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [searchInput, search, isComposing])
+
   // ソートハンドラ
   function handleSort(field: SortField) {
     if (sortField === field) {
@@ -245,13 +260,20 @@ export default function DocumentsPage() {
   // 検索実行
   function handleSearchSubmit(e: React.FormEvent) {
     e.preventDefault()
-    setPage(0)
-    fetchDocuments()
+    if (searchInput !== search) {
+      // 待たずにすぐ検索（search の変化で再取得される）
+      setSearch(searchInput)
+      setPage(0)
+    } else {
+      setPage(0)
+      fetchDocuments()
+    }
   }
 
   // フィルタリセット
   function handleReset() {
     setSearch("")
+    setSearchInput("")
     setTypeFilter("all")
     setDateFrom("")
     setDateTo("")
@@ -1149,8 +1171,13 @@ export default function DocumentsPage() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
             <Input
               placeholder="取引先名・摘要で検索..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              onCompositionStart={() => setIsComposing(true)}
+              onCompositionEnd={(e) => {
+                setIsComposing(false)
+                setSearchInput(e.currentTarget.value)
+              }}
               className="pl-9"
             />
           </div>
@@ -1442,7 +1469,8 @@ export default function DocumentsPage() {
         />
       )}
 
-      {/* テーブル */}
+      {/* テーブル（0件⇄結果あり・読み込み中で高さが跳ねないよう最小高さを持たせる） */}
+      <div className="min-h-[480px]">
       {isLoading ? (
         <div className="flex items-center justify-center py-12">
           <Loader2 className="size-6 animate-spin text-muted-foreground" />
@@ -1462,6 +1490,7 @@ export default function DocumentsPage() {
           }
         />
       )}
+      </div>
 
       {/* ページ送り（下部・中央寄せ。右下のフローティングボタンと重ならない位置） */}
       <Pagination

@@ -23,7 +23,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* デスクトップサイドバー */}
       <Sidebar />
 
-      <div className="flex flex-1 flex-col">
+      {/*
+        右側（ヘッダー＋本文）。min-w-0 が無いと flex の既定 min-width:auto により
+        幅の広い表がこの列ごと横に膨らみ、兄弟のサイドバーを押し潰していた（検索のたびに揺れる原因）。
+      */}
+      <div className="flex min-w-0 flex-1 flex-col">
         {/* ヘッダー（モバイルメニュー含む） */}
         <Sheet open={open} onOpenChange={setOpen}>
           <Header onMenuClick={() => setOpen(true)} />
@@ -39,7 +43,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           モバイル: AIボタン上端 = bottom-36(144px) + h-14(56px) = 200px → pb-52(208px)
           デスクトップ: AIボタン上端 = bottom-24(96px) + h-14(56px) = 152px → pb-40(160px)
         */}
-        <main className="flex-1 p-4 pb-52 md:p-6 md:pb-40">{children}</main>
+        <main className="min-w-0 flex-1 p-4 pb-52 md:p-6 md:pb-40">{children}</main>
       </div>
 
       {/* モバイルボトムナビ */}
