@@ -831,6 +831,9 @@ export interface Database {
           subsidy_category: string | null
           // 029_staff_receipt_expense_detail.sql で追加（スタッフ立替の詳細区分）
           expense_detail: string | null
+          // 042_staff_reimburse_review.sql で追加（受付担当の確認済み記録）
+          reviewed_at: string | null
+          reviewed_by: string | null
         }
         Insert: {
           id?: string
@@ -856,6 +859,8 @@ export interface Database {
           payroll_refunded_at?: string | null
           subsidy_category?: string | null
           expense_detail?: string | null
+          reviewed_at?: string | null
+          reviewed_by?: string | null
         }
         Update: {
           id?: string
@@ -881,6 +886,8 @@ export interface Database {
           payroll_refunded_at?: string | null
           subsidy_category?: string | null
           expense_detail?: string | null
+          reviewed_at?: string | null
+          reviewed_by?: string | null
         }
         Relationships: []
       }

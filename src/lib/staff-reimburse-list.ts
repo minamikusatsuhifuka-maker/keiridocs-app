@@ -66,6 +66,10 @@ export interface StaffReimburseRow {
   fileName: string
   /** 資料のDropboxパス（Dropboxウェブを開くリンク用。資料なしは ""） */
   dropboxPath: string
+  /** 受付担当が確認した日時（ISO文字列）。未確認は "" */
+  reviewedAt: string
+  /** 確認した担当者。未確認は "" */
+  reviewedBy: string
   /** 提出月（税理士フォルダの振り分け先。"YYYY-MM"。判定不能は ""） */
   submissionMonth: string
   /** 提出月が手動指定か（false は提出日20日締めの自動判定） */
@@ -92,7 +96,7 @@ export interface StaffReimburseSubtotal {
 export interface StaffReimburseListResult {
   rows: StaffReimburseRow[]
   subtotals: StaffReimburseSubtotal[]
-  totals: { count: number; totalAmount: number; totalSubsidy: number }
+  totals: { count: number; totalAmount: number; totalSubsidy: number; unreviewedCount: number }
 }
 
 /** 絞り込みの基準日 */
@@ -125,6 +129,10 @@ interface TxRow {
   note: string | null
   registered_by: string | null
   staff_receipt_id: string | null
+  /** 受付担当が内容を確認した日時。migration 042 未適用の環境では undefined */
+  reviewed_at?: string | null
+  /** 確認した担当者。migration 042 未適用の環境では undefined */
+  reviewed_by?: string | null
 }
 
 interface ReceiptRow {
@@ -190,16 +198,30 @@ export async function buildStaffReimburseList(params: {
   const basis: DateBasis = filter.basis ?? "submit"
 
   // 1. スタッフ立替の取引を全件取得（ページング必須）
-  const txRows = await fetchAllRows<TxRow>((from, to) =>
+  //    reviewed_at / reviewed_by は migration 042 で追加した列。未適用の環境でも一覧が壊れないよう、
+  //    まず確認列つきで取得し、列が無いというエラーが返ったら確認列なしで取り直す。
+  const TX_COLUMNS_BASE =
+    "id, staff_member_id, amount, expense_detail, subsidy_category, created_at, transaction_date, description, note, registered_by, staff_receipt_id"
+  const TX_COLUMNS_WITH_REVIEW = `${TX_COLUMNS_BASE}, reviewed_at, reviewed_by`
+
+  const selectTx = (columns: string) => (from: number, to: number) =>
     supabase
       .from("petty_cash_transactions")
-      .select(
-        "id, staff_member_id, amount, expense_detail, subsidy_category, created_at, transaction_date, description, note, registered_by, staff_receipt_id"
-      )
+      .select(columns)
       .eq("category", "staff_refund")
       .order("id", { ascending: true })
       .range(from, to) as unknown as PromiseLike<{ data: TxRow[] | null; error: { message: string } | null }>
-  )
+
+  let txRows: TxRow[]
+  try {
+    txRows = await fetchAllRows<TxRow>(selectTx(TX_COLUMNS_WITH_REVIEW))
+  } catch (e) {
+    // 列が無い場合のみフォールバックする（それ以外のエラーはそのまま投げる）
+    const message = e instanceof Error ? e.message : String(e)
+    if (!/reviewed_at|reviewed_by|column/i.test(message)) throw e
+    console.warn("[スタッフ立替] 確認列が未適用のため確認なしで取得します:", message)
+    txRows = await fetchAllRows<TxRow>(selectTx(TX_COLUMNS_BASE))
+  }
 
   // 2. 参照されている領収書をまとめて取得（200件ずつ）
   const receiptIds = Array.from(
@@ -276,6 +298,8 @@ export async function buildStaffReimburseList(params: {
       subsidy: calcSubsidy(amount, t.subsidy_category),
       source: detectSource(t.registered_by, aiRaw, !!receipt),
       registeredBy: t.registered_by ?? "",
+      reviewedAt: t.reviewed_at ?? "",
+      reviewedBy: t.reviewed_by ?? "",
       submissionMonth: submission.month ? formatYearMonth(submission.month) : "",
       submissionMonthManual: submission.source === "manual",
       autoSubmissionMonth: submission.autoMonth ? formatYearMonth(submission.autoMonth) : "",
@@ -361,9 +385,10 @@ export async function buildStaffReimburseList(params: {
       acc.count += 1
       acc.totalAmount += r.amount
       acc.totalSubsidy += r.subsidy
+      if (!r.reviewedAt) acc.unreviewedCount += 1
       return acc
     },
-    { count: 0, totalAmount: 0, totalSubsidy: 0 }
+    { count: 0, totalAmount: 0, totalSubsidy: 0, unreviewedCount: 0 }
   )
 
   return { rows: filtered, subtotals, totals }

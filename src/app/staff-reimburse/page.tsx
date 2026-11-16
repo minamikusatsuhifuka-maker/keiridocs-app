@@ -42,9 +42,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  Check,
   Download,
   FileSpreadsheet,
   FileText,
@@ -93,12 +95,28 @@ interface Row {
   subsidy: number
   source: ReimburseSource
   registeredBy: string
+  /** 受付担当が確認した日時（ISO文字列）。未確認は "" */
+  reviewedAt: string
+  /** 確認した担当者。未確認は "" */
+  reviewedBy: string
   hasFile: boolean
   fileName: string
   dropboxPath: string
   splitGroup: string | null
   splitIndex: number
   splitTotal: number
+}
+
+/** 未完了の申請（staff_receipts はあるが精算されていない＝スタッフが途中でやめた分） */
+interface IncompleteRow {
+  receiptId: string
+  staffName: string
+  storeName: string
+  amount: number
+  paymentDate: string
+  submittedAt: string
+  fileName: string
+  dropboxPath: string
 }
 
 interface Subtotal {
@@ -112,7 +130,7 @@ interface Subtotal {
 interface ApiResponse {
   rows: Row[]
   subtotals: Subtotal[]
-  totals: { count: number; totalAmount: number; totalSubsidy: number }
+  totals: { count: number; totalAmount: number; totalSubsidy: number; unreviewedCount: number }
   periodLabel: string
   staffOptions: { id: string; name: string }[]
   detailOptions: string[]
@@ -121,6 +139,20 @@ interface ApiResponse {
 /* ---------- 表示ヘルパー ---------- */
 
 const yen = (n: number) => `¥${n.toLocaleString("ja-JP")}`
+
+/** 確認日時を「11/16 19:30」の形にする（JST） */
+const formatReviewedAt = (iso: string) => {
+  if (!iso) return ""
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ""
+  return d.toLocaleString("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+}
 const ALL = "__all__"
 
 type SortKey =
@@ -194,6 +226,13 @@ export default function StaffReimbursePage() {
   const [editRow, setEditRow] = useState<Row | null>(null)
   const [deleteRow, setDeleteRow] = useState<Row | null>(null)
 
+  // 確認済みの記録（受付担当の進捗管理。支給・税理士提出には影響しない）
+  const [savingReviewIds, setSavingReviewIds] = useState<Set<string>>(new Set())
+
+  // 未完了の申請（スタッフが区分を選ばずに離脱した分）
+  const [incomplete, setIncomplete] = useState<IncompleteRow[]>([])
+  const [showIncomplete, setShowIncomplete] = useState(false)
+
   const query = useMemo(() => {
     const p = new URLSearchParams()
     p.set("basis", basis)
@@ -225,6 +264,77 @@ export default function StaffReimbursePage() {
   useEffect(() => {
     fetchData()
   }, [fetchData])
+
+  // 未完了の申請を取得する（期間フィルタとは独立。常に全件を見せて取りこぼしを防ぐ）
+  const fetchIncomplete = useCallback(async () => {
+    try {
+      const res = await fetch("/api/staff-reimburse/incomplete")
+      if (!res.ok) return
+      const json = (await res.json()) as { rows?: IncompleteRow[] }
+      setIncomplete(json.rows ?? [])
+    } catch {
+      // 取得できなくても本体の一覧は使えるようにする（警告は出さない）
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchIncomplete()
+  }, [fetchIncomplete])
+
+  /**
+   * 明細の「確認済み」を切り替える。
+   * 対象は petty_cash_transactions.id（分割登録は行ごとに確認する）。
+   */
+  const toggleReview = useCallback(
+    async (ids: string[], reviewed: boolean) => {
+      if (ids.length === 0) return
+      setSavingReviewIds((prev) => new Set([...prev, ...ids]))
+      try {
+        const res = await fetch("/api/staff-reimburse/review", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids, reviewed }),
+        })
+        const json = (await res.json().catch(() => ({}))) as { error?: string; reviewedBy?: string | null }
+        if (!res.ok) throw new Error(json.error || "確認状態を更新できませんでした")
+
+        // 画面を即時反映（再取得を待たせない）
+        setData((prev) =>
+          prev
+            ? {
+                ...prev,
+                rows: prev.rows.map((r) =>
+                  ids.includes(r.transactionId)
+                    ? {
+                        ...r,
+                        reviewedAt: reviewed ? new Date().toISOString() : "",
+                        reviewedBy: reviewed ? json.reviewedBy ?? "" : "",
+                      }
+                    : r
+                ),
+                totals: {
+                  ...prev.totals,
+                  unreviewedCount: Math.max(
+                    0,
+                    prev.totals.unreviewedCount + (reviewed ? -ids.length : ids.length)
+                  ),
+                },
+              }
+            : prev
+        )
+        toast.success(reviewed ? `${ids.length}件を確認済みにしました` : `${ids.length}件の確認を取り消しました`)
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "確認状態を更新できませんでした")
+      } finally {
+        setSavingReviewIds((prev) => {
+          const next = new Set(prev)
+          for (const id of ids) next.delete(id)
+          return next
+        })
+      }
+    },
+    []
+  )
 
   // 並べ替え（空値は常に末尾）
   const sortedRows = useMemo(() => {
@@ -488,13 +598,73 @@ export default function StaffReimbursePage() {
         </Card>
       </div>
 
+      {/* 未完了の申請（スタッフが区分を選ばずに離脱した分）。放置すると本人は申請したつもりで支給されない */}
+      {incomplete.length > 0 && (
+        <Card className="border-amber-500/60">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex flex-wrap items-center gap-2 text-base">
+              <AlertTriangle className="size-4 text-amber-600" />
+              未完了の申請が {incomplete.length} 件あります
+            </CardTitle>
+            <CardDescription>
+              領収書は届いていますが、スタッフが費用区分を選ばずに終了したため、支給の対象になっていません。
+              本人は申請したつもりの可能性があります。内容を確認のうえ、本人に再申請を依頼するか、
+              「立替手動登録」から登録してください。
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button variant="outline" size="sm" onClick={() => setShowIncomplete((v) => !v)}>
+              {showIncomplete ? "閉じる" : "一覧を見る"}
+            </Button>
+            {showIncomplete && (
+              <div className="mt-3 overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="whitespace-nowrap">申請日時</TableHead>
+                      <TableHead className="whitespace-nowrap">スタッフ名</TableHead>
+                      <TableHead className="whitespace-nowrap">支払先</TableHead>
+                      <TableHead className="whitespace-nowrap text-right">金額</TableHead>
+                      <TableHead className="whitespace-nowrap">支払年月日</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {incomplete.map((r) => (
+                      <TableRow key={r.receiptId}>
+                        <TableCell className="whitespace-nowrap">
+                          {formatReviewedAt(r.submittedAt)}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap font-medium">{r.staffName}</TableCell>
+                        <TableCell className="max-w-[200px] truncate" title={r.storeName}>
+                          {r.storeName}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-right">{yen(r.amount)}</TableCell>
+                        <TableCell className="whitespace-nowrap">{r.paymentDate || "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* 明細 */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">明細（1件1行）</CardTitle>
+          <CardTitle className="flex flex-wrap items-center gap-2 text-base">
+            明細（1件1行）
+            {data && data.totals.unreviewedCount > 0 && (
+              <Badge variant="outline" className="border-amber-500 text-amber-700 dark:text-amber-400">
+                未確認 {data.totals.unreviewedCount} 件
+              </Badge>
+            )}
+          </CardTitle>
           <CardDescription>
             列見出しをクリックで並べ替えできます（空欄は常に末尾）。
             同じ資料から分割登録された行には「分割 n/N」が付きます。
+            「確認」列は受付担当の進捗管理用で、支給額や税理士提出には影響しません。
           </CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto">
@@ -515,6 +685,21 @@ export default function StaffReimbursePage() {
                 }}
               >
                 提出月を変更
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  toggleReview(
+                    sortedRows
+                      .filter((r) => r.receiptId && selectedReceiptIds.has(r.receiptId) && !r.reviewedAt)
+                      .map((r) => r.transactionId),
+                    true
+                  )
+                }
+              >
+                <Check className="size-3.5" />
+                確認済みにする
               </Button>
             </div>
           )}
@@ -565,6 +750,7 @@ export default function StaffReimbursePage() {
                       </span>
                     </TableHead>
                   ))}
+                  <TableHead className="whitespace-nowrap">確認</TableHead>
                   <TableHead className="whitespace-nowrap">分割</TableHead>
                   <TableHead className="whitespace-nowrap">資料</TableHead>
                   <TableHead className="whitespace-nowrap">操作</TableHead>
@@ -624,6 +810,35 @@ export default function StaffReimbursePage() {
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
                       <Badge variant="outline">{SOURCE_LABELS[r.source]}</Badge>
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      <Button
+                        variant={r.reviewedAt ? "ghost" : "outline"}
+                        size="sm"
+                        disabled={savingReviewIds.has(r.transactionId)}
+                        onClick={() => toggleReview([r.transactionId], !r.reviewedAt)}
+                        title={
+                          r.reviewedAt
+                            ? `${r.reviewedBy || "担当"} が確認済み（${formatReviewedAt(r.reviewedAt)}）。クリックで取り消し`
+                            : "内容を確認したらクリック"
+                        }
+                        className={
+                          r.reviewedAt
+                            ? "text-emerald-700 dark:text-emerald-400"
+                            : "border-amber-500 text-amber-700 dark:text-amber-400"
+                        }
+                      >
+                        {savingReviewIds.has(r.transactionId) ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : r.reviewedAt ? (
+                          <>
+                            <Check className="size-3.5" />
+                            確認済み
+                          </>
+                        ) : (
+                          "未確認"
+                        )}
+                      </Button>
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
                       {r.splitTotal > 1 ? (
