@@ -730,6 +730,8 @@ export default function StaffReimbursePage() {
                       }
                     />
                   </TableHead>
+                  {/* 確認列は受付担当が毎日使うため、横スクロールせずに見える先頭に置く */}
+                  <TableHead className="whitespace-nowrap">確認</TableHead>
                   {COLUMNS.map((c) => (
                     <TableHead
                       key={c.key}
@@ -750,7 +752,6 @@ export default function StaffReimbursePage() {
                       </span>
                     </TableHead>
                   ))}
-                  <TableHead className="whitespace-nowrap">確認</TableHead>
                   <TableHead className="whitespace-nowrap">分割</TableHead>
                   <TableHead className="whitespace-nowrap">資料</TableHead>
                   <TableHead className="whitespace-nowrap">操作</TableHead>
@@ -774,6 +775,35 @@ export default function StaffReimbursePage() {
                           })
                         }}
                       />
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      <Button
+                        variant={r.reviewedAt ? "ghost" : "outline"}
+                        size="sm"
+                        disabled={savingReviewIds.has(r.transactionId)}
+                        onClick={() => toggleReview([r.transactionId], !r.reviewedAt)}
+                        title={
+                          r.reviewedAt
+                            ? `${r.reviewedBy || "担当"} が確認済み（${formatReviewedAt(r.reviewedAt)}）。クリックで取り消し`
+                            : "内容を確認したらクリック"
+                        }
+                        className={
+                          r.reviewedAt
+                            ? "text-emerald-700 dark:text-emerald-400"
+                            : "border-amber-500 text-amber-700 dark:text-amber-400"
+                        }
+                      >
+                        {savingReviewIds.has(r.transactionId) ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : r.reviewedAt ? (
+                          <>
+                            <Check className="size-3.5" />
+                            確認済み
+                          </>
+                        ) : (
+                          "未確認"
+                        )}
+                      </Button>
                     </TableCell>
                     <TableCell className="whitespace-nowrap">{r.applicationDate || "—"}</TableCell>
                     <TableCell className="whitespace-nowrap">{r.submitDate || "—"}</TableCell>
@@ -810,35 +840,6 @@ export default function StaffReimbursePage() {
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
                       <Badge variant="outline">{SOURCE_LABELS[r.source]}</Badge>
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      <Button
-                        variant={r.reviewedAt ? "ghost" : "outline"}
-                        size="sm"
-                        disabled={savingReviewIds.has(r.transactionId)}
-                        onClick={() => toggleReview([r.transactionId], !r.reviewedAt)}
-                        title={
-                          r.reviewedAt
-                            ? `${r.reviewedBy || "担当"} が確認済み（${formatReviewedAt(r.reviewedAt)}）。クリックで取り消し`
-                            : "内容を確認したらクリック"
-                        }
-                        className={
-                          r.reviewedAt
-                            ? "text-emerald-700 dark:text-emerald-400"
-                            : "border-amber-500 text-amber-700 dark:text-amber-400"
-                        }
-                      >
-                        {savingReviewIds.has(r.transactionId) ? (
-                          <Loader2 className="size-3.5 animate-spin" />
-                        ) : r.reviewedAt ? (
-                          <>
-                            <Check className="size-3.5" />
-                            確認済み
-                          </>
-                        ) : (
-                          "未確認"
-                        )}
-                      </Button>
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
                       {r.splitTotal > 1 ? (
