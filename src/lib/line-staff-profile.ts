@@ -22,6 +22,37 @@ export interface CommuterPass {
   updated_at?: string
 }
 
+/**
+ * 通勤手段。定期券を聞くかどうかの判断に使う。
+ * - train: 電車 → 定期券の有無と区間を聞く
+ * - car / bicycle_walk: 車・自転車・徒歩 → 定期券は「なし」で確定し、以降いっさい聞かない
+ * - other: その他 → 念のため定期券の有無を聞く
+ */
+export type CommuteMethod = "train" | "car" | "bicycle_walk" | "other"
+
+/** 通勤手段が定期券を持ちうるか（持ちえない手段では定期券を質問しない） */
+export function mayHaveCommuterPass(method: CommuteMethod): boolean {
+  return method === "train" || method === "other"
+}
+
+const COMMUTE_METHOD_LABELS: Record<CommuteMethod, string> = {
+  train: "電車",
+  car: "車",
+  bicycle_walk: "自転車・徒歩",
+  other: "その他",
+}
+
+/** 通勤手段の表示名（未回答は「未回答」） */
+export function commuteMethodLabel(profile: LineProfile): string {
+  const m = profile.commute_method
+  return m ? COMMUTE_METHOD_LABELS[m] : "未回答"
+}
+
+/** 通勤手段が未回答か */
+export function isCommuteMethodUnanswered(profile: LineProfile): boolean {
+  return !profile.commute_method
+}
+
 /** 氏名変更の申請（担当が /mkadmin で変更する） */
 export interface NameChangeRequest {
   requested_at: string
@@ -30,6 +61,10 @@ export interface NameChangeRequest {
 }
 
 export interface LineProfile {
+  /** 通勤手段。キーが無い＝未回答 */
+  commute_method?: CommuteMethod
+  /** 通勤手段を登録・更新した日時 */
+  commute_method_updated_at?: string
   /** キーが無い＝未回答 */
   commuter_pass?: CommuterPass
   name_confirmed_at?: string

@@ -32,17 +32,21 @@ import {
 } from "@/lib/line-transit"
 import {
   activeCommuterPass,
+  commuteMethodLabel,
   commuterPassLabel,
   familyName,
   hasPendingNameChange,
+  isCommuteMethodUnanswered,
   isCommuterPassUnanswered,
   isLongAbsence,
   isSetupComplete,
   loadStaffLineState,
   matchStaffCandidates,
+  mayHaveCommuterPass,
   normalizePersonName,
   stripStationSuffix,
   updateLineProfile,
+  type CommuteMethod,
   type StaffLineState,
 } from "@/lib/line-staff-profile"
 import { decidePassDeparture, passDeductionNote } from "@/lib/commuter-pass-deduction"
@@ -621,6 +625,10 @@ async function handlePostback(event: LineEvent): Promise<void> {
     // 設定メニュー
     case "stg":
       await handleSettingsPostback(event, params)
+      return
+    // 通勤手段の登録・変更
+    case "cm":
+      await handleCommuteMethodPostback(event, params)
       return
     // 定期券の登録・変更
     case "cp":
@@ -3348,13 +3356,20 @@ async function continueSetup(
     return
   }
 
-  // 3. 定期券（未回答なら聞く）
-  if (isCommuterPassUnanswered(state.profile)) {
+  // 3. 通勤手段（未回答なら聞く）
+  if (isCommuteMethodUnanswered(state.profile)) {
+    await askCommuteMethod(event, supabase, staffId, flowData, state, pre)
+    return
+  }
+
+  // 4. 定期券（通勤手段が電車・その他で、かつ未回答なら聞く）
+  //    車・自転車・徒歩の方は通勤手段の回答時に「定期券なし」で確定済みなので聞かない
+  if (mayHaveCommuterPass(state.profile.commute_method ?? "other") && isCommuterPassUnanswered(state.profile)) {
     await askPass(event, supabase, staffId, flowData, state, pre)
     return
   }
 
-  // 4. 完了 → 本来の申請に戻る
+  // 5. 完了 → 本来の申請に戻る
   await updateLineProfile(supabase, staffId, {
     setup_completed_at: new Date().toISOString(),
     last_applied_at: new Date().toISOString(),
@@ -3524,13 +3539,17 @@ async function sendSettings(event: LineEvent, supabase: ServiceClient, staffId: 
     settingsCard({
       name: state.name,
       homeStation: home,
+      commuteMethod: commuteMethodLabel(state.profile),
       commuterPass: passLabel,
       stationData: "action=stg&k=hs",
+      commuteData: "action=stg&k=cm",
       passData: "action=stg&k=cp",
       nameData: "action=stg&k=nm",
       pendingNameChange: hasPendingNameChange(state.profile),
+      // 車・自転車・徒歩の方には定期券の行とボタンを出さない（関係がなく迷うため）
+      showPass: mayHaveCommuterPass(state.profile.commute_method ?? "other"),
     }),
-    `⚙️ 設定\n現在の登録\n　お名前：${state.name}\n　最寄り駅：${home}\n　定期券：${passLabel}`
+    `⚙️ 設定\n現在の登録\n　お名前：${state.name}\n　最寄り駅：${home}\n　通勤手段：${commuteMethodLabel(state.profile)}\n　定期券：${passLabel}`
   )
 }
 
@@ -3548,6 +3567,15 @@ async function handleSettingsPostback(event: LineEvent, params: URLSearchParams)
     case "hs":
       await startHomeStationChange(event, supabase, staff.id, {})
       return
+    case "cm": {
+      const state = await loadStaffLineState(supabase, staff.id)
+      if (!state?.available) {
+        await sendLineMessage(replyToken, source.userId, "通勤手段の登録は準備中です。担当にお知らせください。")
+        return
+      }
+      await askCommuteMethod(event, supabase, staff.id, {}, state)
+      return
+    }
     case "cp": {
       const state = await loadStaffLineState(supabase, staff.id)
       if (!state?.available) {
@@ -3692,6 +3720,113 @@ async function sendReceiptCard(event: LineEvent, supabase: ServiceClient, receip
 /** 定期券フロー用のキャンセル */
 function passCancelAction(): ActionDef {
   return flexPostback("キャンセル", "action=cpx", "キャンセル")
+}
+
+/**
+ * 通勤手段を聞く。
+ *
+ * 定期券の有無を直接聞くより、通勤手段から入ったほうがスタッフの実感に合う。
+ * 車・自転車・徒歩を選んだ方には定期券をいっさい聞かない（質問が1つ減る）。
+ */
+async function askCommuteMethod(
+  event: LineEvent,
+  supabase: ServiceClient,
+  staffId: string,
+  data: TransitData,
+  state: StaffLineState,
+  pre: unknown[] = []
+): Promise<void> {
+  const { replyToken, source } = event
+  await setTransitSession(supabase, source.userId, staffId, "pass_cm", {
+    setupFlow: data.setupFlow,
+    resume: data.resume,
+    stationReviewed: data.stationReviewed,
+  })
+  const current = state.profile.commute_method
+    ? `現在の登録：${commuteMethodLabel(state.profile)}\n\n`
+    : ""
+  await sendLineMessages(replyToken, source.userId, [
+    ...pre,
+    textWithQuickReply(
+      current +
+        "🚶 普段の通勤手段を選んでください。\n\n" +
+        "電車代の計算に使います。通勤手段が変わったら、設定からすぐに変更してください。",
+      [
+        flexPostback("電車", "action=cm&v=train", "電車"),
+        flexPostback("車", "action=cm&v=car", "車"),
+        flexPostback("自転車・徒歩", "action=cm&v=bicycle_walk", "自転車・徒歩"),
+        flexPostback("その他", "action=cm&v=other", "その他"),
+        passCancelAction(),
+      ]
+    ),
+  ])
+}
+
+/** 通勤手段の回答 */
+async function handleCommuteMethodPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getPassSession(event, supabase)
+  if (!session?.staffMemberId) return
+  const staffId = session.staffMemberId
+
+  const raw = params.get("v")
+  const valid: CommuteMethod[] = ["train", "car", "bicycle_walk", "other"]
+  const method = valid.find((v) => v === raw)
+  if (!method) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 選択を読み取れませんでした。もう一度お試しください。")
+    return
+  }
+
+  const now = new Date().toISOString()
+  // 定期券を持ちえない手段なら、定期券を「なし」で確定して質問を省く
+  const patch = mayHaveCommuterPass(method)
+    ? { commute_method: method, commute_method_updated_at: now }
+    : {
+        commute_method: method,
+        commute_method_updated_at: now,
+        commuter_pass: { has: false, updated_at: now },
+      }
+
+  const ok = await updateLineProfile(supabase, staffId, patch)
+  if (!ok) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 登録に失敗しました。もう一度お試しください。")
+    return
+  }
+
+  const label = COMMUTE_METHOD_TEXT[method]
+  if (session.data.setupFlow) {
+    await continueSetup(event, supabase, staffId, session.data, `🚶 通勤手段を「${label}」で登録しました。`)
+    return
+  }
+
+  // 設定メニューからの変更。電車・その他なら続けて定期券を聞く
+  if (mayHaveCommuterPass(method)) {
+    const state = await loadStaffLineState(supabase, staffId)
+    if (!state) {
+      await sendLineMessage(replyToken, source.userId, "⚠️ システムエラーが発生しました。担当にご連絡ください。")
+      return
+    }
+    await askPass(event, supabase, staffId, carryPassFlags(session.data), state, [
+      { type: "text", text: `🚶 通勤手段を「${label}」で登録しました。` },
+    ])
+    return
+  }
+
+  await clearTransitSession(supabase, source.userId)
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    `🚶 通勤手段を「${label}」で登録しました。\n定期券は「なし」として扱います。\n電車代は自宅の最寄り駅からの運賃で計算します。`
+  )
+}
+
+/** 通勤手段の表示名（メッセージ本文用） */
+const COMMUTE_METHOD_TEXT: Record<CommuteMethod, string> = {
+  train: "電車",
+  car: "車",
+  bicycle_walk: "自転車・徒歩",
+  other: "その他",
 }
 
 /** 定期券の有無を聞く */

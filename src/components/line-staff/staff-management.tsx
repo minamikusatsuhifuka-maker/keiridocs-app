@@ -34,9 +34,11 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import {
+  commuteMethodLabel,
   commuterPassLabel,
   findNameConflicts,
   hasPendingNameChange,
+  mayHaveCommuterPass,
   parseLineProfile,
 } from "@/lib/line-staff-profile"
 
@@ -60,7 +62,11 @@ function setupStatus(member: StaffMember): { done: boolean; issues: string[] } {
   const profile = parseLineProfile(member.line_profile)
   const issues: string[] = []
   if (!member.home_station) issues.push("最寄り駅 未登録")
-  if (!profile.commuter_pass) issues.push("定期券 未回答")
+  if (!profile.commute_method) issues.push("通勤手段 未回答")
+  // 車・自転車・徒歩の方は定期券を聞かないので未回答扱いにしない
+  if (mayHaveCommuterPass(profile.commute_method ?? "other") && !profile.commuter_pass) {
+    issues.push("定期券 未回答")
+  }
   if (!profile.name_confirmed_at) issues.push("氏名 未確認")
   return { done: !!profile.setup_completed_at, issues }
 }
@@ -126,7 +132,12 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const setupSummary = {
     notDone: activeStaff.filter((m) => !setupStatus(m).done).length,
     noStation: activeStaff.filter((m) => !m.home_station).length,
-    passUnanswered: activeStaff.filter((m) => !parseLineProfile(m.line_profile).commuter_pass).length,
+    methodUnanswered: activeStaff.filter((m) => !parseLineProfile(m.line_profile).commute_method).length,
+    // 車・自転車・徒歩の方は定期券を聞かないので未回答に数えない
+    passUnanswered: activeStaff.filter((m) => {
+      const p = parseLineProfile(m.line_profile)
+      return mayHaveCommuterPass(p.commute_method ?? "other") && !p.commuter_pass
+    }).length,
   }
 
   /* ---------- データ取得 ---------- */
@@ -374,9 +385,9 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
             <p>LINE未登録のスタッフにはリマインダーが届きません。</p>
             {staff.length > 0 && (
               <p className="mt-1">
-                LINE初回設定：未完了 {setupSummary.notDone}名 ／ 最寄り駅 未登録 {setupSummary.noStation}名 ／ 定期券 未回答{" "}
-                {setupSummary.passUnanswered}名
-                <span className="ml-1 text-xs">（定期券が未回答のまま電車代を申請すると二重払いになるため、未完了の方は次の申請時に設定を1回挟みます）</span>
+                LINE初回設定：未完了 {setupSummary.notDone}名 ／ 最寄り駅 未登録 {setupSummary.noStation}名 ／ 通勤手段 未回答{" "}
+                {setupSummary.methodUnanswered}名 ／ 定期券 未回答 {setupSummary.passUnanswered}名
+                <span className="ml-1 text-xs">（定期券が未回答のまま電車代を申請すると二重払いになるため、未完了の方は次の申請時に設定を1回挟みます。車・自転車・徒歩の方には定期券を聞きません）</span>
               </p>
             )}
           </div>
@@ -479,7 +490,9 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                                 </span>
                               )}
                               <span className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                                定期券：{commuterPassLabel(parseLineProfile(member.line_profile))}
+                                通勤：{commuteMethodLabel(parseLineProfile(member.line_profile))}
+                                {mayHaveCommuterPass(parseLineProfile(member.line_profile).commute_method ?? "other") &&
+                                  `／定期券：${commuterPassLabel(parseLineProfile(member.line_profile))}`}
                               </span>
                             </div>
                           )

@@ -378,36 +378,49 @@ export function stationReviewCard(params: { station: string; okData: string; cha
 export function settingsCard(params: {
   name: string
   homeStation: string
+  commuteMethod: string
   commuterPass: string
   stationData: string
+  commuteData: string
   passData: string
   nameData: string
   pendingNameChange?: boolean
+  /** 通勤手段が電車・その他のときだけ定期券の行とボタンを出す */
+  showPass?: boolean
 }): FlexMessage {
+  const rows: FlexComponent[] = [
+    infoRow("お名前", params.name),
+    infoRow("最寄り駅", params.homeStation),
+    infoRow("通勤手段", params.commuteMethod),
+  ]
+  if (params.showPass !== false) {
+    rows.push(infoRow("定期券", params.commuterPass))
+  }
+
   const body: FlexComponent[] = [
     text("現在の登録", { size: "xs", weight: "bold", color: FLEX_COLORS.textSub }),
-    panel(
-      [
-        infoRow("お名前", params.name),
-        infoRow("最寄り駅", params.homeStation),
-        infoRow("定期券", params.commuterPass),
-      ],
-      "sm"
+    panel(rows, "sm"),
+    note(
+      "最寄り駅・通勤手段・定期券はご自身で変更できます。お名前の変更は担当が行います。\n" +
+        "通勤手段や最寄り駅が変わったときは、すぐにここから変更してください。"
     ),
-    note("最寄り駅と定期券はご自身で変更できます。お名前の変更は担当が行います。"),
   ]
   if (params.pendingNameChange) {
     body.push(cautionBlock(["お名前の変更を担当に依頼済みです。"]))
   }
-  body.push(
-    buttons([
-      primaryButton(postback("最寄り駅を変更する", params.stationData)),
-      primaryButton(postback("定期券を変更する", params.passData)),
-      secondaryButton(postback("お名前の変更を申請する", params.nameData)),
-    ])
-  )
+
+  const actions = [
+    primaryButton(postback("最寄り駅を変更する", params.stationData)),
+    primaryButton(postback("通勤手段を変更する", params.commuteData)),
+  ]
+  if (params.showPass !== false) {
+    actions.push(primaryButton(postback("定期券を変更する", params.passData)))
+  }
+  actions.push(secondaryButton(postback("お名前の変更を申請する", params.nameData)))
+  body.push(buttons(actions))
+
   return flexMessage(
-    `設定：${params.name}さん／最寄り駅 ${params.homeStation}／定期券 ${params.commuterPass}`,
+    `設定：${params.name}さん／最寄り駅 ${params.homeStation}／通勤手段 ${params.commuteMethod}`,
     cardBubble("設定", body)
   )
 }

@@ -37,10 +37,24 @@ const samples: Record<string, FlexMessage> = {
   "02_settings": settingsCard({
     name: "南 ひふ子",
     homeStation: "南草津駅（滋賀県）",
+    commuteMethod: "電車",
     commuterPass: "あり（南草津 ⇄ 京都）",
     stationData: "a",
-    passData: "b",
-    nameData: "c",
+    commuteData: "b",
+    passData: "c",
+    nameData: "d",
+  }),
+  // 車通勤の方は定期券の行とボタンが出ない
+  "02b_settings_car": settingsCard({
+    name: "南 ひふ子",
+    homeStation: "南草津駅（滋賀県）",
+    commuteMethod: "車",
+    commuterPass: "なし",
+    stationData: "a",
+    commuteData: "b",
+    passData: "c",
+    nameData: "d",
+    showPass: false,
   }),
   "03_receipt_single": receiptReceivedCard({
     items: [{ store: "ホテル京都駅前", amount: 18000, date: "2026-11-14" }],

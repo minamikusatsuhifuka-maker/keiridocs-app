@@ -43,6 +43,7 @@ export type TransitStep =
   | "setup_station" // 登録済み最寄り駅の確認待ち（ボタン）
   | "setup_offer" // 氏名登録直後「続けて最寄り駅を登録しますか？」の選択待ち
   // 定期券の登録・変更
+  | "pass_cm" // 通勤手段の選択待ち（電車/車/自転車・徒歩/その他）
   | "pass_ask" // あり／なしの選択待ち
   | "pass_from" // 区間の片方の駅名の入力待ち
   | "pass_from_pick" // 片方の駅の候補選択待ち
