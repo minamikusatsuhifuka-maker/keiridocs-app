@@ -48,6 +48,8 @@ interface StaffMember {
   seminar_repeat_claimed_at?: string | null
   home_station?: string | null
   home_station_pref?: string | null
+  /** 043_staff_retired.sql（退職日時。NULL=在籍中） */
+  retired_at?: string | null
   is_test?: boolean | null
   /** 041_staff_line_profile.sql（定期券・初回設定の完了など） */
   line_profile?: unknown
@@ -108,13 +110,23 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const [togglingId, setTogglingId] = useState<string | null>(null)
   // テストスタッフ ON/OFFトグル処理中のID
   const [togglingTestId, setTogglingTestId] = useState<string | null>(null)
+  // 退職 ON/OFFトグル処理中のID
+  const [togglingRetiredId, setTogglingRetiredId] = useState<string | null>(null)
+  // 退職者も一覧に表示するか（既定は在籍者のみ）
+  const [showRetired, setShowRetired] = useState(false)
+
+  // 在籍者（退職者は既定で隠す。過去の記録は残っているが日々の運用では邪魔になる）
+  const activeStaff = staff.filter((m) => !m.retired_at)
+  const retiredCount = staff.length - activeStaff.length
+  const visibleStaff = showRetired ? staff : activeStaff
 
   // 同姓・同名の警告（LINEの氏名登録で候補提示が必要になる組み合わせ）
-  const nameConflicts = findNameConflicts(staff)
+  // 退職者は氏名照合の対象外なので、在籍者だけで判定する
+  const nameConflicts = findNameConflicts(activeStaff)
   const setupSummary = {
-    notDone: staff.filter((m) => !setupStatus(m).done).length,
-    noStation: staff.filter((m) => !m.home_station).length,
-    passUnanswered: staff.filter((m) => !parseLineProfile(m.line_profile).commuter_pass).length,
+    notDone: activeStaff.filter((m) => !setupStatus(m).done).length,
+    noStation: activeStaff.filter((m) => !m.home_station).length,
+    passUnanswered: activeStaff.filter((m) => !parseLineProfile(m.line_profile).commuter_pass).length,
   }
 
   /* ---------- データ取得 ---------- */
@@ -232,6 +244,33 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
     }
   }
 
+  /* ---------- 退職 ON/OFFトグル（論理削除。記録は残す） ---------- */
+  async function handleToggleRetired(member: StaffMember, next: boolean) {
+    if (next && !confirm(`「${member.name}」を退職にしますか？\n\n一覧から隠れ、LINEからの申請も受け付けなくなります。\n過去の申請記録と支給額はそのまま残ります。`)) return
+    setTogglingRetiredId(member.id)
+    try {
+      const res = await fetch("/api/line-staff", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: member.id, retired: next }),
+      })
+      if (!res.ok) {
+        const json = (await res.json().catch(() => ({}))) as { error?: string }
+        throw new Error(json.error || "操作に失敗しました")
+      }
+      toast.success(
+        next
+          ? "退職にしました（一覧から隠れ、LINEからの申請を受け付けません。記録は残ります）"
+          : "在籍に戻しました"
+      )
+      fetchStaff()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "操作に失敗しました")
+    } finally {
+      setTogglingRetiredId(null)
+    }
+  }
+
   /* ---------- テストスタッフ ON/OFFトグル（保存先分離・集計/通知から除外） ---------- */
   async function handleToggleTest(member: StaffMember, next: boolean) {
     setTogglingTestId(member.id)
@@ -260,7 +299,15 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
 
   /* ---------- 削除 ---------- */
   async function handleDelete(id: string, name: string) {
-    if (!confirm(`「${name}」を削除しますか？`)) return
+    if (
+      !confirm(
+        `「${name}」を削除しますか？\n\n` +
+          `削除は登録ミスの行を消すためのものです。\n` +
+          `過去の申請があるスタッフは削除できません（領収書の記録が消えて税理士提出リストの裏づけが失われるため）。\n` +
+          `退職された場合は「退職」に切り替えてください。`
+      )
+    )
+      return
     setDeletingId(id)
     try {
       const res = await fetch(`/api/line-staff?id=${id}`, { method: "DELETE" })
@@ -296,7 +343,12 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
             </>
           )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          {retiredCount > 0 && (
+            <Button variant="outline" onClick={() => setShowRetired((v) => !v)}>
+              {showRetired ? `退職者を隠す（${retiredCount}名）` : `退職者も表示（${retiredCount}名）`}
+            </Button>
+          )}
           <Button asChild variant="outline">
             <Link href="/staff-receipts/admin">
               スタッフ領収書管理へ
@@ -358,11 +410,12 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                     <TableHead>LINE初回設定・定期券</TableHead>
                     <TableHead>セミナー2回目以降</TableHead>
                     <TableHead>テスト</TableHead>
+                    <TableHead>在籍</TableHead>
                     <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {staff.map((member) => (
+                  {visibleStaff.map((member) => (
                     <TableRow key={member.id}>
                       <TableCell className="font-medium">
                         <div className="flex flex-col gap-0.5">
@@ -476,6 +529,24 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                           >
                             {togglingTestId === member.id && <Loader2 className="h-3 w-3 animate-spin" />}
                             {member.is_test ? "テスト(ON)" : "本番(OFF)"}
+                          </span>
+                        </div>
+                      </TableCell>
+                      {/* 在籍/退職。退職＝一覧から隠し、LINEからの申請も受け付けない。記録は残る */}
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Switch
+                            checked={!member.retired_at}
+                            onCheckedChange={(checked) => handleToggleRetired(member, !checked)}
+                            disabled={togglingRetiredId === member.id}
+                            aria-label="在籍の切り替え"
+                          />
+                          <span
+                            className="inline-flex items-center gap-1 text-sm font-medium"
+                            style={{ color: member.retired_at ? "var(--dusk-text-muted)" : undefined }}
+                          >
+                            {togglingRetiredId === member.id && <Loader2 className="h-3 w-3 animate-spin" />}
+                            {member.retired_at ? "退職" : "在籍"}
                           </span>
                         </div>
                       </TableCell>

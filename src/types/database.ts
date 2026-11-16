@@ -551,6 +551,8 @@ export interface Database {
           is_test: boolean
           // 041_staff_line_profile.sql で追加（定期券・初回設定完了など。形式は lib/line-staff-profile.ts）
           line_profile: Json
+          // 043_staff_retired.sql で追加（退職日時。NULL=在籍中。退職者は一覧と氏名照合から除外）
+          retired_at: string | null
         }
         Insert: {
           id?: string
@@ -563,6 +565,7 @@ export interface Database {
           home_station_pref?: string | null
           is_test?: boolean
           line_profile?: Json
+          retired_at?: string | null
         }
         Update: {
           id?: string
@@ -575,6 +578,7 @@ export interface Database {
           home_station_pref?: string | null
           is_test?: boolean
           line_profile?: Json
+          retired_at?: string | null
         }
         Relationships: []
       }

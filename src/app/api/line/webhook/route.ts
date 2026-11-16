@@ -452,16 +452,37 @@ export async function POST(request: NextRequest) {
 /** LINEの振り分けで使うスタッフ行（staff_members の必要最小限） */
 type StaffRow = { id: string; name: string; line_user_id?: string | null }
 
-/** スタッフ一覧を取得する（取得できなければ null） */
+/**
+ * スタッフ一覧を取得する（取得できなければ null）。
+ *
+ * 退職者（retired_at が非NULL）は除外する。退職後に申請されると支給が発生してしまうため。
+ * 過去の申請記録は staff_members に残るので、ここで除外しても履歴は壊れない。
+ * 043 未適用の環境では retired_at が無いので、列なしで取り直して従来どおり全件返す。
+ */
 async function fetchStaffMembers(
   supabase: ReturnType<typeof createServiceClient>
 ): Promise<StaffRow[] | null> {
-  const { data, error } = await supabase.from("staff_members").select("id, name, line_user_id")
-  if (error || !data) {
+  const { data, error } = await supabase
+    .from("staff_members")
+    .select("id, name, line_user_id")
+    .is("retired_at", null)
+  if (!error && data) return data as StaffRow[]
+
+  const isMissingColumn =
+    error?.code === "PGRST204" || error?.code === "42703" || /retired_at/.test(error?.message || "")
+  if (!isMissingColumn) {
     console.error("staff_members取得エラー:", error)
     return null
   }
-  return data as StaffRow[]
+
+  const { data: fallback, error: fallbackError } = await supabase
+    .from("staff_members")
+    .select("id, name, line_user_id")
+  if (fallbackError || !fallback) {
+    console.error("staff_members取得エラー:", fallbackError)
+    return null
+  }
+  return fallback as StaffRow[]
 }
 
 /** イベント振り分け */

@@ -204,12 +204,37 @@ export async function PATCH(request: NextRequest) {
       id?: string
       seminar_repeat_claimed?: boolean
       is_test?: boolean
+      retired?: boolean
     }
     if (!body.id) {
       return NextResponse.json({ error: "IDは必須です" }, { status: 400 })
     }
 
     const service = createServiceClient()
+
+    // 退職の切替（論理削除）。退職者は一覧から隠し、LINEからの申請も受け付けないが、
+    // 過去の申請記録は残す（削除すると領収書レコードがCASCADEで消えてしまうため）。
+    if (typeof body.retired === "boolean") {
+      const { data, error } = await service
+        .from("staff_members")
+        .update({ retired_at: body.retired ? new Date().toISOString() : null })
+        .eq("id", body.id)
+        .select("*")
+        .single()
+      if (error) {
+        const isMissingColumn =
+          error.code === "PGRST204" || error.code === "42703" || /retired_at/.test(error.message || "")
+        if (isMissingColumn) {
+          return NextResponse.json(
+            { error: "retired_at カラムが未適用です。migration 043_staff_retired.sql を実行してください。" },
+            { status: 400 }
+          )
+        }
+        console.error("退職切替エラー:", error.message, error.code)
+        throw error
+      }
+      return NextResponse.json({ data })
+    }
 
     // テストスタッフ切替（ON/OFF）
     if (typeof body.is_test === "boolean") {
@@ -303,6 +328,40 @@ export async function DELETE(request: NextRequest) {
     }
 
     const service = createServiceClient()
+
+    // 過去の申請があるスタッフは削除できない。
+    // staff_receipts は ON DELETE CASCADE なので削除すると領収書レコードが全件消え、
+    // petty_cash_transactions は ON DELETE SET NULL なので支給取引の氏名が失われる。
+    // どちらも税理士提出リストの裏づけが壊れるため、退職者は「退職」で外すこと。
+    const [{ count: receiptCount }, { count: txCount }] = await Promise.all([
+      service
+        .from("staff_receipts")
+        .select("id", { count: "exact", head: true })
+        .eq("staff_member_id", id),
+      service
+        .from("petty_cash_transactions")
+        .select("id", { count: "exact", head: true })
+        .eq("staff_member_id", id),
+    ])
+
+    const total = (receiptCount ?? 0) + (txCount ?? 0)
+    if (total > 0) {
+      const { data: member } = await service
+        .from("staff_members")
+        .select("name")
+        .eq("id", id)
+        .single()
+      return NextResponse.json(
+        {
+          error:
+            `「${member?.name ?? "このスタッフ"}」には過去の申請が ${total} 件あるため削除できません。` +
+            `削除すると領収書の記録が消え、税理士提出リストの裏づけが失われます。` +
+            `退職された場合は「退職」に切り替えてください（記録は残り、一覧からは隠れます）。`,
+        },
+        { status: 409 }
+      )
+    }
+
     const { error } = await service
       .from("staff_members")
       .delete()
