@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>リッチメニュー（経費申請）</title>
+<!--
+  LINEリッチメニュー画像のレイアウト（2500×1686px・2行×3列）。
+  render.mjs が Playwright でこのHTMLを撮影して richmenu.png を作る。
+  色・ラベルを変えるときはこのファイルを直して `npm run richmenu:render` を実行する。
+  ボタンの送信テキストと領域は richmenu.config.json（deploy.ts が読む）で管理する。
+-->
+<link rel="stylesheet" href="../../node_modules/@fontsource/zen-maru-gothic/700.css">
+<style>
+  :root {
+    --ground: #BF9D76;      /* ブラウン（地） */
+    --tile: #F7ECDB;        /* タイル */
+    --tile-border: #D4B692; /* タイル枠 */
+    --icon-circle: #E6CDA7; /* アイコン円 */
+    --fill: #D4B38A;        /* イラスト塗り */
+    --line: #6B4A2C;        /* イラストの線 */
+    --white: #FBF4E8;       /* イラスト白 */
+    --accent: #A85B32;      /* 差し色（少量） */
+    --label: #3F2E20;       /* ラベル */
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 2500px; height: 1686px; background: var(--ground); overflow: hidden; }
+  .grid {
+    display: grid;
+    grid-template-columns: 833px 833px 834px; /* 右端列で端数を吸収 */
+    grid-template-rows: 843px 843px;
+    width: 2500px; height: 1686px;
+  }
+  .cell { padding: 10px; }
+  .tile {
+    width: 100%; height: 100%;
+    background: var(--tile);
+    border: 4px solid var(--tile-border);
+    border-radius: 15px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 56px;
+  }
+  .circle {
+    width: 330px; height: 330px; border-radius: 50%;
+    background: var(--icon-circle);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .circle svg { width: 230px; height: 230px; }
+  .label {
+    font-family: 'Zen Maru Gothic', sans-serif; font-weight: 700;
+    font-size: 104px; line-height: 1; color: var(--label); letter-spacing: 2px;
+    white-space: nowrap;
+  }
+  svg * { stroke: var(--line); stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+  .f { fill: var(--fill); }
+  .w { fill: var(--white); }
+  .a { fill: var(--accent); }
+  .n { fill: none; }
+</style>
+</head>
+<body>
+<div class="grid">
+  <!-- 申請する（カメラ） -->
+  <div class="cell"><div class="tile">
+    <div class="circle"><svg viewBox="0 0 100 100">
+      <path class="f" d="M36 26 l5 -8 h18 l5 8 z"/>
+      <rect class="f" x="12" y="26" width="76" height="54" rx="10"/>
+      <circle class="w" cx="50" cy="53" r="18"/>
+      <circle class="f" cx="50" cy="53" r="9"/>
+      <circle class="a" cx="76" cy="37" r="4"/>
+    </svg></div>
+    <div class="label">申請する</div>
+  </div></div>
+
+  <!-- 電車代（電車） -->
+  <div class="cell"><div class="tile">
+    <div class="circle"><svg viewBox="0 0 100 100">
+      <rect class="f" x="22" y="12" width="56" height="64" rx="14"/>
+      <rect class="w" x="30" y="22" width="40" height="22" rx="5"/>
+      <line class="n" x1="50" y1="22" x2="50" y2="44"/>
+      <circle class="a" cx="35" cy="60" r="4.5"/>
+      <circle class="a" cx="65" cy="60" r="4.5"/>
+      <line class="n" x1="34" y1="76" x2="24" y2="90"/>
+      <line class="n" x1="66" y1="76" x2="76" y2="90"/>
+      <line class="n" x1="28" y1="85" x2="72" y2="85"/>
+    </svg></div>
+    <div class="label">電車代</div>
+  </div></div>
+
+  <!-- 申請履歴（クリップボード） -->
+  <div class="cell"><div class="tile">
+    <div class="circle"><svg viewBox="0 0 100 100">
+      <rect class="f" x="20" y="16" width="60" height="74" rx="8"/>
+      <rect class="w" x="27" y="26" width="46" height="57" rx="4"/>
+      <rect class="a" x="38" y="10" width="24" height="12" rx="4"/>
+      <line class="n" x1="35" y1="42" x2="65" y2="42"/>
+      <line class="n" x1="35" y1="55" x2="65" y2="55"/>
+      <line class="n" x1="35" y1="68" x2="55" y2="68"/>
+    </svg></div>
+    <div class="label">申請履歴</div>
+  </div></div>
+
+  <!-- 設定（歯車） -->
+  <div class="cell"><div class="tile">
+    <div class="circle"><svg viewBox="0 0 100 100">
+      <path class="f" d="M44 10 h12 l2 11 a30 30 0 0 1 8 4.5 l10.5 -4 6 10.4 -8.5 7.2 a30 30 0 0 1 0 9.8 l8.5 7.2 -6 10.4 -10.5 -4 a30 30 0 0 1 -8 4.5 l-2 11 h-12 l-2 -11 a30 30 0 0 1 -8 -4.5 l-10.5 4 -6 -10.4 8.5 -7.2 a30 30 0 0 1 0 -9.8 l-8.5 -7.2 6 -10.4 10.5 4 a30 30 0 0 1 8 -4.5 z" transform="translate(0 6)"/>
+      <circle class="w" cx="50" cy="51" r="13"/>
+      <circle class="a" cx="50" cy="51" r="4"/>
+    </svg></div>
+    <div class="label">設定</div>
+  </div></div>
+
+  <!-- 使い方（本） -->
+  <div class="cell"><div class="tile">
+    <div class="circle"><svg viewBox="0 0 100 100">
+      <path class="f" d="M50 28 C40 20 24 20 12 24 V80 C24 76 40 76 50 84 Z"/>
+      <path class="w" d="M50 28 C60 20 76 20 88 24 V80 C76 76 60 76 50 84 Z"/>
+      <line class="n" x1="50" y1="28" x2="50" y2="84"/>
+      <line class="n" x1="60" y1="40" x2="78" y2="37"/>
+      <line class="n" x1="60" y1="52" x2="78" y2="49"/>
+      <path class="a" d="M24 22 v20 l5 -4 l5 4 v-21 z"/>
+    </svg></div>
+    <div class="label">使い方</div>
+  </div></div>
+
+  <!-- 問い合わせ（吹き出し） -->
+  <div class="cell"><div class="tile">
+    <div class="circle"><svg viewBox="0 0 100 100">
+      <path class="f" d="M18 22 h64 a8 8 0 0 1 8 8 v34 a8 8 0 0 1 -8 8 h-36 l-16 14 v-14 h-12 a8 8 0 0 1 -8 -8 v-34 a8 8 0 0 1 8 -8 z"/>
+      <circle class="w" cx="34" cy="47" r="5"/>
+      <circle class="w" cx="50" cy="47" r="5"/>
+      <circle class="a" cx="66" cy="47" r="5"/>
+    </svg></div>
+    <div class="label">問い合わせ</div>
+  </div></div>
+</div>
+</body>
+</html>

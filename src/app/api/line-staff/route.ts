@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import type { Database } from "@/types/database"
+import { hasPendingNameChange, parseLineProfile } from "@/lib/line-staff-profile"
 
 /** サービスロールキーでRLSをバイパスするSupabaseクライアント */
 function createServiceClient() {
@@ -133,6 +134,27 @@ export async function PUT(request: NextRequest) {
     }
 
     const service = createServiceClient()
+
+    // 氏名を変更した場合は、LINEからの「お名前の変更依頼」を対応済みにする。
+    // line_user_id（LINEの紐づけ）と過去の申請（staff_member_id で紐づく）は変わらないため、改姓しても履歴は壊れない。
+    if (updates.name !== undefined) {
+      const { data: cur, error: curError } = await service
+        .from("staff_members")
+        .select("line_profile")
+        .eq("id", body.id)
+        .maybeSingle()
+      if (!curError && cur) {
+        const profile = parseLineProfile((cur as { line_profile?: unknown }).line_profile)
+        if (hasPendingNameChange(profile)) {
+          const now = new Date().toISOString()
+          profile.name_change_requests = (profile.name_change_requests ?? []).map((r) =>
+            r.resolved_at ? r : { ...r, resolved_at: now }
+          )
+          updates.line_profile = profile
+        }
+      }
+    }
+
     const { data, error } = await service
       .from("staff_members")
       .update(updates)

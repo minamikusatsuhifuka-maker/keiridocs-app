@@ -36,6 +36,19 @@ export type TransitStep =
   | "home_input" // 駅名の入力待ち
   | "home_confirm" // 一意判定の確認待ち（OK/修正）
   | "home_pick" // 候補からの選択待ち
+  // 電車代：定期券区間を通るかの選択待ち（定期券ありのスタッフのみ）
+  | "train_pass"
+  // 初回設定（氏名確認 → 最寄り駅 → 定期券）。完了したら resume の申請に戻る
+  | "setup_name" // 登録済み氏名の確認待ち（ボタン）
+  | "setup_station" // 登録済み最寄り駅の確認待ち（ボタン）
+  | "setup_offer" // 氏名登録直後「続けて最寄り駅を登録しますか？」の選択待ち
+  // 定期券の登録・変更
+  | "pass_ask" // あり／なしの選択待ち
+  | "pass_from" // 区間の片方の駅名の入力待ち
+  | "pass_from_pick" // 片方の駅の候補選択待ち
+  | "pass_to" // もう片方の駅名の入力待ち
+  | "pass_to_pick" // もう片方の駅の候補選択待ち
+  | "pass_confirm" // 区間の確認待ち
 
 /** セッションに溜める入力途中データ */
 export interface TransitData {
@@ -73,7 +86,35 @@ export interface TransitData {
   homeStationCandidates?: { station: string; pref: string; line?: string | null }[] // 候補選択肢
   /** 「電車代」トリガーで開始したが最寄り駅が未登録だった場合、登録完了後に電車代申請へ自動復帰させる印 */
   pendingTrain?: boolean
+  /** 最寄り駅の変更時に「変更前 → 変更後」を示すための変更前の駅（例「南草津駅（滋賀県）」） */
+  homeBefore?: string
+
+  /* --- 初回設定（【3】全員に1回だけ） --- */
+  /** 初回設定フローの途中であることの印（最寄り駅・定期券の登録完了後に次の設定へ進める） */
+  setupFlow?: boolean
+  /** 初回設定のうち最寄り駅の確認が済んだか */
+  stationReviewed?: boolean
+  /** 設定完了後に戻る申請（中断させない） */
+  resume?: ResumeAction
+
+  /* --- 定期券 --- */
+  passFrom?: { station: string; pref: string }
+  passTo?: { station: string; pref: string }
+  passCandidates?: { station: string; pref: string; line?: string | null }[]
+  /** 電車代で定期券区間を控除した（出発駅＝定期券区間の端）か */
+  passDeducted?: boolean
+  /** 控除した定期券区間（確認画面の説明・記録用） */
+  passSegment?: { from: string; to: string }
 }
+
+/** 初回設定の完了後に戻る申請 */
+export type ResumeAction =
+  | { kind: "menu" } // 申請メニュー
+  | { kind: "train" } // 電車代
+  | { kind: "other" } // 交通費（バス・車など）
+  | { kind: "transit" } // 交通費（手段を選ぶ）
+  | { kind: "receipt"; rid: string } // 受け取り済みの領収書の区分選択
+  | { kind: "none" } // 戻り先なし（友だち追加直後など）
 
 export interface TransitSession {
   staffMemberId: string | null

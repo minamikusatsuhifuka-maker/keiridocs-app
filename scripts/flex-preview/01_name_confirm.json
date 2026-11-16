@@ -1,0 +1,88 @@
+{
+  "type": "bubble",
+  "size": "mega",
+  "header": {
+    "type": "box",
+    "layout": "vertical",
+    "backgroundColor": "#8A6246",
+    "paddingAll": "12px",
+    "contents": [
+      {
+        "type": "text",
+        "text": "お名前の確認",
+        "wrap": true,
+        "size": "sm",
+        "weight": "bold",
+        "color": "#FFFFFF"
+      }
+    ]
+  },
+  "body": {
+    "type": "box",
+    "layout": "vertical",
+    "backgroundColor": "#FFFCF7",
+    "borderColor": "#E0CDB2",
+    "borderWidth": "1px",
+    "paddingAll": "13px",
+    "contents": [
+      {
+        "type": "text",
+        "text": "南 ひふ子さんとして登録します。よろしいですか？",
+        "wrap": true,
+        "size": "md",
+        "weight": "bold",
+        "color": "#4A3728"
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "spacing": "sm",
+        "margin": "lg",
+        "contents": [
+          {
+            "type": "button",
+            "style": "primary",
+            "color": "#8A6246",
+            "height": "sm",
+            "action": {
+              "type": "postback",
+              "label": "はい、これで登録する",
+              "data": "action=nmok&sid=x",
+              "displayText": "はい、これで登録する"
+            }
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "borderColor": "#CDB899",
+            "borderWidth": "1px",
+            "cornerRadius": "8px",
+            "paddingAll": "9px",
+            "action": {
+              "type": "postback",
+              "label": "入力し直す",
+              "data": "action=nmre",
+              "displayText": "入力し直す"
+            },
+            "contents": [
+              {
+                "type": "text",
+                "text": "入力し直す",
+                "wrap": true,
+                "size": "sm",
+                "weight": "bold",
+                "color": "#6B5A4A",
+                "align": "center"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "styles": {
+    "body": {
+      "backgroundColor": "#FFFCF7"
+    }
+  }
+}

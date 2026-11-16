@@ -549,6 +549,8 @@ export interface Database {
           home_station_pref: string | null
           // 035_staff_is_test.sql で追加（テストスタッフ＝保存先分離・集計/通知から除外）
           is_test: boolean
+          // 041_staff_line_profile.sql で追加（定期券・初回設定完了など。形式は lib/line-staff-profile.ts）
+          line_profile: Json
         }
         Insert: {
           id?: string
@@ -560,6 +562,7 @@ export interface Database {
           home_station?: string | null
           home_station_pref?: string | null
           is_test?: boolean
+          line_profile?: Json
         }
         Update: {
           id?: string
@@ -571,6 +574,7 @@ export interface Database {
           home_station?: string | null
           home_station_pref?: string | null
           is_test?: boolean
+          line_profile?: Json
         }
         Relationships: []
       }

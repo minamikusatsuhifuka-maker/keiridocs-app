@@ -1,0 +1,15 @@
+{
+  "_comment": "LINEリッチメニューの定義（deploy.ts が読む）。text はボタンを押すと送信される文字列で、webhook がトリガーとして受け付ける。画像は richmenu.png（render.mjs で生成）。",
+  "name": "経費申請メニュー v1",
+  "chatBarText": "メニュー",
+  "selected": false,
+  "size": { "width": 2500, "height": 1686 },
+  "areas": [
+    { "label": "申請する", "text": "申請", "bounds": { "x": 0, "y": 0, "width": 833, "height": 843 } },
+    { "label": "電車代", "text": "電車代", "bounds": { "x": 833, "y": 0, "width": 833, "height": 843 } },
+    { "label": "申請履歴", "text": "申請履歴", "bounds": { "x": 1666, "y": 0, "width": 834, "height": 843 } },
+    { "label": "設定", "text": "設定", "bounds": { "x": 0, "y": 843, "width": 833, "height": 843 } },
+    { "label": "使い方", "text": "使い方", "bounds": { "x": 833, "y": 843, "width": 833, "height": 843 } },
+    { "label": "問い合わせ", "text": "問い合わせ", "bounds": { "x": 1666, "y": 843, "width": 834, "height": 843 } }
+  ]
+}

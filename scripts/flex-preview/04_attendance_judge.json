@@ -1,0 +1,144 @@
+{
+  "type": "bubble",
+  "size": "mega",
+  "header": {
+    "type": "box",
+    "layout": "vertical",
+    "backgroundColor": "#8A6246",
+    "paddingAll": "12px",
+    "contents": [
+      {
+        "type": "text",
+        "text": "頂点への道 2026年11月期",
+        "wrap": true,
+        "size": "sm",
+        "weight": "bold",
+        "color": "#FFFFFF"
+      }
+    ]
+  },
+  "body": {
+    "type": "box",
+    "layout": "vertical",
+    "backgroundColor": "#FFFCF7",
+    "borderColor": "#E0CDB2",
+    "borderWidth": "1px",
+    "paddingAll": "13px",
+    "contents": [
+      {
+        "type": "box",
+        "layout": "vertical",
+        "spacing": "xs",
+        "backgroundColor": "#F7E7CC",
+        "cornerRadius": "12px",
+        "paddingAll": "12px",
+        "margin": "md",
+        "contents": [
+          {
+            "type": "text",
+            "wrap": true,
+            "size": "sm",
+            "color": "#5E3708",
+            "contents": [
+              {
+                "type": "span",
+                "text": "過去の申請記録から"
+              },
+              {
+                "type": "span",
+                "text": "2回目以降",
+                "weight": "bold",
+                "color": "#74440A"
+              },
+              {
+                "type": "span",
+                "text": "として計算します。"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "wrap": true,
+            "size": "sm",
+            "color": "#5E3708",
+            "contents": [
+              {
+                "type": "span",
+                "text": "受講料・交通費・宿泊費はいずれも"
+              },
+              {
+                "type": "span",
+                "text": "半額支給",
+                "weight": "bold",
+                "color": "#74440A"
+              },
+              {
+                "type": "span",
+                "text": "です。"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "text",
+        "text": "違っていれば「初回です」を押してください。担当が確認します。",
+        "wrap": true,
+        "size": "xs",
+        "weight": "regular",
+        "color": "#86705C",
+        "margin": "md"
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "spacing": "sm",
+        "margin": "lg",
+        "contents": [
+          {
+            "type": "button",
+            "style": "primary",
+            "color": "#8A6246",
+            "height": "sm",
+            "action": {
+              "type": "postback",
+              "label": "このまま進む",
+              "data": "a",
+              "displayText": "このまま進む"
+            }
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "borderColor": "#CDB899",
+            "borderWidth": "1px",
+            "cornerRadius": "8px",
+            "paddingAll": "9px",
+            "action": {
+              "type": "postback",
+              "label": "初回です",
+              "data": "b",
+              "displayText": "初回です"
+            },
+            "contents": [
+              {
+                "type": "text",
+                "text": "初回です",
+                "wrap": true,
+                "size": "sm",
+                "weight": "bold",
+                "color": "#6B5A4A",
+                "align": "center"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "styles": {
+    "body": {
+      "backgroundColor": "#FFFCF7"
+    }
+  }
+}

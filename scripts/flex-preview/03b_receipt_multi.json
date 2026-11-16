@@ -1,0 +1,262 @@
+{
+  "type": "bubble",
+  "size": "mega",
+  "header": {
+    "type": "box",
+    "layout": "vertical",
+    "backgroundColor": "#8A6246",
+    "paddingAll": "12px",
+    "contents": [
+      {
+        "type": "text",
+        "text": "領収書を3件 受け取りました",
+        "wrap": true,
+        "size": "sm",
+        "weight": "bold",
+        "color": "#FFFFFF"
+      }
+    ]
+  },
+  "body": {
+    "type": "box",
+    "layout": "vertical",
+    "backgroundColor": "#FFFCF7",
+    "borderColor": "#E0CDB2",
+    "borderWidth": "1px",
+    "paddingAll": "13px",
+    "contents": [
+      {
+        "type": "box",
+        "layout": "vertical",
+        "backgroundColor": "#FAF2E6",
+        "borderColor": "#EBDCC6",
+        "borderWidth": "1px",
+        "cornerRadius": "12px",
+        "paddingAll": "12px",
+        "margin": "none",
+        "contents": [
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "md",
+            "margin": "sm",
+            "contents": [
+              {
+                "type": "text",
+                "text": "1件目",
+                "wrap": true,
+                "size": "sm",
+                "weight": "regular",
+                "color": "#86705C",
+                "flex": 3
+              },
+              {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 5,
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "ホテル京都駅前  ¥18,000",
+                    "wrap": true,
+                    "size": "sm",
+                    "weight": "bold",
+                    "color": "#4A3728",
+                    "align": "end"
+                  },
+                  {
+                    "type": "text",
+                    "text": "2026-11-14",
+                    "wrap": true,
+                    "size": "xxs",
+                    "weight": "regular",
+                    "color": "#86705C",
+                    "align": "end"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "separator",
+            "color": "#EBDCC6",
+            "margin": "sm"
+          },
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "md",
+            "margin": "sm",
+            "contents": [
+              {
+                "type": "text",
+                "text": "2件目",
+                "wrap": true,
+                "size": "sm",
+                "weight": "regular",
+                "color": "#86705C",
+                "flex": 3
+              },
+              {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 5,
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "○○書店  ¥1,500",
+                    "wrap": true,
+                    "size": "sm",
+                    "weight": "bold",
+                    "color": "#4A3728",
+                    "align": "end"
+                  },
+                  {
+                    "type": "text",
+                    "text": "2026-11-10",
+                    "wrap": true,
+                    "size": "xxs",
+                    "weight": "regular",
+                    "color": "#86705C",
+                    "align": "end"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "separator",
+            "color": "#EBDCC6",
+            "margin": "sm"
+          },
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "md",
+            "margin": "sm",
+            "contents": [
+              {
+                "type": "text",
+                "text": "3件目",
+                "wrap": true,
+                "size": "sm",
+                "weight": "regular",
+                "color": "#86705C",
+                "flex": 3
+              },
+              {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 5,
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "JR西日本  ¥1,520",
+                    "wrap": true,
+                    "size": "sm",
+                    "weight": "bold",
+                    "color": "#4A3728",
+                    "align": "end"
+                  },
+                  {
+                    "type": "text",
+                    "text": "2026-11-10",
+                    "wrap": true,
+                    "size": "xxs",
+                    "weight": "regular",
+                    "color": "#86705C",
+                    "align": "end"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "separator",
+            "color": "#EBDCC6",
+            "margin": "sm"
+          },
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "md",
+            "margin": "sm",
+            "contents": [
+              {
+                "type": "text",
+                "text": "合計",
+                "wrap": true,
+                "size": "sm",
+                "weight": "regular",
+                "color": "#86705C",
+                "flex": 3
+              },
+              {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 5,
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "¥21,020",
+                    "wrap": true,
+                    "size": "sm",
+                    "weight": "bold",
+                    "color": "#4A3728",
+                    "align": "end"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "text",
+        "text": "選んだ区分は3件すべてに適用されます。区分が違う領収書は別々に送ってください。",
+        "wrap": true,
+        "size": "xs",
+        "weight": "regular",
+        "color": "#86705C",
+        "margin": "md"
+      },
+      {
+        "type": "text",
+        "text": "南さんとして申請します。",
+        "wrap": true,
+        "size": "xs",
+        "weight": "regular",
+        "color": "#86705C",
+        "margin": "md"
+      },
+      {
+        "type": "separator",
+        "color": "#EBDCC6",
+        "margin": "lg"
+      },
+      {
+        "type": "text",
+        "text": "何の費用ですか？",
+        "wrap": true,
+        "size": "md",
+        "weight": "bold",
+        "color": "#4A3728",
+        "margin": "lg"
+      },
+      {
+        "type": "text",
+        "text": "下のボタンから選んでください。",
+        "wrap": true,
+        "size": "xs",
+        "weight": "regular",
+        "color": "#86705C",
+        "margin": "xs"
+      }
+    ]
+  },
+  "styles": {
+    "body": {
+      "backgroundColor": "#FFFCF7"
+    }
+  }
+}

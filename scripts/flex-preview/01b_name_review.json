@@ -1,0 +1,142 @@
+{
+  "type": "bubble",
+  "size": "mega",
+  "header": {
+    "type": "box",
+    "layout": "vertical",
+    "backgroundColor": "#8A6246",
+    "paddingAll": "12px",
+    "contents": [
+      {
+        "type": "text",
+        "text": "お名前の確認",
+        "wrap": true,
+        "size": "sm",
+        "weight": "bold",
+        "color": "#FFFFFF"
+      }
+    ]
+  },
+  "body": {
+    "type": "box",
+    "layout": "vertical",
+    "backgroundColor": "#FFFCF7",
+    "borderColor": "#E0CDB2",
+    "borderWidth": "1px",
+    "paddingAll": "13px",
+    "contents": [
+      {
+        "type": "text",
+        "text": "最初に1回だけ、登録内容の確認をお願いします。",
+        "wrap": true,
+        "size": "xs",
+        "weight": "regular",
+        "color": "#86705C"
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "backgroundColor": "#FAF2E6",
+        "borderColor": "#EBDCC6",
+        "borderWidth": "1px",
+        "cornerRadius": "12px",
+        "paddingAll": "12px",
+        "margin": "md",
+        "contents": [
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "md",
+            "margin": "sm",
+            "contents": [
+              {
+                "type": "text",
+                "text": "お名前",
+                "wrap": true,
+                "size": "sm",
+                "weight": "regular",
+                "color": "#86705C",
+                "flex": 3
+              },
+              {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 5,
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "南 ひふ子",
+                    "wrap": true,
+                    "size": "sm",
+                    "weight": "bold",
+                    "color": "#4A3728",
+                    "align": "end"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "text",
+        "text": "お名前が違う場合は「変更を申請する」を押してください。変更は担当が行います。",
+        "wrap": true,
+        "size": "xs",
+        "weight": "regular",
+        "color": "#86705C",
+        "margin": "md"
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "spacing": "sm",
+        "margin": "lg",
+        "contents": [
+          {
+            "type": "button",
+            "style": "primary",
+            "color": "#8A6246",
+            "height": "sm",
+            "action": {
+              "type": "postback",
+              "label": "このお名前で合っている",
+              "data": "a",
+              "displayText": "このお名前で合っている"
+            }
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "borderColor": "#CDB899",
+            "borderWidth": "1px",
+            "cornerRadius": "8px",
+            "paddingAll": "9px",
+            "action": {
+              "type": "postback",
+              "label": "変更を申請する",
+              "data": "b",
+              "displayText": "変更を申請する"
+            },
+            "contents": [
+              {
+                "type": "text",
+                "text": "変更を申請する",
+                "wrap": true,
+                "size": "sm",
+                "weight": "bold",
+                "color": "#6B5A4A",
+                "align": "center"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "styles": {
+    "body": {
+      "backgroundColor": "#FFFCF7"
+    }
+  }
+}

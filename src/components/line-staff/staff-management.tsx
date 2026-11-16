@@ -33,6 +33,12 @@ import {
   ArrowRight,
 } from "lucide-react"
 import { toast } from "sonner"
+import {
+  commuterPassLabel,
+  findNameConflicts,
+  hasPendingNameChange,
+  parseLineProfile,
+} from "@/lib/line-staff-profile"
 
 interface StaffMember {
   id: string
@@ -43,6 +49,18 @@ interface StaffMember {
   home_station?: string | null
   home_station_pref?: string | null
   is_test?: boolean | null
+  /** 041_staff_line_profile.sql（定期券・初回設定の完了など） */
+  line_profile?: unknown
+}
+
+/** LINEの初回設定の状態（担当が督促できるように一覧で示す） */
+function setupStatus(member: StaffMember): { done: boolean; issues: string[] } {
+  const profile = parseLineProfile(member.line_profile)
+  const issues: string[] = []
+  if (!member.home_station) issues.push("最寄り駅 未登録")
+  if (!profile.commuter_pass) issues.push("定期券 未回答")
+  if (!profile.name_confirmed_at) issues.push("氏名 未確認")
+  return { done: !!profile.setup_completed_at, issues }
 }
 
 /** セミナー2回目以降の申請日時を日本時間で表示（YYYY/MM/DD HH:mm） */
@@ -90,6 +108,14 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const [togglingId, setTogglingId] = useState<string | null>(null)
   // テストスタッフ ON/OFFトグル処理中のID
   const [togglingTestId, setTogglingTestId] = useState<string | null>(null)
+
+  // 同姓・同名の警告（LINEの氏名登録で候補提示が必要になる組み合わせ）
+  const nameConflicts = findNameConflicts(staff)
+  const setupSummary = {
+    notDone: staff.filter((m) => !setupStatus(m).done).length,
+    noStation: staff.filter((m) => !m.home_station).length,
+    passUnanswered: staff.filter((m) => !parseLineProfile(m.line_profile).commuter_pass).length,
+  }
 
   /* ---------- データ取得 ---------- */
   const fetchStaff = useCallback(async () => {
@@ -292,8 +318,15 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
         <CardContent className="flex items-start gap-3 pt-5">
           <MessageCircle className="mt-0.5 h-5 w-5 shrink-0" style={{ color: "var(--dusk-primary)" }} />
           <div className="text-sm" style={{ color: "var(--dusk-text-muted)" }}>
-            <p>スタッフがLINEで名前を送ると自動登録されます。</p>
+            <p>スタッフがLINEでフルネームを送り、確認ボタンを押すと登録されます（同姓が複数いる場合は候補から本人が選びます）。</p>
             <p>LINE未登録のスタッフにはリマインダーが届きません。</p>
+            {staff.length > 0 && (
+              <p className="mt-1">
+                LINE初回設定：未完了 {setupSummary.notDone}名 ／ 最寄り駅 未登録 {setupSummary.noStation}名 ／ 定期券 未回答{" "}
+                {setupSummary.passUnanswered}名
+                <span className="ml-1 text-xs">（定期券が未回答のまま電車代を申請すると二重払いになるため、未完了の方は次の申請時に設定を1回挟みます）</span>
+              </p>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -322,6 +355,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                     <TableHead>名前</TableHead>
                     <TableHead>LINE登録状況</TableHead>
                     <TableHead>自宅最寄り駅</TableHead>
+                    <TableHead>LINE初回設定・定期券</TableHead>
                     <TableHead>セミナー2回目以降</TableHead>
                     <TableHead>テスト</TableHead>
                     <TableHead className="text-right">操作</TableHead>
@@ -330,7 +364,20 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                 <TableBody>
                   {staff.map((member) => (
                     <TableRow key={member.id}>
-                      <TableCell className="font-medium">{member.name}</TableCell>
+                      <TableCell className="font-medium">
+                        <div className="flex flex-col gap-0.5">
+                          <span>{member.name}</span>
+                          {nameConflicts.get(member.id) && (
+                            <span className="inline-flex items-center gap-1 text-xs text-amber-600">
+                              <AlertTriangle className="h-3 w-3" />
+                              {nameConflicts.get(member.id) === "same_name" ? "同名のスタッフがいます" : "同姓のスタッフがいます（フルネーム推奨）"}
+                            </span>
+                          )}
+                          {hasPendingNameChange(parseLineProfile(member.line_profile)) && (
+                            <span className="text-xs text-amber-600">お名前の変更依頼あり（編集から変更すると完了）</span>
+                          )}
+                        </div>
+                      </TableCell>
                       <TableCell>
                         {member.line_user_id ? (
                           <span className="inline-flex items-center gap-1.5 text-sm text-green-600">
@@ -360,6 +407,30 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                             未登録
                           </span>
                         )}
+                      </TableCell>
+                      {/* LINE初回設定（氏名確認・最寄り駅・定期券）の状態と定期券の区間 */}
+                      <TableCell>
+                        {(() => {
+                          const st = setupStatus(member)
+                          return (
+                            <div className="flex flex-col gap-0.5 text-sm">
+                              {st.done ? (
+                                <span className="inline-flex items-center gap-1 text-green-600">
+                                  <CheckCircle2 className="h-4 w-4" />
+                                  設定完了
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-amber-600">
+                                  <AlertTriangle className="h-4 w-4" />
+                                  未完了{st.issues.length > 0 ? `（${st.issues.join("・")}）` : ""}
+                                </span>
+                              )}
+                              <span className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                                定期券：{commuterPassLabel(parseLineProfile(member.line_profile))}
+                              </span>
+                            </div>
+                          )
+                        })()}
                       </TableCell>
                       {/* セミナー2回目以降の登録状態。ON=初回ATC非表示 / OFF=初回ATC再表示。手動トグル可（訂正用） */}
                       <TableCell>

@@ -1,0 +1,220 @@
+{
+  "type": "bubble",
+  "size": "mega",
+  "header": {
+    "type": "box",
+    "layout": "vertical",
+    "backgroundColor": "#8A6246",
+    "paddingAll": "12px",
+    "contents": [
+      {
+        "type": "text",
+        "text": "設定",
+        "wrap": true,
+        "size": "sm",
+        "weight": "bold",
+        "color": "#FFFFFF"
+      }
+    ]
+  },
+  "body": {
+    "type": "box",
+    "layout": "vertical",
+    "backgroundColor": "#FFFCF7",
+    "borderColor": "#E0CDB2",
+    "borderWidth": "1px",
+    "paddingAll": "13px",
+    "contents": [
+      {
+        "type": "text",
+        "text": "現在の登録",
+        "wrap": true,
+        "size": "xs",
+        "weight": "bold",
+        "color": "#86705C"
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "backgroundColor": "#FAF2E6",
+        "borderColor": "#EBDCC6",
+        "borderWidth": "1px",
+        "cornerRadius": "12px",
+        "paddingAll": "12px",
+        "margin": "sm",
+        "contents": [
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "md",
+            "margin": "sm",
+            "contents": [
+              {
+                "type": "text",
+                "text": "お名前",
+                "wrap": true,
+                "size": "sm",
+                "weight": "regular",
+                "color": "#86705C",
+                "flex": 3
+              },
+              {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 5,
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "南 ひふ子",
+                    "wrap": true,
+                    "size": "sm",
+                    "weight": "bold",
+                    "color": "#4A3728",
+                    "align": "end"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "md",
+            "margin": "sm",
+            "contents": [
+              {
+                "type": "text",
+                "text": "最寄り駅",
+                "wrap": true,
+                "size": "sm",
+                "weight": "regular",
+                "color": "#86705C",
+                "flex": 3
+              },
+              {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 5,
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "南草津駅（滋賀県）",
+                    "wrap": true,
+                    "size": "sm",
+                    "weight": "bold",
+                    "color": "#4A3728",
+                    "align": "end"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "md",
+            "margin": "sm",
+            "contents": [
+              {
+                "type": "text",
+                "text": "定期券",
+                "wrap": true,
+                "size": "sm",
+                "weight": "regular",
+                "color": "#86705C",
+                "flex": 3
+              },
+              {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 5,
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "あり（南草津 ⇄ 京都）",
+                    "wrap": true,
+                    "size": "sm",
+                    "weight": "bold",
+                    "color": "#4A3728",
+                    "align": "end"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "text",
+        "text": "最寄り駅と定期券はご自身で変更できます。お名前の変更は担当が行います。",
+        "wrap": true,
+        "size": "xs",
+        "weight": "regular",
+        "color": "#86705C",
+        "margin": "md"
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "spacing": "sm",
+        "margin": "lg",
+        "contents": [
+          {
+            "type": "button",
+            "style": "primary",
+            "color": "#8A6246",
+            "height": "sm",
+            "action": {
+              "type": "postback",
+              "label": "最寄り駅を変更する",
+              "data": "a",
+              "displayText": "最寄り駅を変更する"
+            }
+          },
+          {
+            "type": "button",
+            "style": "primary",
+            "color": "#8A6246",
+            "height": "sm",
+            "action": {
+              "type": "postback",
+              "label": "定期券を変更する",
+              "data": "b",
+              "displayText": "定期券を変更する"
+            }
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "borderColor": "#CDB899",
+            "borderWidth": "1px",
+            "cornerRadius": "8px",
+            "paddingAll": "9px",
+            "action": {
+              "type": "postback",
+              "label": "お名前の変更を申請する",
+              "data": "c",
+              "displayText": "お名前の変更を申請する"
+            },
+            "contents": [
+              {
+                "type": "text",
+                "text": "お名前の変更を申請する",
+                "wrap": true,
+                "size": "sm",
+                "weight": "bold",
+                "color": "#6B5A4A",
+                "align": "center"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "styles": {
+    "body": {
+      "backgroundColor": "#FFFCF7"
+    }
+  }
+}

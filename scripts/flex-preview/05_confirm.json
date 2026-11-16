@@ -1,0 +1,368 @@
+{
+  "type": "bubble",
+  "size": "mega",
+  "header": {
+    "type": "box",
+    "layout": "vertical",
+    "backgroundColor": "#8A6246",
+    "paddingAll": "12px",
+    "contents": [
+      {
+        "type": "text",
+        "text": "この内容で申請します",
+        "wrap": true,
+        "size": "sm",
+        "weight": "bold",
+        "color": "#FFFFFF"
+      }
+    ]
+  },
+  "body": {
+    "type": "box",
+    "layout": "vertical",
+    "backgroundColor": "#FFFCF7",
+    "borderColor": "#E0CDB2",
+    "borderWidth": "1px",
+    "paddingAll": "13px",
+    "contents": [
+      {
+        "type": "box",
+        "layout": "vertical",
+        "backgroundColor": "#FAF2E6",
+        "borderColor": "#EBDCC6",
+        "borderWidth": "1px",
+        "cornerRadius": "12px",
+        "paddingAll": "12px",
+        "margin": "none",
+        "contents": [
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "md",
+            "margin": "sm",
+            "contents": [
+              {
+                "type": "text",
+                "text": "申請者",
+                "wrap": true,
+                "size": "sm",
+                "weight": "regular",
+                "color": "#86705C",
+                "flex": 3
+              },
+              {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 5,
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "南 ひふ子",
+                    "wrap": true,
+                    "size": "sm",
+                    "weight": "bold",
+                    "color": "#4A3728",
+                    "align": "end"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "md",
+            "margin": "sm",
+            "contents": [
+              {
+                "type": "text",
+                "text": "講座",
+                "wrap": true,
+                "size": "sm",
+                "weight": "regular",
+                "color": "#86705C",
+                "flex": 3
+              },
+              {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 5,
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "頂点への道 2026年11月期",
+                    "wrap": true,
+                    "size": "sm",
+                    "weight": "bold",
+                    "color": "#4A3728",
+                    "align": "end"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "md",
+            "margin": "sm",
+            "contents": [
+              {
+                "type": "text",
+                "text": "区分",
+                "wrap": true,
+                "size": "sm",
+                "weight": "regular",
+                "color": "#86705C",
+                "flex": 3
+              },
+              {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 5,
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "宿泊費",
+                    "wrap": true,
+                    "size": "sm",
+                    "weight": "bold",
+                    "color": "#4A3728",
+                    "align": "end"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "backgroundColor": "#FAF2E6",
+        "borderColor": "#EBDCC6",
+        "borderWidth": "1px",
+        "cornerRadius": "12px",
+        "paddingAll": "12px",
+        "margin": "md",
+        "contents": [
+          {
+            "type": "text",
+            "text": "内訳",
+            "wrap": true,
+            "size": "xs",
+            "weight": "bold",
+            "color": "#86705C"
+          },
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "md",
+            "margin": "sm",
+            "contents": [
+              {
+                "type": "text",
+                "text": "支払先",
+                "wrap": true,
+                "size": "sm",
+                "weight": "regular",
+                "color": "#86705C",
+                "flex": 3
+              },
+              {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 5,
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "¥18,000",
+                    "wrap": true,
+                    "size": "sm",
+                    "weight": "bold",
+                    "color": "#4A3728",
+                    "align": "end"
+                  },
+                  {
+                    "type": "text",
+                    "text": "ホテル京都駅前",
+                    "wrap": true,
+                    "size": "xxs",
+                    "weight": "regular",
+                    "color": "#86705C",
+                    "align": "end"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "separator",
+        "color": "#EBDCC6",
+        "margin": "md"
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "spacing": "md",
+        "margin": "sm",
+        "contents": [
+          {
+            "type": "text",
+            "text": "領収書の金額",
+            "wrap": true,
+            "size": "sm",
+            "weight": "regular",
+            "color": "#86705C",
+            "flex": 3
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "flex": 5,
+            "contents": [
+              {
+                "type": "text",
+                "text": "¥18,000",
+                "wrap": true,
+                "size": "sm",
+                "weight": "bold",
+                "color": "#4A3728",
+                "align": "end"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "backgroundColor": "#E9EDD8",
+        "cornerRadius": "12px",
+        "paddingAll": "12px",
+        "margin": "md",
+        "contents": [
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "contents": [
+              {
+                "type": "text",
+                "text": "支給額",
+                "wrap": true,
+                "size": "sm",
+                "weight": "bold",
+                "color": "#41501F",
+                "flex": 5
+              },
+              {
+                "type": "text",
+                "text": "¥9,000",
+                "wrap": true,
+                "size": "lg",
+                "weight": "bold",
+                "color": "#41501F",
+                "align": "end",
+                "flex": 4
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": "半額支給",
+            "wrap": true,
+            "size": "xs",
+            "weight": "regular",
+            "color": "#41501F",
+            "margin": "xs"
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "spacing": "md",
+        "margin": "sm",
+        "contents": [
+          {
+            "type": "text",
+            "text": "対象月",
+            "wrap": true,
+            "size": "sm",
+            "weight": "regular",
+            "color": "#86705C",
+            "flex": 3
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "flex": 5,
+            "contents": [
+              {
+                "type": "text",
+                "text": "2026年11月分",
+                "wrap": true,
+                "size": "sm",
+                "weight": "bold",
+                "color": "#4A3728",
+                "align": "end"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "spacing": "sm",
+        "margin": "lg",
+        "contents": [
+          {
+            "type": "button",
+            "style": "primary",
+            "color": "#8A6246",
+            "height": "sm",
+            "action": {
+              "type": "postback",
+              "label": "この内容で申請する",
+              "data": "a",
+              "displayText": "この内容で申請する"
+            }
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "borderColor": "#CDB899",
+            "borderWidth": "1px",
+            "cornerRadius": "8px",
+            "paddingAll": "9px",
+            "action": {
+              "type": "postback",
+              "label": "修正する",
+              "data": "b",
+              "displayText": "修正する"
+            },
+            "contents": [
+              {
+                "type": "text",
+                "text": "修正する",
+                "wrap": true,
+                "size": "sm",
+                "weight": "bold",
+                "color": "#6B5A4A",
+                "align": "center"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "styles": {
+    "body": {
+      "backgroundColor": "#FFFCF7"
+    }
+  }
+}

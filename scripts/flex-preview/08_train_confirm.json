@@ -1,0 +1,306 @@
+{
+  "type": "bubble",
+  "size": "mega",
+  "header": {
+    "type": "box",
+    "layout": "vertical",
+    "backgroundColor": "#8A6246",
+    "paddingAll": "12px",
+    "contents": [
+      {
+        "type": "text",
+        "text": "この内容で申請します",
+        "wrap": true,
+        "size": "sm",
+        "weight": "bold",
+        "color": "#FFFFFF"
+      }
+    ]
+  },
+  "body": {
+    "type": "box",
+    "layout": "vertical",
+    "backgroundColor": "#FFFCF7",
+    "borderColor": "#E0CDB2",
+    "borderWidth": "1px",
+    "paddingAll": "13px",
+    "contents": [
+      {
+        "type": "box",
+        "layout": "vertical",
+        "backgroundColor": "#FAF2E6",
+        "borderColor": "#EBDCC6",
+        "borderWidth": "1px",
+        "cornerRadius": "12px",
+        "paddingAll": "12px",
+        "margin": "none",
+        "contents": [
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "md",
+            "margin": "sm",
+            "contents": [
+              {
+                "type": "text",
+                "text": "出発駅",
+                "wrap": true,
+                "size": "sm",
+                "weight": "regular",
+                "color": "#86705C",
+                "flex": 3
+              },
+              {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 5,
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "京都駅",
+                    "wrap": true,
+                    "size": "sm",
+                    "weight": "bold",
+                    "color": "#4A3728",
+                    "align": "end"
+                  },
+                  {
+                    "type": "text",
+                    "text": "定期券区間の端",
+                    "wrap": true,
+                    "size": "xxs",
+                    "weight": "regular",
+                    "color": "#86705C",
+                    "align": "end"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "spacing": "md",
+            "margin": "sm",
+            "contents": [
+              {
+                "type": "text",
+                "text": "目的地",
+                "wrap": true,
+                "size": "sm",
+                "weight": "regular",
+                "color": "#86705C",
+                "flex": 3
+              },
+              {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 5,
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "大阪駅",
+                    "wrap": true,
+                    "size": "sm",
+                    "weight": "bold",
+                    "color": "#4A3728",
+                    "align": "end"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "spacing": "md",
+        "margin": "sm",
+        "contents": [
+          {
+            "type": "text",
+            "text": "片道",
+            "wrap": true,
+            "size": "sm",
+            "weight": "regular",
+            "color": "#86705C",
+            "flex": 3
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "flex": 5,
+            "contents": [
+              {
+                "type": "text",
+                "text": "¥580",
+                "wrap": true,
+                "size": "sm",
+                "weight": "bold",
+                "color": "#4A3728",
+                "align": "end"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "layout": "horizontal",
+        "spacing": "md",
+        "margin": "sm",
+        "contents": [
+          {
+            "type": "text",
+            "text": "往復",
+            "wrap": true,
+            "size": "sm",
+            "weight": "regular",
+            "color": "#86705C",
+            "flex": 3
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "flex": 5,
+            "contents": [
+              {
+                "type": "text",
+                "text": "¥1,160",
+                "wrap": true,
+                "size": "sm",
+                "weight": "bold",
+                "color": "#4A3728",
+                "align": "end"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "backgroundColor": "#E9EDD8",
+        "cornerRadius": "12px",
+        "paddingAll": "12px",
+        "margin": "md",
+        "contents": [
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "contents": [
+              {
+                "type": "text",
+                "text": "支給額",
+                "wrap": true,
+                "size": "sm",
+                "weight": "bold",
+                "color": "#41501F",
+                "flex": 5
+              },
+              {
+                "type": "text",
+                "text": "¥1,160",
+                "wrap": true,
+                "size": "lg",
+                "weight": "bold",
+                "color": "#41501F",
+                "align": "end",
+                "flex": 4
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "text": "交通費（全額支給）",
+            "wrap": true,
+            "size": "xs",
+            "weight": "regular",
+            "color": "#41501F",
+            "margin": "xs"
+          }
+        ]
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "backgroundColor": "#FAF2E6",
+        "borderColor": "#EBDCC6",
+        "borderWidth": "1px",
+        "cornerRadius": "12px",
+        "paddingAll": "12px",
+        "margin": "md",
+        "contents": [
+          {
+            "type": "text",
+            "text": "南草津 〜 京都 は定期券の区間のため、支給の対象外として計算しました。",
+            "wrap": true,
+            "size": "xs",
+            "weight": "regular",
+            "color": "#4A3728"
+          }
+        ]
+      },
+      {
+        "type": "text",
+        "text": "運賃は自動計算です。実際と違う場合は「修正する」を押してください。",
+        "wrap": true,
+        "size": "xs",
+        "weight": "regular",
+        "color": "#86705C",
+        "margin": "md"
+      },
+      {
+        "type": "box",
+        "layout": "vertical",
+        "spacing": "sm",
+        "margin": "lg",
+        "contents": [
+          {
+            "type": "button",
+            "style": "primary",
+            "color": "#8A6246",
+            "height": "sm",
+            "action": {
+              "type": "postback",
+              "label": "この内容で申請する",
+              "data": "a",
+              "displayText": "この内容で申請する"
+            }
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "borderColor": "#CDB899",
+            "borderWidth": "1px",
+            "cornerRadius": "8px",
+            "paddingAll": "9px",
+            "action": {
+              "type": "postback",
+              "label": "修正する",
+              "data": "b",
+              "displayText": "修正する"
+            },
+            "contents": [
+              {
+                "type": "text",
+                "text": "修正する",
+                "wrap": true,
+                "size": "sm",
+                "weight": "bold",
+                "color": "#6B5A4A",
+                "align": "center"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "styles": {
+    "body": {
+      "backgroundColor": "#FFFCF7"
+    }
+  }
+}

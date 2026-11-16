@@ -12,6 +12,7 @@ import { settleStaffReceipt } from "@/lib/staff-refund-core"
 import {
   deriveReceiptCandidates,
   fetchSplitSiblings,
+  parseAiRawObject,
   type ReceiptCandidate,
   type SiblingReceipt,
 } from "@/lib/staff-receipt-split"
@@ -27,7 +28,43 @@ import {
   SESSION_TIMEOUT_MINUTES,
   type TransitData,
   type TransitSession,
+  type ResumeAction,
 } from "@/lib/line-transit"
+import {
+  activeCommuterPass,
+  commuterPassLabel,
+  familyName,
+  hasPendingNameChange,
+  isCommuterPassUnanswered,
+  isLongAbsence,
+  isSetupComplete,
+  loadStaffLineState,
+  matchStaffCandidates,
+  normalizePersonName,
+  stripStationSuffix,
+  updateLineProfile,
+  type StaffLineState,
+} from "@/lib/line-staff-profile"
+import { decidePassDeparture, passDeductionNote } from "@/lib/commuter-pass-deduction"
+import {
+  applicationConfirmCard,
+  flexSizeBytes,
+  FLEX_SIZE_LIMIT_BYTES,
+  historyCard,
+  messageAction,
+  nameConfirmCard,
+  nameReviewCard,
+  postback as flexPostback,
+  quickReply as flexQuickReply,
+  receiptReceivedCard,
+  settingsCard,
+  stationReviewCard,
+  trainConfirmCard,
+  type ActionDef,
+  type FlexMessage,
+  type HistoryItem,
+} from "@/lib/line-flex"
+import { labelYearMonth, resolveStaffSubmissionMonth } from "@/lib/submission-month"
 import { judgeStation, toStationName } from "@/lib/station-judge"
 import {
   EXPENSE_GROUP_LABELS,
@@ -111,19 +148,6 @@ function verifySignature(body: string, signature: string): boolean {
     .digest("base64")
 
   return hash === signature
-}
-
-/** LINEからユーザープロフィールを取得 */
-async function getLineUserProfile(userId: string): Promise<{ displayName: string } | null> {
-  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN
-  if (!token) return null
-
-  const res = await fetch(`https://api.line.me/v2/bot/profile/${userId}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-
-  if (!res.ok) return null
-  return res.json()
 }
 
 /** LINEから画像バイナリを取得 */
@@ -306,6 +330,47 @@ async function sendLineQuickReply(
   }
 }
 
+/** 複数のメッセージオブジェクト（テキスト・Flex）を reply→push フォールバック付きで送る（1回最大5件） */
+async function sendLineMessages(replyToken: string, userId: string, messages: unknown[]): Promise<void> {
+  const list = messages.slice(0, 5)
+  const replied = await replyRaw(replyToken, list)
+  if (!replied) {
+    console.log("Reply(messages)失敗のためPushで再送:", userId)
+    await pushRaw(userId, list)
+  }
+}
+
+/**
+ * Flexカードを送る。JSONサイズが上限（bubble 30KB）に近い場合は、届かない事故を避けるため
+ * fallbackText のテキストメッセージに切り替える。before を渡すとカードの前にテキストを1通添える。
+ */
+async function sendFlexCard(
+  replyToken: string,
+  userId: string,
+  card: FlexMessage,
+  fallbackText: string,
+  before?: string
+): Promise<void> {
+  const messages: unknown[] = []
+  if (before) messages.push({ type: "text", text: before })
+  if (flexSizeBytes(card) > FLEX_SIZE_LIMIT_BYTES) {
+    console.warn("[LINE Bot] Flexカードがサイズ上限に近いためテキストで送信:", flexSizeBytes(card))
+    messages.push({
+      type: "text",
+      text: fallbackText.slice(0, 4900),
+      ...(card.quickReply ? { quickReply: card.quickReply } : {}),
+    })
+  } else {
+    messages.push(card)
+  }
+  await sendLineMessages(replyToken, userId, messages)
+}
+
+/** クイックリプライ付きテキスト（message/postback を混在できる版） */
+function textWithQuickReply(value: string, actions: ActionDef[]): unknown {
+  return { type: "text", text: value.slice(0, 4900), quickReply: flexQuickReply(actions) }
+}
+
 /** Date を日本時間（JST）の YYYY-MM-DD 文字列に変換する（Vercelのサーバ時刻はUTCのため明示変換） */
 function toJstDateString(date: Date): string {
   // en-CA ロケールは YYYY-MM-DD 形式を返す
@@ -352,7 +417,7 @@ function buildDuplicateWarning(dup: ExistingDuplicate): string {
     `📅 申請日：${appliedDate}\n` +
     "─────────────\n" +
     "二重申請の可能性があるため、登録を中止しました。\n" +
-    "ご不明な場合は院長にご確認ください。"
+    "ご不明な場合は担当にご確認ください。"
   )
 }
 
@@ -384,7 +449,6 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ status: "ok" })
 }
 
-/** スタッフ一覧からスタッフ名を部分一致検索 */
 /** LINEの振り分けで使うスタッフ行（staff_members の必要最小限） */
 type StaffRow = { id: string; name: string; line_user_id?: string | null }
 
@@ -400,20 +464,6 @@ async function fetchStaffMembers(
   return data as StaffRow[]
 }
 
-function findStaffByName(
-  staffMembers: { id: string; name: string; line_user_id?: string | null }[],
-  searchName: string
-): { id: string; name: string; line_user_id?: string | null } | undefined {
-  return staffMembers.find(
-    (s) => searchName.includes(s.name) || s.name.includes(searchName)
-  )
-}
-
-/** スタッフ名の一覧テキストを生成 */
-function getStaffNameList(staffMembers: { id: string; name: string }[]): string {
-  return staffMembers.map((s) => s.name).join("・")
-}
-
 /** イベント振り分け */
 async function handleEvent(event: LineEvent): Promise<void> {
   // デバッグ: LINE user IDをVercelログに出力
@@ -424,6 +474,12 @@ async function handleEvent(event: LineEvent): Promise<void> {
   // ボタンテンプレートの確定（精算方法の選択）
   if (event.type === "postback") {
     await handlePostback(event)
+    return
+  }
+
+  // 友だち追加 → 初回オンボーディング（通常のテキストで案内）
+  if (event.type === "follow") {
+    await handleFollow(event)
     return
   }
 
@@ -515,6 +571,51 @@ async function handlePostback(event: LineEvent): Promise<void> {
       return
     case "hsx": // キャンセル
       await handleHomeStationCancelPostback(event)
+      return
+    // 電車代：定期券区間の控除・金額の修正
+    case "trpass":
+      await handleTrainPassPostback(event, params)
+      return
+    case "trfix":
+      await handleTransitFixPostback(event)
+      return
+    // 氏名の登録（同姓対策）
+    case "nmpick": // 候補から選択 → 確認カード
+      await handleNamePickPostback(event, params)
+      return
+    case "nmok": // 確認OK → 紐づけ
+      await handleNameConfirmPostback(event, params)
+      return
+    case "nmre": // 入力し直す
+      await sendLineMessage(
+        event.replyToken,
+        event.source.userId,
+        "お名前をフルネームで送信してください。\n（例：南 ひふ子）"
+      )
+      return
+    // 初回設定（全員に1回だけ）
+    case "sup":
+      await handleSetupPostback(event, params)
+      return
+    // 設定メニュー
+    case "stg":
+      await handleSettingsPostback(event, params)
+      return
+    // 定期券の登録・変更
+    case "cp":
+      await handlePassAnswerPostback(event, params)
+      return
+    case "cppick":
+      await handlePassPickPostback(event, params)
+      return
+    case "cpok":
+      await handlePassConfirmPostback(event)
+      return
+    case "cpre":
+      await handlePassRetryPostback(event)
+      return
+    case "cpx":
+      await handlePassCancelPostback(event)
       return
   }
 }
@@ -733,6 +834,13 @@ async function handleTier2Postback(
     // 申請日 = アップロード日（領収書の登録日）をJSTで表示
     const applicationDate = toJstDateString(new Date(receipt.created_at))
 
+    // 対象月（提出月）＝申請日の20日締め（手動指定があればそれ）。既存の判定関数をそのまま使う
+    const month = resolveStaffSubmissionMonth(receipt.ai_raw, applicationDate).month
+    const targetMonth = month ? `${labelYearMonth(month)}分` : "不明"
+    const rateLabel = isHalf ? "半額支給" : "全額支給"
+    const okData = `action=ok&rid=${receiptId}&d=${detail.key}`
+    const fixData = `action=fix&rid=${receiptId}`
+
     // 複数領収証（分割兄弟）の場合: 各件の内訳と合計・支給額合計で確認する
     if (siblings.length >= 2) {
       const totalAmount = siblings.reduce((sum, s) => sum + (s.amount ?? 0), 0)
@@ -746,32 +854,26 @@ async function handleTier2Postback(
             `${circled(i)} ${(s.store_name || "不明").slice(0, 20)} ¥${formatAmount(s.amount)}（${s.date || "日付不明"}）`
         )
         .join("\n")
-      const multiText =
-        "以下の内容で登録します。確認してください。\n" +
-        "─────────────\n" +
-        `👤 スタッフ：${staffName}\n` +
-        `🧾 ${siblings.length}件の領収書（1ファイル）\n` +
-        `${lines}\n` +
-        `🏷 区分：${detail.fullLabel}（全${siblings.length}件に適用）\n` +
-        `💰 立替額合計：¥${formatAmount(totalAmount)}\n` +
-        `💴 支給額合計：¥${formatAmount(totalSubsidy)}（${isHalf ? "半額" : "全額"}・給与支給）\n` +
-        `📅 申請日：${applicationDate}\n` +
-        "─────────────\n" +
-        "この内容でよろしいですか？"
-      await sendLineQuickReply(replyToken, source.userId, multiText, [
-        {
-          type: "postback",
-          label: "✅ OK",
-          data: `action=ok&rid=${receiptId}&d=${detail.key}`,
-          displayText: "✅ OK",
-        },
-        {
-          type: "postback",
-          label: "🔄 修正",
-          data: `action=fix&rid=${receiptId}`,
-          displayText: "🔄 修正",
-        },
-      ])
+      const card = applicationConfirmCard({
+        applicant: staffName,
+        category: detail.fullLabel,
+        breakdown: siblings.map((s, i) => ({
+          label: `${i + 1}件目`,
+          amount: s.amount,
+          sub: `${(s.store_name || "不明").slice(0, 20)}（${s.date || "日付不明"}）`,
+        })),
+        receiptTotal: totalAmount,
+        subsidy: totalSubsidy,
+        subsidyRateLabel: `${rateLabel}・${siblings.length}件すべてに適用`,
+        targetMonth,
+        okData,
+        fixData,
+      })
+      const fallback =
+        "この内容で申請します。\n" +
+        `申請者：${staffName}\n${lines}\n区分：${detail.fullLabel}\n` +
+        `領収書の金額：¥${formatAmount(totalAmount)}\n支給額：¥${formatAmount(totalSubsidy)}（${rateLabel}）\n対象月：${targetMonth}`
+      await sendFlexCard(replyToken, source.userId, card, fallback)
       return
     }
 
@@ -782,7 +884,7 @@ async function handleTier2Postback(
       await sendLineMessage(
         replyToken,
         source.userId,
-        "⚠️ 金額が読み取れていないため精算できません。経理側で手動登録してください。"
+        "⚠️ 金額が読み取れていないため申請できません。担当にご相談ください。"
       )
       return
     }
@@ -791,36 +893,45 @@ async function handleTier2Postback(
     // 支給額（セミナー2回目以降のみ半額・端数切り捨て、他は全額）
     const subsidy = calcSubsidy(amount, detail.subsidyCategory)
 
-    const text =
-      "以下の内容で登録します。確認してください。\n" +
-      "─────────────\n" +
-      `👤 スタッフ：${staffName}\n` +
-      `🏪 店名：${storeName}\n` +
-      `💰 立替額：¥${formatAmount(amount)}\n` +
-      `🏷 区分：${detail.fullLabel}\n` +
-      `💴 支給額：¥${formatAmount(subsidy)}（${isHalf ? "半額" : "全額"}・給与支給）\n` +
-      `📅 申請日：${applicationDate}\n` +
-      "─────────────\n" +
-      "この内容でよろしいですか？"
-
-    await sendLineQuickReply(replyToken, source.userId, text, [
-      {
-        type: "postback",
-        label: "✅ OK",
-        data: `action=ok&rid=${receiptId}&d=${detail.key}`,
-        displayText: "✅ OK",
-      },
-      {
-        type: "postback",
-        label: "🔄 修正",
-        data: `action=fix&rid=${receiptId}`,
-        displayText: "🔄 修正",
-      },
-    ])
+    const card = applicationConfirmCard({
+      applicant: staffName,
+      category: detail.fullLabel,
+      breakdown: [{ label: "支払先", amount, sub: storeName.slice(0, 30) }],
+      receiptTotal: amount,
+      subsidy,
+      subsidyRateLabel: rateLabel,
+      targetMonth,
+      okData,
+      fixData,
+    })
+    const fallback =
+      "この内容で申請します。\n" +
+      `申請者：${staffName}\n支払先：${storeName}\n区分：${detail.fullLabel}\n` +
+      `領収書の金額：¥${formatAmount(amount)}\n支給額：¥${formatAmount(subsidy)}（${rateLabel}）\n対象月：${targetMonth}`
+    await sendFlexCard(replyToken, source.userId, card, fallback)
   } catch (error) {
     console.error("[LINE Bot] 確認画面生成エラー:", error)
     await sendLineMessage(replyToken, source.userId, "⚠️ 処理中にエラーが発生しました。経理にご相談ください。")
   }
+}
+
+/** 提出月の表示（例「2026年11月」）。申請日（JST）の20日締めの既存判定をそのまま使う */
+function submissionMonthLabel(aiRaw: unknown, createdAtIso: string): string {
+  const month = resolveStaffSubmissionMonth(aiRaw, toJstDateString(new Date(createdAtIso))).month
+  return month ? labelYearMonth(month) : "今月"
+}
+
+/**
+ * 確定後のメッセージ（テキスト＋クイックリプライ）。
+ * ※ 本人による「取り消す」は今回未実装のため、誤りは担当へ連絡する案内にしている。
+ */
+function registeredMessage(monthLabel: string, subject = ""): unknown {
+  return textWithQuickReply(
+    `${subject}登録しました。\n` +
+      `${monthLabel}分として提出されます。\n` +
+      "間違いがあれば、メニューの「問い合わせ」から担当にご連絡ください。",
+    [messageAction("続けて申請する", "申請"), messageAction("申請履歴を見る", "申請履歴")]
+  )
 }
 
 /** 「修正」→ 第1階層からやり直し（写真再送不要） */
@@ -896,11 +1007,11 @@ async function handleConfirmPostback(
           await markSeminarRepeatClaimed(supabase, receiptId)
         }
 
-        await sendLineMessage(
-          replyToken,
-          source.userId,
-          "✅ 登録しました。給与支給で処理されます。\nお疲れさまでした！"
-        )
+        await sendLineMessages(replyToken, source.userId, [
+          registeredMessage(
+            submissionMonthLabel(fetched?.receipt.ai_raw ?? null, fetched?.receipt.created_at ?? new Date().toISOString())
+          ),
+        ])
 
         // 院長へpush通知（ADMIN_LINE_USER_ID未設定ならスキップ）。テストスタッフは通知しない
         const { data: testCheck } = await supabase
@@ -1078,23 +1189,83 @@ const MENU_TRIGGER_INDEX: Map<string, ApplicationMenuItem> = (() => {
   return index
 })()
 
-/** 「申請」系＝申請メニュー（Quick Reply）を表示するトリガー */
+/**
+ * 「申請」系＝申請メニュー（Quick Reply）を表示するトリガー。
+ * リッチメニューの「申請する」ボタンは「申請」を送る。「経費」「立替」「精算」「メニュー」は手で打った人への保険。
+ */
 const APPLICATION_MENU_TRIGGERS = new Set([
   "申請",
+  "申請する",
   "申請したい",
   "申請メニュー",
   "しんせい",
   "メニュー",
   "menu",
-  "ヘルプ",
-  "へるぷ",
-  "help",
-  "使い方",
-  "つかいかた",
+  "経費",
+  "経費申請",
+  "立替",
+  "立て替え",
+  "立替申請",
+  "精算",
   "操作一覧",
   "できること",
   "コマンド",
 ])
+
+/** リッチメニューの残りのボタン（申請・電車代以外）。値はリッチメニューが送るテキストと表記ゆれ */
+type RichMenuCommand = "settings" | "history" | "usage" | "contact"
+const RICH_MENU_COMMANDS: Record<RichMenuCommand, string[]> = {
+  settings: ["設定", "設定変更", "登録内容", "せってい"],
+  history: ["申請履歴", "履歴", "申請一覧", "りれき"],
+  usage: ["使い方", "つかいかた", "ヘルプ", "へるぷ", "help"],
+  contact: ["問い合わせ", "問合せ", "お問い合わせ", "といあわせ"],
+}
+const RICH_MENU_COMMAND_INDEX: Map<string, RichMenuCommand> = (() => {
+  const index = new Map<string, RichMenuCommand>()
+  for (const [cmd, words] of Object.entries(RICH_MENU_COMMANDS) as [RichMenuCommand, string[]][]) {
+    for (const w of words) index.set(normalizeTrigger(w), cmd)
+  }
+  return index
+})()
+
+/** テキストに対応するリッチメニューのコマンド（無ければ null） */
+function findRichMenuCommand(text: string): RichMenuCommand | null {
+  return RICH_MENU_COMMAND_INDEX.get(normalizeTrigger(text)) ?? null
+}
+
+/** 使い方（リッチメニュー「使い方」） */
+const USAGE_TEXT =
+  "📖 使い方\n" +
+  "─────────────\n" +
+  "① 領収書があるとき\n写真をこのトークに送るだけです。読み取った内容を確認し、ボタンで区分を選びます。\n\n" +
+  "② 電車代（領収書なし）\n下のメニューの「電車代」を押し、行き先の駅名を送ります。運賃は自動で計算します。\n\n" +
+  "③ 申請した内容は、メニューの「申請履歴」で確認できます。\n\n" +
+  "写真はまとめて送っても、1枚ずつ送ってもどちらでも大丈夫です。\n" +
+  "最寄り駅・定期券の変更はメニューの「設定」からできます。"
+
+/** 問い合わせ（リッチメニュー「問い合わせ」） */
+const CONTACT_TEXT =
+  "💬 問い合わせ\n" +
+  "申請内容の間違いや、分からないことがあれば担当に直接お声がけください。\n" +
+  "間違いを伝えるときは「日付・支払先・金額」を添えていただくとスムーズです。\n\n" +
+  "仕事の手順の質問（例「受付の手順は？」）は、このトークに送るとマニュアルから自動で回答します。"
+
+/** 氏名登録が終わったあとの案内（3行） */
+const ONBOARDING_DONE_TEXT =
+  "登録が完了しました。\n" +
+  "・領収書は写真を送るだけで申請できます\n" +
+  "・電車代はメニューの「電車代」から申請できます\n" +
+  "・申請した内容は「申請履歴」で確認できます\n" +
+  "下のメニューからいつでも申請できます。"
+
+/** 友だち追加時の案内（通常のテキスト） */
+const FOLLOW_TEXT =
+  "はじめまして。経費申請の受付窓口です。\n" +
+  "最初に2つだけ登録をお願いします（1分で終わります）。\n\n" +
+  "① お名前の登録\n" +
+  "② 自宅の最寄り駅の登録（電車代の計算に使います）\n\n" +
+  "まず、お名前をフルネームで送信してください。\n" +
+  "（例：南 ひふ子）"
 
 /** 領収書の送り方の案内文 */
 const RECEIPT_GUIDE_TEXT =
@@ -1116,7 +1287,7 @@ function findMenuItemByText(text: string): ApplicationMenuItem | null {
 }
 
 /** 申請メニュー（Quick Reply）を送る */
-async function sendApplicationMenu(replyToken: string, userId: string): Promise<void> {
+async function sendApplicationMenu(replyToken: string, userId: string, lead = ""): Promise<void> {
   const items: PostbackAction[] = APPLICATION_MENU.map((m) => ({
     type: "postback",
     label: m.label,
@@ -1127,7 +1298,9 @@ async function sendApplicationMenu(replyToken: string, userId: string): Promise<
   await sendLineQuickReply(
     replyToken,
     userId,
-    "📋 申請メニュー\n下のボタンから選んでください。\n\n" +
+    lead +
+      "📋 申請メニュー\n下のボタンから選んでください。\n" +
+      "領収書がある場合は、写真をこのトークに送るだけで申請できます。\n\n" +
       "💬 マニュアル検索（例「受付の手順は？」）や名刺検索（例「田中さんの連絡先」）は、そのまま質問を送ってください。",
     items
   )
@@ -1191,11 +1364,11 @@ async function sendTransitExpired(replyToken: string, userId: string): Promise<v
 }
 
 /** 交通手段の選択を送る */
-async function sendTransitModeChoice(replyToken: string, userId: string): Promise<void> {
+async function sendTransitModeChoice(replyToken: string, userId: string, lead = ""): Promise<void> {
   await sendLineQuickReply(
     replyToken,
     userId,
-    "🚃 交通費（領収書なし）の申請です。\n交通手段を選んでください。" + TIMEOUT_NOTE,
+    lead + "🚃 交通費（領収書なし）の申請です。\n交通手段を選んでください。" + TIMEOUT_NOTE,
     [
       { type: "postback", label: "電車", data: "action=trm&m=train", displayText: "電車" },
       { type: "postback", label: "その他（バス・車など）", data: "action=trm&m=other", displayText: "その他（バス・車など）" },
@@ -1230,11 +1403,11 @@ function isSameStation(a?: string | null, b?: string | null): boolean {
 }
 
 /** 新幹線の利用有無を尋ねる */
-async function askShinkansen(replyToken: string, userId: string): Promise<void> {
+async function askShinkansen(replyToken: string, userId: string, prefix = ""): Promise<void> {
   await sendLineQuickReply(
     replyToken,
     userId,
-    "🚄 新幹線を利用しましたか？\n（利用した場合は、新幹線の区間を分けて計算します）",
+    prefix + "🚄 新幹線を利用しましたか？\n（利用した場合は、新幹線の区間を分けて計算します）",
     [
       { type: "postback", label: "🚄 新幹線を利用した", data: "action=trs&s=1", displayText: "新幹線を利用した" },
       { type: "postback", label: "利用していない", data: "action=trs&s=0", displayText: "利用していない" },
@@ -1520,16 +1693,16 @@ async function runTrainEstimate(
   }
   await setTransitSession(supabase, source.userId, staffId, "train_confirm", newData)
   const tripLabel = data.trip === "round" ? "往復" : "片道"
-  await sendLineQuickReply(
+  await sendTrainConfirmCard(
     replyToken,
     source.userId,
+    newData,
+    oneWay,
+    total,
+    undefined,
     `🚃 電車代は ¥${formatAmount(total)}（${tripLabel}・AI推定）と推定しました。\n` +
       `（${data.fromStation} → ${data.toStation}）\n\n` +
-      "よろしければ「OK」を押してください。\n違う場合は正しい金額を円で送ってください（例：1480）。",
-    [
-      { type: "postback", label: "✅ OK", data: "action=trok", displayText: "✅ OK" },
-      transitCancelItem(),
-    ]
+      "よろしければ「この内容で申請する」を押してください。\n違う場合は正しい金額を円で送ってください（例：1480）。"
   )
 }
 
@@ -1638,20 +1811,24 @@ async function runShinkansenEstimate(
     amount: total,
   }
   await setTransitSession(supabase, source.userId, staffId, "train_confirm", newData)
-  await sendLineQuickReply(
+  await sendTrainConfirmCard(
     replyToken,
     source.userId,
+    newData,
+    oneWay,
+    total,
+    [
+      { label: `① ${stripStationSuffix(home)}→${stripStationSuffix(skFrom)}`, amount: legLocalFrom },
+      { label: `② 新幹線（指定席）`, amount: legShinkansen },
+      { label: `③ ${stripStationSuffix(skTo)}→${stripStationSuffix(dest)}`, amount: legLocalTo },
+    ],
     breakdown +
       (data.trip === "round"
         ? `片道合計 ¥${formatAmount(oneWay)} / 往復 ¥${formatAmount(total)}\n\n`
         : `合計 ¥${formatAmount(total)}\n\n`) +
       "よろしければ「OK」を押してください。\n" +
       `違う場合は正しい金額（${tripLabel}の合計）を円で送ってください。\n` +
-      "※ 指定席特急料金は時期・列車により変動します。実額と違う場合は金額を送って上書きしてください。",
-    [
-      { type: "postback", label: "✅ OK", data: "action=trok", displayText: "✅ OK" },
-      transitCancelItem(),
-    ]
+      "※ 指定席特急料金は時期・列車により変動します。実額と違う場合は金額を送って上書きしてください。"
   )
 }
 
@@ -1711,7 +1888,9 @@ async function doTransitFinalize(
     const route = useSk
       ? `${data.fromStation}→${data.skFromStation}→${data.skToStation}→${data.toStation}`
       : `${data.fromStation}→${data.toStation}`
-    storeName = `電車：${route}（${useSk ? "新幹線指定席・" : ""}${tripLabel}・${method}）`
+    // 定期券区間を控除した場合は摘要に明記する（出発駅＝定期券区間の端）
+    const passMark = data.passDeducted ? "定期券区間控除・" : ""
+    storeName = `電車：${route}（${passMark}${useSk ? "新幹線指定席・" : ""}${tripLabel}・${method}）`
     meta = {
       source: "line_transit",
       transit_mode: "train",
@@ -1736,6 +1915,9 @@ async function doTransitFinalize(
             local_to: data.legLocalTo ?? null,
           }
         : null,
+      // 定期券区間の控除（二重払い防止）。出発駅＝定期券区間の端
+      commuter_pass_deducted: !!data.passDeducted,
+      commuter_pass_segment: data.passSegment ?? null,
     }
   } else {
     const purpose = data.otherPurpose?.trim()
@@ -1759,17 +1941,9 @@ async function doTransitFinalize(
     return
   }
 
-  await sendLineMessage(
-    replyToken,
-    source.userId,
-    "✅ 登録しました（交通費・全額・給与支給）。\n" +
-      "─────────────\n" +
-      `🏷 ${storeName}\n` +
-      `💰 ¥${formatAmount(amount)}\n` +
-      `📅 利用日：${useDate}\n` +
-      "─────────────\n" +
-      "お疲れさまでした！"
-  )
+  await sendLineMessages(replyToken, source.userId, [
+    registeredMessage(submissionMonthLabel(null, new Date().toISOString()), `交通費 ¥${formatAmount(amount)}（利用日 ${useDate}）を`),
+  ])
 
   // テストスタッフは院長通知から除外
   const adminId = process.env.ADMIN_LINE_USER_ID
@@ -1785,7 +1959,8 @@ async function doTransitFinalize(
 async function handleTransitEntry(
   event: LineEvent,
   supabase: ReturnType<typeof createServiceClient>,
-  staffMembers: StaffRow[]
+  staffMembers: StaffRow[],
+  lead = ""
 ): Promise<void> {
   const { replyToken, source } = event
   const staff = resolveStaffForUser(staffMembers, source.userId)
@@ -1793,10 +1968,12 @@ async function handleTransitEntry(
     await sendLineMessage(
       replyToken,
       source.userId,
-      "🚃 交通費（領収書なし）の申請を始めます。\nまずお名前をテキストで送って登録してください。\n例：楠葉"
+      "🚃 交通費（領収書なし）の申請を始めます。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子）"
     )
     return
   }
+  const gate = await beginApplication(event, supabase, staff.id, { kind: "transit" })
+  if (!gate.proceed) return
   const ok = await setTransitSession(supabase, source.userId, staff.id, "mode", {})
   if (!ok) {
     await sendLineMessage(
@@ -1806,15 +1983,15 @@ async function handleTransitEntry(
     )
     return
   }
-  await sendTransitModeChoice(replyToken, source.userId)
+  await sendTransitModeChoice(replyToken, source.userId, lead + gate.greeting)
 }
 
 /** その他（バス・車など）の金額入力を促す */
-async function askOtherAmount(replyToken: string, userId: string): Promise<void> {
+async function askOtherAmount(replyToken: string, userId: string, lead = ""): Promise<void> {
   await sendLineQuickReply(
     replyToken,
     userId,
-    "🚌 バス・自家用車などの交通費ですね。\n金額（円）をテキストで送ってください。\n例：1200" + TIMEOUT_NOTE,
+    lead + "🚌 バス・自家用車などの交通費ですね。\n金額（円）をテキストで送ってください。\n例：1200" + TIMEOUT_NOTE,
     [transitCancelItem()]
   )
 }
@@ -1825,7 +2002,8 @@ async function askOtherAmount(replyToken: string, userId: string): Promise<void>
 async function startOtherTransit(
   event: LineEvent,
   supabase: ReturnType<typeof createServiceClient>,
-  staffMembers: StaffRow[]
+  staffMembers: StaffRow[],
+  lead = ""
 ): Promise<void> {
   const { replyToken, source } = event
   const staff = resolveStaffForUser(staffMembers, source.userId)
@@ -1833,10 +2011,12 @@ async function startOtherTransit(
     await sendLineMessage(
       replyToken,
       source.userId,
-      "🚌 交通費（領収書なし）の申請を始めます。\nまずお名前をテキストで送って登録してください。\n例：楠葉"
+      "🚌 交通費（領収書なし）の申請を始めます。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子）"
     )
     return
   }
+  const gate = await beginApplication(event, supabase, staff.id, { kind: "other" })
+  if (!gate.proceed) return
   const ok = await setTransitSession(supabase, source.userId, staff.id, "other_amount", { mode: "other" })
   if (!ok) {
     await sendLineMessage(
@@ -1846,7 +2026,7 @@ async function startOtherTransit(
     )
     return
   }
-  await askOtherAmount(replyToken, source.userId)
+  await askOtherAmount(replyToken, source.userId, lead + gate.greeting + `${familyName(staff.name)}さんとして申請します。\n\n`)
 }
 
 /**
@@ -1856,7 +2036,8 @@ async function startOtherTransit(
 async function startTrainTransit(
   event: LineEvent,
   supabase: ReturnType<typeof createServiceClient>,
-  staffMembers: StaffRow[]
+  staffMembers: StaffRow[],
+  lead = ""
 ): Promise<void> {
   const { replyToken, source } = event
   const staff = resolveStaffForUser(staffMembers, source.userId)
@@ -1864,10 +2045,14 @@ async function startTrainTransit(
     await sendLineMessage(
       replyToken,
       source.userId,
-      "🚃 電車代（領収書なし）の申請を始めます。\nまずお名前をテキストで送って登録してください。\n例：楠葉"
+      "🚃 電車代（領収書なし）の申請を始めます。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子）"
     )
     return
   }
+
+  // 初回設定（氏名確認・最寄り駅・定期券）が未完了なら1回だけ挟む（完了後に電車代へ戻る）
+  const gate = await beginApplication(event, supabase, staff.id, { kind: "train" })
+  if (!gate.proceed) return
 
   const { data: cur } = await supabase
     .from("staff_members")
@@ -1898,7 +2083,9 @@ async function startTrainTransit(
   await sendLineQuickReply(
     replyToken,
     source.userId,
-    `🚃 電車代（領収書なし）の申請です。\n🏠 出発：${s.home_station}${s.home_station_pref ? `（${s.home_station_pref}）` : ""}\n\n` +
+    lead +
+      gate.greeting +
+      `🚃 電車代（領収書なし）の申請です。\n${familyName(staff.name)}さんとして申請します。\n🏠 出発：${s.home_station}${s.home_station_pref ? `（${s.home_station_pref}）` : ""}\n\n` +
       "到着駅（会場の最寄り駅）の名前をテキストで送ってください。\n例：梅田" +
       TIMEOUT_NOTE,
     [transitCancelItem()]
@@ -1991,8 +2178,7 @@ async function handleTransitPrefPostback(event: LineEvent, params: URLSearchPara
   }
   const pref = params.get("p") || ""
   const data: TransitData = { ...session.data, toPref: pref }
-  await setTransitSession(supabase, source.userId, session.staffMemberId, "train_shinkansen", data)
-  await askShinkansen(replyToken, source.userId)
+  await afterArrivalPref(supabase, event, session.staffMemberId, data)
 }
 
 /** 片道/往復の選択 */
@@ -2096,8 +2282,7 @@ async function handleTransitText(
     case "train_arrival_pref": {
       // 一覧に無い県はテキストで受け付ける
       const data: TransitData = { ...session.data, toPref: inputText.trim() }
-      await setTransitSession(supabase, source.userId, staffId, "train_shinkansen", data)
-      await askShinkansen(replyToken, source.userId)
+      await afterArrivalPref(supabase, event, staffId, data)
       return
     }
     case "train_shinkansen": {
@@ -2212,6 +2397,25 @@ function homeCancelItem(): PostbackAction {
   return { type: "postback", label: "✖ キャンセル", data: "action=hsx", displayText: "✖ キャンセル" }
 }
 
+/**
+ * 最寄り駅の登録フローをまたいで引き継ぐ印（電車代への復帰・初回設定・変更前の駅）。
+ * 候補や確認対象など、そのステップ限りの値は引き継がない。
+ */
+function carryHomeFlags(data: TransitData): TransitData {
+  const keep: TransitData = {}
+  if (data.pendingTrain) keep.pendingTrain = true
+  if (data.setupFlow) keep.setupFlow = true
+  if (data.resume) keep.resume = data.resume
+  if (data.homeBefore) keep.homeBefore = data.homeBefore
+  return keep
+}
+
+/** 「南草津駅（滋賀県）」形式 */
+function stationWithPref(station: string | null | undefined, pref: string | null | undefined): string {
+  if (!station) return "未登録"
+  return `${station}${pref ? `（${pref}）` : ""}`
+}
+
 /** 開始キーワード → セッション作成 → 駅名入力を促す（既登録なら現在値を併記） */
 async function handleHomeStationEntry(
   event: LineEvent,
@@ -2224,18 +2428,34 @@ async function handleHomeStationEntry(
     await sendLineMessage(
       replyToken,
       source.userId,
-      "🏠 自宅最寄り駅を登録します。\nまずお名前をテキストで送って登録してください。\n例：楠葉"
+      "🏠 自宅最寄り駅を登録します。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子）"
     )
     return
   }
+  await startHomeStationChange(event, supabase, staff.id, {})
+}
+
+/** 最寄り駅の登録・変更を始める（設定メニュー・初回設定からも使う） */
+async function startHomeStationChange(
+  event: LineEvent,
+  supabase: ReturnType<typeof createServiceClient>,
+  staffId: string,
+  base: TransitData,
+  lead = ""
+): Promise<void> {
+  const { replyToken, source } = event
   const { data: cur } = await supabase
     .from("staff_members")
     .select("home_station, home_station_pref")
-    .eq("id", staff.id)
+    .eq("id", staffId)
     .single()
   const c = cur as { home_station: string | null; home_station_pref: string | null } | null
+  const homeBefore = c?.home_station ? stationWithPref(c.home_station, c.home_station_pref) : undefined
 
-  const ok = await setTransitSession(supabase, source.userId, staff.id, "home_input", {})
+  const ok = await setTransitSession(supabase, source.userId, staffId, "home_input", {
+    ...carryHomeFlags(base),
+    ...(homeBefore ? { homeBefore } : {}),
+  })
   if (!ok) {
     await sendLineMessage(
       replyToken,
@@ -2245,11 +2465,10 @@ async function handleHomeStationEntry(
     return
   }
 
-  const text = c?.home_station
-    ? `🏠 現在の登録：${c.home_station}${c.home_station_pref ? `（${c.home_station_pref}）` : ""}\n` +
-      "変更する場合は新しい駅名を送信してください。（例：草津駅）"
-    : "🏠 自宅の最寄り駅を登録します。最寄り駅名を送信してください。（例：草津駅）"
-  await sendLineQuickReply(replyToken, source.userId, text + TIMEOUT_NOTE, [homeCancelItem()])
+  const text = homeBefore
+    ? `🏠 現在の登録：${homeBefore}\n` + "変更する場合は新しい駅名を送信してください。（例：草津駅）"
+    : "🏠 自宅の最寄り駅を登録します。最寄り駅名を送信してください。（例：南草津駅）"
+  await sendLineQuickReply(replyToken, source.userId, lead + text + TIMEOUT_NOTE, [homeCancelItem()])
 }
 
 /** 駅名テキストをGeminiで判定し、確認 or 候補提示 or 再入力に分岐 */
@@ -2258,28 +2477,28 @@ async function runHomeStationJudge(
   event: LineEvent,
   staffId: string,
   inputText: string,
-  pendingTrain = false
+  current: TransitData
 ): Promise<void> {
   const { replyToken, source } = event
   const judge = await judgeStation(inputText)
   const cands = judge.candidates.slice(0, 4)
-  // 「電車代」から誘導された登録は、各ステップをまたいでも復帰フラグを保持する
-  const keep = pendingTrain ? { pendingTrain: true } : {}
+  // 電車代への復帰・初回設定・変更前の駅は、各ステップをまたいでも保持する
+  const keep = carryHomeFlags(current)
 
   if (cands.length >= 2) {
     await setTransitSession(supabase, source.userId, staffId, "home_pick", { ...keep, homeStationCandidates: cands })
     await sendHomeStationCandidates(replyToken, source.userId, cands)
     return
   }
-  if (judge.station && judge.pref) {
-    const pick = { station: judge.station, pref: judge.pref, line: judge.line }
+  const pick =
+    judge.station && judge.pref
+      ? { station: judge.station, pref: judge.pref, line: judge.line }
+      : cands.length === 1
+        ? cands[0]
+        : null
+  if (pick) {
     await setTransitSession(supabase, source.userId, staffId, "home_confirm", { ...keep, homeStationPick: pick })
-    await sendHomeStationConfirm(replyToken, source.userId, pick)
-    return
-  }
-  if (cands.length === 1) {
-    await setTransitSession(supabase, source.userId, staffId, "home_confirm", { ...keep, homeStationPick: cands[0] })
-    await sendHomeStationConfirm(replyToken, source.userId, cands[0])
+    await sendHomeStationConfirm(replyToken, source.userId, pick, keep.homeBefore)
     return
   }
   // 判定不能 → 県名付き再入力
@@ -2292,23 +2511,23 @@ async function runHomeStationJudge(
   )
 }
 
-/** 一意判定の確認メッセージ（OK/修正） */
+/** 一意判定の確認メッセージ（OK/修正）。変更時は「変更前 → 変更後」を1行で示す */
 async function sendHomeStationConfirm(
   replyToken: string,
   userId: string,
-  pick: { station: string; pref: string; line?: string | null }
+  pick: { station: string; pref: string; line?: string | null },
+  before?: string
 ): Promise<void> {
   const lineStr = pick.line ? `・${pick.line}` : ""
-  await sendLineQuickReply(
-    replyToken,
-    userId,
-    `「${pick.station}（${pick.pref}${lineStr}）」でよろしいですか？`,
-    [
-      { type: "postback", label: "✅ OK", data: "action=hsok", displayText: "✅ OK" },
-      { type: "postback", label: "🔄 修正", data: "action=hsfix", displayText: "🔄 修正" },
-      homeCancelItem(),
-    ]
-  )
+  const after = toStationName(pick.station)
+  const text = before
+    ? `${before} → ${after}（${pick.pref}${lineStr}） に変更します。\nよろしいですか？`
+    : `「${after}（${pick.pref}${lineStr}）」でよろしいですか？`
+  await sendLineQuickReply(replyToken, userId, text, [
+    { type: "postback", label: "✅ OK", data: "action=hsok", displayText: "✅ OK" },
+    { type: "postback", label: "🔄 修正", data: "action=hsfix", displayText: "🔄 修正" },
+    homeCancelItem(),
+  ])
 }
 
 /** 複数候補の選択肢 */
@@ -2340,7 +2559,7 @@ async function saveHomeStation(
   staffId: string,
   station: string,
   pref: string | null,
-  pendingTrain = false
+  current: TransitData
 ): Promise<void> {
   const { replyToken, source } = event
   const normalized = toStationName(station)
@@ -2350,9 +2569,19 @@ async function saveHomeStation(
     await sendLineMessage(replyToken, source.userId, "⚠️ 登録に失敗しました。お手数ですが、もう一度お試しください。")
     return
   }
+  const afterLabel = stationWithPref(normalized, pref || "県未設定")
+  const doneText = current.homeBefore
+    ? `✅ ${current.homeBefore} → ${afterLabel} に変更しました。`
+    : `✅ 自宅最寄り駅を「${afterLabel}」で登録しました。`
+
+  // 初回設定の途中なら、次の設定（定期券）へ進む
+  if (current.setupFlow) {
+    await continueSetup(event, supabase, staffId, { ...carryHomeFlags(current), stationReviewed: true }, doneText)
+    return
+  }
 
   // 「電車代」から誘導された登録なら、そのまま電車代の申請（到着駅の入力）へ戻す
-  if (pendingTrain) {
+  if (current.pendingTrain) {
     const started = await setTransitSession(supabase, source.userId, staffId, "train_arrival_station", {
       mode: "train",
       fromStation: normalized,
@@ -2362,7 +2591,7 @@ async function saveHomeStation(
       await sendLineQuickReply(
         replyToken,
         source.userId,
-        `✅ 自宅最寄り駅を「${normalized}（${pref || "県未設定"}）」で登録しました。\n\n` +
+        `${doneText}\n\n` +
           "続けて電車代の申請に進みます。\n到着駅（会場の最寄り駅）の名前をテキストで送ってください。\n例：梅田",
         [transitCancelItem()]
       )
@@ -2371,12 +2600,7 @@ async function saveHomeStation(
   }
 
   await clearTransitSession(supabase, source.userId)
-  await sendLineMessage(
-    replyToken,
-    source.userId,
-    `✅ 自宅最寄り駅を「${normalized}（${pref || "県未設定"}）」で登録しました。\n` +
-      "領収書なし交通費（電車）の出発駅に使われます。"
-  )
+  await sendLineMessage(replyToken, source.userId, `${doneText}\n電車代（領収書なし）の出発駅に使われます。`)
 }
 
 /** 自宅最寄り駅フロー中のテキスト（どのステップでも駅名の再判定として扱う） */
@@ -2399,13 +2623,7 @@ async function handleHomeStationText(
     return
   }
   if (/^(最初から|やり直し|やりなおし|入力し直す|入力しなおす)$/.test(inputText)) {
-    await setTransitSession(
-      supabase,
-      source.userId,
-      staffId,
-      "home_input",
-      session.data.pendingTrain ? { pendingTrain: true } : {}
-    )
+    await setTransitSession(supabase, source.userId, staffId, "home_input", carryHomeFlags(session.data))
     await sendLineQuickReply(
       replyToken,
       source.userId,
@@ -2415,7 +2633,7 @@ async function handleHomeStationText(
     return
   }
   // home_input / home_confirm / home_pick のいずれでも、テキストは駅名（再）入力として判定し直す
-  await runHomeStationJudge(supabase, event, staffId, inputText, !!session.data.pendingTrain)
+  await runHomeStationJudge(supabase, event, staffId, inputText, session.data)
 }
 
 /** 確認OK → 保存 */
@@ -2429,7 +2647,7 @@ async function handleHomeStationConfirmPostback(event: LineEvent): Promise<void>
   }
   const pick = session.data.homeStationPick
   if (!pick?.station || !pick?.pref) {
-    await setTransitSession(supabase, source.userId, session.staffMemberId, "home_input", {})
+    await setTransitSession(supabase, source.userId, session.staffMemberId, "home_input", carryHomeFlags(session.data))
     await sendLineQuickReply(
       replyToken,
       source.userId,
@@ -2438,14 +2656,7 @@ async function handleHomeStationConfirmPostback(event: LineEvent): Promise<void>
     )
     return
   }
-  await saveHomeStation(
-    supabase,
-    event,
-    session.staffMemberId,
-    pick.station,
-    pick.pref,
-    !!session.data.pendingTrain
-  )
+  await saveHomeStation(supabase, event, session.staffMemberId, pick.station, pick.pref, session.data)
 }
 
 /** 候補選択 → 保存 */
@@ -2461,7 +2672,7 @@ async function handleHomeStationPickPostback(event: LineEvent, params: URLSearch
   const cands = session.data.homeStationCandidates || []
   const c = Number.isInteger(n) ? cands[n] : undefined
   if (!c?.station || !c?.pref) {
-    await setTransitSession(supabase, source.userId, session.staffMemberId, "home_input", {})
+    await setTransitSession(supabase, source.userId, session.staffMemberId, "home_input", carryHomeFlags(session.data))
     await sendLineQuickReply(
       replyToken,
       source.userId,
@@ -2470,7 +2681,7 @@ async function handleHomeStationPickPostback(event: LineEvent, params: URLSearch
     )
     return
   }
-  await saveHomeStation(supabase, event, session.staffMemberId, c.station, c.pref, !!session.data.pendingTrain)
+  await saveHomeStation(supabase, event, session.staffMemberId, c.station, c.pref, session.data)
 }
 
 /** 入力し直す → 駅名入力へ戻す */
@@ -2482,13 +2693,7 @@ async function handleHomeStationFixPostback(event: LineEvent): Promise<void> {
     await sendTransitExpired(replyToken, source.userId)
     return
   }
-  await setTransitSession(
-    supabase,
-    source.userId,
-    session.staffMemberId,
-    "home_input",
-    session.data.pendingTrain ? { pendingTrain: true } : {}
-  )
+  await setTransitSession(supabase, source.userId, session.staffMemberId, "home_input", carryHomeFlags(session.data))
   await sendLineQuickReply(
     replyToken,
     source.userId,
@@ -2726,7 +2931,7 @@ ${query}
   }
 }
 
-/** テキストメッセージ処理: スタッフ名照合 / マニュアル検索 / その他 */
+/** テキストメッセージ処理: リッチメニュー / 申請 / 氏名登録 / マニュアル検索 / その他 */
 async function handleTextMessage(event: LineEvent): Promise<void> {
   const { replyToken, source, message } = event
   const inputText = message?.text?.trim()
@@ -2734,22 +2939,42 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
 
   const supabase = createServiceClient()
 
+  // 「使い方」「問い合わせ」は読むだけの案内なので、進行中の操作を中断せずに答える
+  const infoCommand = findRichMenuCommand(inputText)
+  if (infoCommand === "usage" || infoCommand === "contact") {
+    await sendLineMessage(replyToken, source.userId, infoCommand === "usage" ? USAGE_TEXT : CONTACT_TEXT)
+    return
+  }
+
+  // リッチメニュー・申請メニューのトリガー（進行中の操作より優先して切り替える）
+  const isSwitchTrigger =
+    isApplicationMenuEntry(inputText) || !!findMenuItemByText(inputText) || !!findRichMenuCommand(inputText)
+
   // 0. 進行中の対話セッションがあれば最優先で処理（テキスト入力を取りこぼさない）
   //    ただし最終操作から SESSION_TIMEOUT_MINUTES 分を過ぎたセッションは失効させ、続きとしては扱わない。
   const { session: transitSession, expired } = await loadTransitSession(supabase, source.userId)
-  if (expired) {
+  if (expired && !isSwitchTrigger) {
     await sendLineMessage(replyToken, source.userId, SESSION_EXPIRED_TEXT)
     return
   }
   if (transitSession) {
-    // 申請の途中でも「申請」「電車代」等の別トリガーが送られたら、前の申請を破棄して新しいフローに切り替える
+    // 途中でも「申請」「電車代」「設定」等のメニュー操作が来たら、前の操作を破棄して切り替える
     // （「キャンセル」「最初から」は各フロー側で従来どおり処理する）
-    if (isApplicationMenuEntry(inputText) || findMenuItemByText(inputText)) {
+    if (isSwitchTrigger) {
       await clearTransitSession(supabase, source.userId)
       // replyToken は新しいフローの案内に使うため、切り替えの一言は push で先に送る
-      await pushMessage(source.userId, "✋ 前の申請を中止して、新しく開始します。")
+      await pushMessage(source.userId, "✋ 前の操作を中止して、新しく開始します。")
     } else if (transitSession.step.startsWith("home_")) {
       await handleHomeStationText(event, supabase, transitSession, inputText)
+      return
+    } else if (transitSession.step.startsWith("pass_")) {
+      await handlePassText(event, supabase, transitSession, inputText)
+      return
+    } else if (transitSession.step.startsWith("setup_")) {
+      await handleSetupText(event, supabase, transitSession, inputText)
+      return
+    } else if (transitSession.step === "train_pass") {
+      await handleTrainPassText(event, supabase, transitSession, inputText)
       return
     } else {
       await handleTransitText(event, supabase, transitSession, inputText)
@@ -2762,10 +2987,32 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
     await sendLineMessage(replyToken, source.userId, "⚠️ システムエラーが発生しました。管理者にご連絡ください。")
     return
   }
+  const linked = resolveStaffForUser(staffMembers, source.userId)
 
-  // 0b. 「申請」系 → 申請メニュー（Quick Reply）を表示
+  // 0a. リッチメニュー（設定／申請履歴／使い方／問い合わせ）
+  const command = findRichMenuCommand(inputText)
+  if (command && !linked) {
+    await sendLineMessage(replyToken, source.userId, NOT_REGISTERED_TEXT)
+    return
+  }
+  if (command === "settings" && linked) {
+    await sendSettings(event, supabase, linked.id)
+    return
+  }
+  if (command === "history" && linked) {
+    await sendHistory(event, supabase, linked.id)
+    return
+  }
+
+  // 0b. 「申請」系 → 申請メニュー（Quick Reply）を表示（初回設定が未完了なら1回だけ挟む）
   if (isApplicationMenuEntry(inputText)) {
-    await sendApplicationMenu(replyToken, source.userId)
+    if (!linked) {
+      await sendLineMessage(replyToken, source.userId, NOT_REGISTERED_TEXT)
+      return
+    }
+    const gate = await beginApplication(event, supabase, linked.id, { kind: "menu" })
+    if (!gate.proceed) return
+    await sendApplicationMenu(replyToken, source.userId, gate.greeting)
     return
   }
 
@@ -2788,34 +3035,26 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
     return
   }
 
-  // a. スタッフ名として登録済み → 既存のスタッフ登録フロー
-  const matched = findStaffByName(staffMembers, inputText)
-  if (matched) {
-    // line_user_idが未登録の場合、自動でDBに保存する
-    if (!matched.line_user_id) {
-      const { error: updateError } = await supabase
-        .from("staff_members")
-        .update({ line_user_id: source.userId })
-        .eq("id", matched.id)
-
-      if (updateError) {
-        console.error("line_user_id更新エラー:", updateError)
-      } else {
-        console.log(`line_user_id登録: ${matched.name} = ${source.userId}`)
-      }
+  // a. 氏名の登録（このLINEがまだ誰にも紐づいていない場合のみ）
+  //    同姓が複数なら候補を選ばせる。曖昧なまま先頭1件に紐づけない。新規スタッフは作らない。
+  if (!linked) {
+    if (!isBusinessCardQuery(inputText) && !isQuestionText(inputText)) {
+      await handleNameRegistrationText(event, staffMembers, inputText)
+      return
     }
-
-    staffNameCache.set(source.userId, {
-      staffId: matched.id,
-      staffName: matched.name,
-      expiresAt: Date.now() + CACHE_TTL_MS,
-    })
-    await sendLineMessage(
-      replyToken,
-      source.userId,
-      `✅ ${matched.name}さんとして登録します。\n次に領収書の写真を送ってください`
-    )
-    return
+  } else {
+    // 既に紐づいているLINEから氏名が送られても上書きしない
+    const sameName = staffMembers.find((s) => normalizePersonName(s.name) === normalizePersonName(inputText))
+    if (sameName) {
+      await sendLineMessage(
+        replyToken,
+        source.userId,
+        sameName.id === linked.id
+          ? `${linked.name}さんとして登録済みです。\n領収書の写真を送るか、下のメニューから申請してください。`
+          : `このLINEは${linked.name}さんとして登録されています。\nお名前の変更は、メニューの「設定」から申請してください。`
+      )
+      return
+    }
   }
 
   // b. 名刺検索キーワードを含む → 名刺検索
@@ -2835,8 +3074,1063 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
     replyToken,
     source.userId,
     "🤔 操作として認識できませんでした。\n" +
-      "「申請」と送ると申請メニューが表示されます。\n\n" +
+      "下のメニューの「申請する」から申請できます。\n\n" +
       "📎 領収書はこのトークに写真を送るだけで登録できます。"
+  )
+}
+
+/* ========== 氏名登録・初回設定・設定メニュー・申請履歴・定期券（フェーズ1） ========== */
+
+type ServiceClient = ReturnType<typeof createServiceClient>
+
+/** 未登録のLINEからメニュー操作が来たときの案内 */
+const NOT_REGISTERED_TEXT =
+  "まだお名前が登録されていません。\n" + "お名前をフルネームで送信してください。\n（例：南 ひふ子）"
+
+/** 友だち追加（follow）→ 初回オンボーディング */
+async function handleFollow(event: LineEvent): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const staffMembers = await fetchStaffMembers(supabase)
+  const linked = staffMembers?.find((s) => s.line_user_id === source.userId)
+  if (linked) {
+    // ブロック解除などで再度友だち追加された場合（既に紐づいている）
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      `おかえりなさい。${linked.name}さんとして登録されています。\n下のメニューからいつでも申請できます。`
+    )
+    return
+  }
+  await sendLineMessage(replyToken, source.userId, FOLLOW_TEXT)
+}
+
+/**
+ * 未登録のLINEから届いたテキストを氏名として照合する。
+ * - 一意に決まれば確認カード、同姓が複数なら候補を選ばせる、0件なら担当への確認を案内（新規作成はしない）。
+ */
+async function handleNameRegistrationText(event: LineEvent, staffMembers: StaffRow[], inputText: string): Promise<void> {
+  const { replyToken, source } = event
+  const candidates = matchStaffCandidates(staffMembers, inputText)
+  if (candidates.length === 0) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      `「${inputText.slice(0, 20)}」に一致するお名前が見つかりませんでした。\n` +
+        "お名前をフルネームで送り直すか、担当に確認してください。\n（例：南 ひふ子）"
+    )
+    return
+  }
+  if (candidates.length === 1) {
+    const c = candidates[0]
+    await sendFlexCard(
+      replyToken,
+      source.userId,
+      nameConfirmCard({ name: c.name, okData: `action=nmok&sid=${c.id}`, retryData: "action=nmre" }),
+      `${c.name}さんとして登録します。よろしいですか？`
+    )
+    return
+  }
+  // 同姓・同名が複数 → 本人に選ばせる（先頭1件に紐づけない）
+  const actions: ActionDef[] = candidates
+    .slice(0, 12)
+    .map((c) => flexPostback(c.name, `action=nmpick&sid=${c.id}`, c.name))
+  actions.push(flexPostback("この中にいない", "action=nmre", "この中にいない"))
+  await sendLineMessages(replyToken, source.userId, [
+    textWithQuickReply(
+      "同じお名前（姓）の方が複数登録されています。\nご自身のお名前を下から選んでください。\n見つからない場合は、フルネームで送り直してください。",
+      actions
+    ),
+  ])
+}
+
+/** 候補から選択 → 確認カード */
+async function handleNamePickPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const sid = params.get("sid")
+  const supabase = createServiceClient()
+  const staffMembers = await fetchStaffMembers(supabase)
+  const target = staffMembers?.find((s) => s.id === sid)
+  if (!target) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 選択を認識できませんでした。お名前をもう一度送信してください。")
+    return
+  }
+  await sendFlexCard(
+    replyToken,
+    source.userId,
+    nameConfirmCard({ name: target.name, okData: `action=nmok&sid=${target.id}`, retryData: "action=nmre" }),
+    `${target.name}さんとして登録します。よろしいですか？`
+  )
+}
+
+/**
+ * 氏名の確認OK → このLINEとスタッフを紐づける。
+ * - このLINEが既に別のスタッフに紐づいていれば上書きしない。
+ * - 対象スタッフが別のLINEに紐づいていれば紐づけない（担当へ確認）。
+ * - 紐づけは line_user_id が空の行に限って更新する（同時操作での取り違えを防ぐ）。
+ */
+async function handleNameConfirmPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const sid = params.get("sid")
+  const supabase = createServiceClient()
+  const staffMembers = await fetchStaffMembers(supabase)
+  if (!staffMembers || !sid) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ システムエラーが発生しました。もう一度お試しください。")
+    return
+  }
+  const me = staffMembers.find((s) => s.line_user_id === source.userId)
+  if (me && me.id !== sid) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      `このLINEは${me.name}さんとして登録されています。\nお名前の変更は、メニューの「設定」から申請してください。`
+    )
+    return
+  }
+  const target = staffMembers.find((s) => s.id === sid)
+  if (!target) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 対象のお名前が見つかりませんでした。担当に確認してください。")
+    return
+  }
+  const takenByOther = "このお名前は別のLINEアカウントで登録済みです。\n担当に確認してください。"
+  if (target.line_user_id && target.line_user_id !== source.userId) {
+    await sendLineMessage(replyToken, source.userId, takenByOther)
+    return
+  }
+  if (!target.line_user_id) {
+    const { data: updated, error } = await supabase
+      .from("staff_members")
+      .update({ line_user_id: source.userId })
+      .eq("id", target.id)
+      .is("line_user_id", null)
+      .select("id")
+    if (error) {
+      console.error("line_user_id更新エラー:", error)
+      await sendLineMessage(replyToken, source.userId, "⚠️ 登録に失敗しました。もう一度お試しください。")
+      return
+    }
+    if (!updated || updated.length === 0) {
+      await sendLineMessage(replyToken, source.userId, takenByOther)
+      return
+    }
+    console.log(`line_user_id登録: ${target.name} = ${source.userId}`)
+  }
+  // DB更新が反映されるまでの保険（30分）
+  staffNameCache.set(source.userId, { staffId: target.id, staffName: target.name, expiresAt: Date.now() + CACHE_TTL_MS })
+  await updateLineProfile(supabase, target.id, { name_confirmed_at: new Date().toISOString() })
+
+  const state = await loadStaffLineState(supabase, target.id)
+  if (state && !isSetupComplete(state)) {
+    // 続けて最寄り駅（＋定期券）の登録へ誘導する
+    await setTransitSession(supabase, source.userId, target.id, "setup_offer", { setupFlow: true, resume: { kind: "none" } })
+    await sendLineMessages(replyToken, source.userId, [
+      textWithQuickReply(`✅ ${target.name}さんとして登録しました。\n\n続けて、自宅の最寄り駅を登録しますか？`, [
+        flexPostback("登録する", "action=sup&s=start", "登録する"),
+        flexPostback("あとで", "action=sup&s=later", "あとで"),
+      ]),
+    ])
+    return
+  }
+  await sendLineMessage(replyToken, source.userId, `✅ ${target.name}さんとして登録しました。\n\n${ONBOARDING_DONE_TEXT}`)
+}
+
+/** 申請開始時の共通処理の結果 */
+interface ApplicationGate {
+  /** false なら初回設定を挟んだため、呼び出し側は何もしない（設定完了後に resume で戻る） */
+  proceed: boolean
+  /** 久しぶりの申請に添える一言（空文字可） */
+  greeting: string
+}
+
+/**
+ * 申請を始めるときの共通処理（【3】全員に1回だけ設定を通す／【4】3か月以上空いたら一言添える）。
+ * 列（migration 041）が未適用の環境では何もしない（従来動作）。
+ */
+async function beginApplication(
+  event: LineEvent,
+  supabase: ServiceClient,
+  staffId: string,
+  resume: ResumeAction
+): Promise<ApplicationGate> {
+  const state = await loadStaffLineState(supabase, staffId)
+  if (!state || !state.available) return { proceed: true, greeting: "" }
+  if (!isSetupComplete(state)) {
+    await continueSetup(
+      event,
+      supabase,
+      staffId,
+      { setupFlow: true, resume },
+      "最初に1回だけ、登録内容の確認をお願いします（1分で終わります）。\n終わったら、そのまま申請に戻ります。"
+    )
+    return { proceed: false, greeting: "" }
+  }
+  const greeting = isLongAbsence(state.profile)
+    ? "久しぶりの申請ですね。写真を送っていただければ、あとは選ぶだけです。\n\n"
+    : ""
+  await updateLineProfile(supabase, staffId, { last_applied_at: new Date().toISOString() })
+  return { proceed: true, greeting }
+}
+
+/**
+ * 初回設定の次のステップへ進める（氏名確認 → 最寄り駅 → 定期券 → 完了）。
+ * 各ステップは状態から判定するので、どこから呼んでも未完了の最初のステップを出す。
+ * @param lead 先頭に添えるテキスト（直前の操作の完了報告など）
+ */
+async function continueSetup(
+  event: LineEvent,
+  supabase: ServiceClient,
+  staffId: string,
+  data: TransitData,
+  lead?: string
+): Promise<void> {
+  const { replyToken, source } = event
+  const state = await loadStaffLineState(supabase, staffId)
+  if (!state) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ システムエラーが発生しました。管理者にご連絡ください。")
+    return
+  }
+  const pre: unknown[] = lead ? [{ type: "text", text: lead }] : []
+  const flowData: TransitData = { setupFlow: true, resume: data.resume, stationReviewed: data.stationReviewed }
+
+  // 1. 氏名の確認
+  if (!state.profile.name_confirmed_at) {
+    await setTransitSession(supabase, source.userId, staffId, "setup_name", flowData)
+    await sendLineMessages(replyToken, source.userId, [
+      ...pre,
+      nameReviewCard({ name: state.name, okData: "action=sup&s=name_ok", changeData: "action=sup&s=name_req" }),
+    ])
+    return
+  }
+
+  // 2. 最寄り駅（登録済みなら確認、未登録なら登録）
+  if (!flowData.stationReviewed) {
+    if (state.homeStation) {
+      await setTransitSession(supabase, source.userId, staffId, "setup_station", flowData)
+      await sendLineMessages(replyToken, source.userId, [
+        ...pre,
+        stationReviewCard({
+          station: stationWithPref(state.homeStation, state.homeStationPref),
+          okData: "action=sup&s=st_ok",
+          changeData: "action=sup&s=st_change",
+        }),
+      ])
+      return
+    }
+    await setTransitSession(supabase, source.userId, staffId, "home_input", flowData)
+    await sendLineMessages(replyToken, source.userId, [
+      ...pre,
+      textWithQuickReply(
+        "🏠 自宅の最寄り駅を登録します。\n最寄り駅の名前を送信してください。（例：南草津駅）\n電車代の計算の出発駅に使います。",
+        [homeCancelItem()]
+      ),
+    ])
+    return
+  }
+
+  // 3. 定期券（未回答なら聞く）
+  if (isCommuterPassUnanswered(state.profile)) {
+    await askPass(event, supabase, staffId, flowData, state, pre)
+    return
+  }
+
+  // 4. 完了 → 本来の申請に戻る
+  await updateLineProfile(supabase, staffId, {
+    setup_completed_at: new Date().toISOString(),
+    last_applied_at: new Date().toISOString(),
+  })
+  await clearTransitSession(supabase, source.userId)
+  await resumeAfterSetup(event, supabase, staffId, data.resume, (lead ? `${lead}\n\n` : "") + "✅ 設定が完了しました。次回からは聞きません。\n\n")
+}
+
+/** 初回設定の完了後、元の申請に戻る（追加のプッシュ送信はせず、返信1回にまとめる） */
+async function resumeAfterSetup(
+  event: LineEvent,
+  supabase: ServiceClient,
+  staffId: string,
+  resume: ResumeAction | undefined,
+  lead: string
+): Promise<void> {
+  const { replyToken, source } = event
+  const kind = resume?.kind ?? "none"
+  if (kind === "none") {
+    await sendLineMessage(replyToken, source.userId, lead + ONBOARDING_DONE_TEXT)
+    return
+  }
+  if (resume?.kind === "receipt") {
+    await sendReceiptCard(event, supabase, resume.rid, lead.trim())
+    return
+  }
+  if (kind === "menu") {
+    await sendApplicationMenu(replyToken, source.userId, lead)
+    return
+  }
+  const staffMembers = await fetchStaffMembers(supabase)
+  if (!staffMembers) {
+    await sendLineMessage(replyToken, source.userId, lead + "下のメニューからもう一度申請してください。")
+    return
+  }
+  if (kind === "train") await startTrainTransit(event, supabase, staffMembers, lead)
+  else if (kind === "other") await startOtherTransit(event, supabase, staffMembers, lead)
+  else await handleTransitEntry(event, supabase, staffMembers, lead)
+}
+
+/** 初回設定のボタン操作（action=sup&s=...） */
+async function handleSetupPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const step = params.get("s")
+
+  // 氏名登録直後の「登録する／あとで」はセッション切れでも受け付ける（紐づけから本人を特定）
+  if (step === "start" || step === "later") {
+    const staffMembers = await fetchStaffMembers(supabase)
+    const staff = staffMembers ? resolveStaffForUser(staffMembers, source.userId) : null
+    if (!staff) {
+      await sendLineMessage(replyToken, source.userId, NOT_REGISTERED_TEXT)
+      return
+    }
+    if (step === "later") {
+      await clearTransitSession(supabase, source.userId)
+      await sendLineMessage(
+        replyToken,
+        source.userId,
+        "承知しました。次に申請するときに、最寄り駅と定期券の登録をお願いします。\n下のメニューからいつでも申請できます。"
+      )
+      return
+    }
+    await continueSetup(event, supabase, staff.id, { setupFlow: true, resume: { kind: "none" } })
+    return
+  }
+
+  const session = await getTransitSession(supabase, source.userId)
+  if (!session?.staffMemberId || !session.step.startsWith("setup_")) {
+    await sendLineMessage(replyToken, source.userId, SESSION_EXPIRED_TEXT)
+    return
+  }
+  const staffId = session.staffMemberId
+  switch (step) {
+    case "name_ok":
+      await updateLineProfile(supabase, staffId, { name_confirmed_at: new Date().toISOString() })
+      await continueSetup(event, supabase, staffId, session.data)
+      return
+    case "name_req": {
+      await requestNameChange(supabase, staffId)
+      await updateLineProfile(supabase, staffId, { name_confirmed_at: new Date().toISOString() })
+      await continueSetup(
+        event,
+        supabase,
+        staffId,
+        session.data,
+        "担当にお名前の変更を依頼しました。変更されるまでは今のお名前のまま申請できます。"
+      )
+      return
+    }
+    case "st_ok":
+      await continueSetup(event, supabase, staffId, { ...session.data, stationReviewed: true })
+      return
+    case "st_change":
+      await startHomeStationChange(event, supabase, staffId, { setupFlow: true, resume: session.data.resume })
+      return
+    default:
+      await continueSetup(event, supabase, staffId, session.data)
+  }
+}
+
+/** 初回設定中のテキスト（ボタンで選んでもらうため、現在のステップを出し直す） */
+async function handleSetupText(
+  event: LineEvent,
+  supabase: ServiceClient,
+  session: TransitSession,
+  inputText: string
+): Promise<void> {
+  const { replyToken, source } = event
+  if (/^(キャンセル|中止|やめる|やめます|終了|あとで)$/.test(inputText)) {
+    await clearTransitSession(supabase, source.userId)
+    await sendLineMessage(replyToken, source.userId, "設定を中断しました。次に申請するときにもう一度確認します。")
+    return
+  }
+  if (!session.staffMemberId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  await continueSetup(event, supabase, session.staffMemberId, session.data, "下のボタンから選んでください。")
+}
+
+/**
+ * 氏名の変更を申請する（本人は直接書き換えられない。担当が /mkadmin で変更する）。
+ * 申請は line_profile に記録し、担当へLINEで通知する（テストスタッフは通知しない＝既存の方針どおり）。
+ */
+async function requestNameChange(supabase: ServiceClient, staffId: string): Promise<void> {
+  const state = await loadStaffLineState(supabase, staffId)
+  if (!state) return
+  if (state.available) {
+    const requests = [...(state.profile.name_change_requests ?? []), { requested_at: new Date().toISOString() }]
+    await updateLineProfile(supabase, staffId, { name_change_requests: requests.slice(-10) })
+  }
+  const adminId = process.env.ADMIN_LINE_USER_ID
+  if (adminId && !state.isTest) {
+    await pushMessage(
+      adminId,
+      `📝 ${state.name}さんからお名前の変更依頼がありました。\n/mkadmin の「LINEスタッフ管理」で変更してください（LINEの紐づけ・過去の申請はそのまま残ります）。`
+    )
+  }
+}
+
+/* ---------- 設定メニュー ---------- */
+
+/** 「設定」→ 現在の登録内容を先に表示し、変更ボタンを出す */
+async function sendSettings(event: LineEvent, supabase: ServiceClient, staffId: string): Promise<void> {
+  const { replyToken, source } = event
+  const state = await loadStaffLineState(supabase, staffId)
+  if (!state) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ システムエラーが発生しました。管理者にご連絡ください。")
+    return
+  }
+  const home = stationWithPref(state.homeStation, state.homeStationPref)
+  if (!state.available) {
+    // 列（migration 041）未適用：定期券は扱えないため最寄り駅だけ案内する
+    await sendLineMessages(replyToken, source.userId, [
+      textWithQuickReply(`⚙️ 設定\n現在の登録\n　お名前：${state.name}\n　最寄り駅：${home}`, [
+        flexPostback("最寄り駅を変更", "action=stg&k=hs", "最寄り駅を変更"),
+        flexPostback("お名前の変更を申請", "action=stg&k=nm", "お名前の変更を申請"),
+      ]),
+    ])
+    return
+  }
+  const passLabel = commuterPassLabel(state.profile)
+  await sendFlexCard(
+    replyToken,
+    source.userId,
+    settingsCard({
+      name: state.name,
+      homeStation: home,
+      commuterPass: passLabel,
+      stationData: "action=stg&k=hs",
+      passData: "action=stg&k=cp",
+      nameData: "action=stg&k=nm",
+      pendingNameChange: hasPendingNameChange(state.profile),
+    }),
+    `⚙️ 設定\n現在の登録\n　お名前：${state.name}\n　最寄り駅：${home}\n　定期券：${passLabel}`
+  )
+}
+
+/** 設定メニューのボタン（action=stg&k=hs|cp|nm） */
+async function handleSettingsPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const staffMembers = await fetchStaffMembers(supabase)
+  const staff = staffMembers ? resolveStaffForUser(staffMembers, source.userId) : null
+  if (!staff) {
+    await sendLineMessage(replyToken, source.userId, NOT_REGISTERED_TEXT)
+    return
+  }
+  switch (params.get("k")) {
+    case "hs":
+      await startHomeStationChange(event, supabase, staff.id, {})
+      return
+    case "cp": {
+      const state = await loadStaffLineState(supabase, staff.id)
+      if (!state?.available) {
+        await sendLineMessage(replyToken, source.userId, "定期券の登録は準備中です。担当にお知らせください。")
+        return
+      }
+      await askPass(event, supabase, staff.id, {}, state)
+      return
+    }
+    case "nm":
+      await requestNameChange(supabase, staff.id)
+      await sendLineMessage(
+        replyToken,
+        source.userId,
+        "担当にお名前の変更を依頼しました。\n変更されるまでは今のお名前のまま申請できます（これまでの申請はそのまま引き継がれます）。"
+      )
+      return
+    default:
+      await sendSettings(event, supabase, staff.id)
+  }
+}
+
+/* ---------- 申請履歴 ---------- */
+
+/** 「申請履歴」→ 自分の直近5件をカードで返す */
+async function sendHistory(event: LineEvent, supabase: ServiceClient, staffId: string): Promise<void> {
+  const { replyToken, source } = event
+  const { data: staffRow } = await supabase.from("staff_members").select("name").eq("id", staffId).single()
+  const staffName = (staffRow as { name?: string } | null)?.name || ""
+
+  const { data: rows, error } = await supabase
+    .from("staff_receipts")
+    .select("id, store_name, amount, created_at, ai_raw")
+    .eq("staff_member_id", staffId)
+    .order("created_at", { ascending: false })
+    .limit(5)
+  if (error) {
+    console.error("[LINE Bot] 申請履歴の取得エラー:", error)
+    await sendLineMessage(replyToken, source.userId, "⚠️ 申請履歴を取得できませんでした。")
+    return
+  }
+  const receipts = (rows ?? []) as {
+    id: string
+    store_name: string | null
+    amount: number | null
+    created_at: string
+    ai_raw: unknown
+  }[]
+  const ids = receipts.map((r) => r.id)
+  const txByReceipt = new Map<string, { amount: number; subsidy_category: string | null; expense_detail: string | null }>()
+  if (ids.length > 0) {
+    const { data: txs } = await supabase
+      .from("petty_cash_transactions")
+      .select("staff_receipt_id, amount, subsidy_category, expense_detail")
+      .in("staff_receipt_id", ids)
+    for (const t of (txs ?? []) as {
+      staff_receipt_id: string | null
+      amount: number
+      subsidy_category: string | null
+      expense_detail: string | null
+    }[]) {
+      if (t.staff_receipt_id) txByReceipt.set(t.staff_receipt_id, t)
+    }
+  }
+
+  // 現在の締め月（これより前の月は提出済みとみなし、末尾の案内には含めない）
+  const today = toJstDateString(new Date())
+  const currentMonth = resolveStaffSubmissionMonth(null, today).month
+  const upcomingMonths = new Set<string>()
+
+  const items: HistoryItem[] = receipts.map((r) => {
+    const raw = parseAiRawObject(r.ai_raw) ?? {}
+    const tx = txByReceipt.get(r.id)
+    // 状態は後から増やせるよう STATUS_BADGES のキーで表す（承認・差戻などはフェーズ2で追加）
+    const status: HistoryItem["status"] = raw.cancelled_at ? "cancelled" : tx ? "registered" : "category_pending"
+    const createdJst = toJstDateString(new Date(r.created_at))
+    if (status === "registered") {
+      const m = resolveStaffSubmissionMonth(r.ai_raw, createdJst).month
+      if (m && currentMonth && m.year * 12 + m.month >= currentMonth.year * 12 + currentMonth.month) {
+        upcomingMonths.add(labelYearMonth(m))
+      }
+    }
+    const amount = tx?.amount ?? r.amount
+    return {
+      date: `${Number(createdJst.slice(5, 7))}/${Number(createdJst.slice(8, 10))}`,
+      status,
+      store: (r.store_name || "不明").slice(0, 40),
+      category: tx?.expense_detail || (status === "category_pending" ? "区分を選ぶ前の領収書" : "—"),
+      amount,
+      subsidy: tx ? calcSubsidy(tx.amount, tx.subsidy_category) : null,
+    }
+  })
+  const footer =
+    upcomingMonths.size > 0 ? `登録済みの分は ${[...upcomingMonths].map((m) => `${m}分`).join("・")} として提出されます。` : null
+
+  const card = historyCard({ staffFamilyName: familyName(staffName), items, footer })
+  const fallback =
+    `📋 ${familyName(staffName)}さんの申請（直近${items.length}件）\n` +
+    items
+      .map((i) => `${i.date} ${i.store} ¥${formatAmount(i.amount)}${i.subsidy != null ? ` → 支給 ¥${formatAmount(i.subsidy)}` : ""}`)
+      .join("\n") +
+    (footer ? `\n\n${footer}` : "")
+  await sendFlexCard(replyToken, source.userId, card, fallback)
+}
+
+/* ---------- 領収書の読み取り結果カード ---------- */
+
+/** 区分の第1階層（クイックリプライ） */
+function tier1Actions(receiptId: string): ActionDef[] {
+  return (["ach", "other"] as const).map((g) =>
+    flexPostback(EXPENSE_GROUP_LABELS[g], `action=t1&rid=${receiptId}&g=${g}`, EXPENSE_GROUP_LABELS[g])
+  )
+}
+
+/** ③ 領収書の読み取り結果カード＋区分選択（クイックリプライ）を送る */
+async function sendReceiptCard(event: LineEvent, supabase: ServiceClient, receiptId: string, lead = ""): Promise<void> {
+  const { replyToken, source } = event
+  const fetched = await fetchReceiptWithSiblings(supabase, receiptId)
+  if (!fetched) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 対象の領収書が見つかりませんでした。もう一度写真を送ってください。")
+    return
+  }
+  const { receipt, siblings } = fetched
+  const items =
+    siblings.length >= 2
+      ? siblings.map((s) => ({ store: s.store_name || "不明", amount: s.amount, date: s.date }))
+      : [{ store: receipt.store_name || "不明", amount: receipt.amount, date: receipt.date }]
+  const card = receiptReceivedCard({
+    items,
+    staffFamilyName: familyName(receipt.staffName),
+    categoryActions: tier1Actions(receiptId),
+  })
+  const fallback =
+    `📸 領収書を${items.length}件 受け取りました。\n` +
+    items.map((i) => `${i.store} ¥${formatAmount(i.amount)}（${i.date || "日付不明"}）`).join("\n") +
+    `\n${familyName(receipt.staffName)}さんとして申請します。\n\n何の費用ですか？\n下のボタンから選んでください。`
+  await sendFlexCard(replyToken, source.userId, card, fallback, lead || undefined)
+}
+
+/* ---------- 定期券の登録・変更 ---------- */
+
+/** 定期券フロー用のキャンセル */
+function passCancelAction(): ActionDef {
+  return flexPostback("キャンセル", "action=cpx", "キャンセル")
+}
+
+/** 定期券の有無を聞く */
+async function askPass(
+  event: LineEvent,
+  supabase: ServiceClient,
+  staffId: string,
+  data: TransitData,
+  state: StaffLineState,
+  pre: unknown[] = []
+): Promise<void> {
+  const { replyToken, source } = event
+  await setTransitSession(supabase, source.userId, staffId, "pass_ask", {
+    setupFlow: data.setupFlow,
+    resume: data.resume,
+    stationReviewed: data.stationReviewed,
+  })
+  const current = state.profile.commuter_pass ? `現在の登録：${commuterPassLabel(state.profile)}\n\n` : ""
+  await sendLineMessages(replyToken, source.userId, [
+    ...pre,
+    textWithQuickReply(
+      current +
+        "🎫 通勤の定期券をお持ちですか？\n\n" +
+        "定期券の区間は、すでに定期代が支給されているため、電車代の支給の対象外になります。そのため区間を登録していただいています。",
+      [
+        flexPostback("定期券あり", "action=cp&v=1", "定期券あり"),
+        flexPostback("定期券なし", "action=cp&v=0", "定期券なし"),
+        passCancelAction(),
+      ]
+    ),
+  ])
+}
+
+/** 定期券フローのセッションを取り出す（無ければ失効案内） */
+async function getPassSession(event: LineEvent, supabase: ServiceClient): Promise<TransitSession | null> {
+  const session = await getTransitSession(supabase, event.source.userId)
+  if (!session?.staffMemberId || !session.step.startsWith("pass_")) {
+    await sendLineMessage(event.replyToken, event.source.userId, SESSION_EXPIRED_TEXT)
+    return null
+  }
+  return session
+}
+
+/** 定期券フローの共通の引き継ぎ（初回設定の途中かどうか等） */
+function carryPassFlags(data: TransitData): TransitData {
+  return { setupFlow: data.setupFlow, resume: data.resume, stationReviewed: data.stationReviewed }
+}
+
+/** 定期券あり／なし */
+async function handlePassAnswerPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getPassSession(event, supabase)
+  if (!session?.staffMemberId) return
+  const staffId = session.staffMemberId
+
+  if (params.get("v") === "0") {
+    const ok = await updateLineProfile(supabase, staffId, {
+      commuter_pass: { has: false, updated_at: new Date().toISOString() },
+    })
+    if (!ok) {
+      await sendLineMessage(replyToken, source.userId, "⚠️ 登録に失敗しました。もう一度お試しください。")
+      return
+    }
+    if (session.data.setupFlow) {
+      await continueSetup(event, supabase, staffId, session.data, "🎫 定期券「なし」で登録しました。")
+      return
+    }
+    await clearTransitSession(supabase, source.userId)
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "🎫 定期券「なし」で登録しました。\n電車代は自宅の最寄り駅からの運賃で計算します。"
+    )
+    return
+  }
+
+  await setTransitSession(supabase, source.userId, staffId, "pass_from", carryPassFlags(session.data))
+  await sendLineMessages(replyToken, source.userId, [
+    textWithQuickReply(
+      "🎫 定期券の区間を、駅を1つずつ伺います。\nまず、区間の片方の端の駅名を送信してください。（例：南草津）",
+      [passCancelAction()]
+    ),
+  ])
+}
+
+/** 定期券フロー中のテキスト（駅名の入力） */
+async function handlePassText(
+  event: LineEvent,
+  supabase: ServiceClient,
+  session: TransitSession,
+  inputText: string
+): Promise<void> {
+  const { replyToken, source } = event
+  if (/^(キャンセル|中止|やめる|やめます|終了)$/.test(inputText)) {
+    await clearTransitSession(supabase, source.userId)
+    await sendLineMessage(replyToken, source.userId, "✋ 定期券の登録を中止しました。")
+    return
+  }
+  const staffId = session.staffMemberId
+  if (!staffId) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  const step = session.step
+  if (step === "pass_ask" || step === "pass_confirm") {
+    await sendLineMessage(replyToken, source.userId, "下のボタンから選んでください。")
+    return
+  }
+  const which: "from" | "to" = step === "pass_from" || step === "pass_from_pick" ? "from" : "to"
+  const judge = await judgeStation(inputText)
+  const cands = judge.candidates.slice(0, 4)
+  if (cands.length >= 2) {
+    await setTransitSession(supabase, source.userId, staffId, which === "from" ? "pass_from_pick" : "pass_to_pick", {
+      ...session.data,
+      passCandidates: cands,
+    })
+    const actions: ActionDef[] = cands.map((c, i) =>
+      flexPostback(`${c.pref}の${c.station}`, `action=cppick&n=${i}`, `${c.pref}の${c.station}`)
+    )
+    actions.push(passCancelAction())
+    await sendLineMessages(replyToken, source.userId, [
+      textWithQuickReply("🚉 候補が複数あります。該当する駅を選んでください。\n（無ければ県名を付けて送り直してください）", actions),
+    ])
+    return
+  }
+  const pick =
+    judge.station && judge.pref
+      ? { station: judge.station, pref: judge.pref }
+      : cands.length === 1
+        ? { station: cands[0].station, pref: cands[0].pref }
+        : null
+  if (!pick) {
+    await sendLineMessages(replyToken, source.userId, [
+      textWithQuickReply("🚉 駅を特定できませんでした。県名を付けてもう一度送信してください。\n例：滋賀県 南草津", [
+        passCancelAction(),
+      ]),
+    ])
+    return
+  }
+  await applyPassStation(event, supabase, staffId, session.data, which, pick)
+}
+
+/** 候補から選択 */
+async function handlePassPickPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const supabase = createServiceClient()
+  const session = await getPassSession(event, supabase)
+  if (!session?.staffMemberId) return
+  const which = session.step === "pass_to_pick" || session.step === "pass_to" ? "to" : "from"
+  const n = Number(params.get("n"))
+  const c = Number.isInteger(n) ? session.data.passCandidates?.[n] : undefined
+  if (!c) {
+    await sendLineMessage(event.replyToken, event.source.userId, "⚠️ 選択を認識できませんでした。駅名をもう一度送信してください。")
+    return
+  }
+  await applyPassStation(event, supabase, session.staffMemberId, session.data, which, { station: c.station, pref: c.pref })
+}
+
+/** 区間の駅を1つ確定し、次へ進める */
+async function applyPassStation(
+  event: LineEvent,
+  supabase: ServiceClient,
+  staffId: string,
+  data: TransitData,
+  which: "from" | "to",
+  pick: { station: string; pref: string }
+): Promise<void> {
+  const { replyToken, source } = event
+  const station = { station: toStationName(pick.station), pref: pick.pref }
+  if (which === "from") {
+    await setTransitSession(supabase, source.userId, staffId, "pass_to", {
+      ...carryPassFlags(data),
+      passFrom: station,
+    })
+    await sendLineMessages(replyToken, source.userId, [
+      textWithQuickReply(
+        `🎫 1つ目：${station.station}（${station.pref}）\n\nもう片方の端の駅名を送信してください。（例：京都）`,
+        [passCancelAction()]
+      ),
+    ])
+    return
+  }
+  if (data.passFrom && toStationName(data.passFrom.station) === station.station) {
+    await sendLineMessages(replyToken, source.userId, [
+      textWithQuickReply("1つ目と同じ駅です。もう片方の端の駅名を送信してください。", [passCancelAction()]),
+    ])
+    return
+  }
+  const next: TransitData = { ...carryPassFlags(data), passFrom: data.passFrom, passTo: station }
+  await setTransitSession(supabase, source.userId, staffId, "pass_confirm", next)
+  const state = await loadStaffLineState(supabase, staffId)
+  const before =
+    state?.profile.commuter_pass?.has && state.profile.commuter_pass.from
+      ? `${commuterPassLabel(state.profile)} → `
+      : ""
+  const a = stripStationSuffix(data.passFrom?.station || "")
+  const b = stripStationSuffix(station.station)
+  await sendLineMessages(replyToken, source.userId, [
+    textWithQuickReply(`🎫 ${before}定期券：${a} ⇄ ${b} で登録します。\nよろしいですか？`, [
+      flexPostback("登録する", "action=cpok", "登録する"),
+      flexPostback("入力し直す", "action=cpre", "入力し直す"),
+      passCancelAction(),
+    ]),
+  ])
+}
+
+/** 定期券区間の確定 → 保存 */
+async function handlePassConfirmPostback(event: LineEvent): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getPassSession(event, supabase)
+  if (!session?.staffMemberId) return
+  const { passFrom, passTo } = session.data
+  if (!passFrom || !passTo) {
+    await setTransitSession(supabase, source.userId, session.staffMemberId, "pass_from", carryPassFlags(session.data))
+    await sendLineMessage(replyToken, source.userId, "⚠️ 区間が揃っていません。片方の端の駅名から送り直してください。")
+    return
+  }
+  const ok = await updateLineProfile(supabase, session.staffMemberId, {
+    commuter_pass: {
+      has: true,
+      from: passFrom.station,
+      from_pref: passFrom.pref,
+      to: passTo.station,
+      to_pref: passTo.pref,
+      updated_at: new Date().toISOString(),
+    },
+  })
+  if (!ok) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 登録に失敗しました。もう一度お試しください。")
+    return
+  }
+  const label = `${stripStationSuffix(passFrom.station)} ⇄ ${stripStationSuffix(passTo.station)}`
+  if (session.data.setupFlow) {
+    await continueSetup(event, supabase, session.staffMemberId, session.data, `✅ 定期券を「${label}」で登録しました。`)
+    return
+  }
+  await clearTransitSession(supabase, source.userId)
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    `✅ 定期券を「${label}」で登録しました。\n電車代の申請のときに、定期券の区間を通るかを確認します。`
+  )
+}
+
+/** 入力し直す */
+async function handlePassRetryPostback(event: LineEvent): Promise<void> {
+  const supabase = createServiceClient()
+  const session = await getPassSession(event, supabase)
+  if (!session?.staffMemberId) return
+  await setTransitSession(supabase, event.source.userId, session.staffMemberId, "pass_from", carryPassFlags(session.data))
+  await sendLineMessages(event.replyToken, event.source.userId, [
+    textWithQuickReply("区間の片方の端の駅名を送信してください。（例：南草津）", [passCancelAction()]),
+  ])
+}
+
+/** 定期券の登録を中止 */
+async function handlePassCancelPostback(event: LineEvent): Promise<void> {
+  const supabase = createServiceClient()
+  const session = await getTransitSession(supabase, event.source.userId)
+  await clearTransitSession(supabase, event.source.userId)
+  await sendLineMessage(
+    event.replyToken,
+    event.source.userId,
+    session?.data.setupFlow
+      ? "✋ 定期券の登録を中止しました。次に申請するときにもう一度確認します。"
+      : "✋ 定期券の登録を中止しました。"
+  )
+}
+
+/* ---------- 電車代：定期券区間の控除 ---------- */
+
+/** 到着駅の県が決まった後：定期券ありなら「定期券区間を通るか」を1問だけ挟む */
+async function afterArrivalPref(
+  supabase: ServiceClient,
+  event: LineEvent,
+  staffId: string,
+  data: TransitData
+): Promise<void> {
+  const { replyToken, source } = event
+  const state = await loadStaffLineState(supabase, staffId)
+  const pass = state ? activeCommuterPass(state.profile) : null
+  if (!pass) {
+    // 定期券なし（または未登録）のスタッフには何も聞かない
+    await setTransitSession(supabase, source.userId, staffId, "train_shinkansen", data)
+    await askShinkansen(replyToken, source.userId)
+    return
+  }
+  await setTransitSession(supabase, source.userId, staffId, "train_pass", data)
+  await sendTrainPassQuestion(replyToken, source.userId, pass.from, pass.to)
+}
+
+/** 「定期券の区間を通りますか？」（テキスト＋クイックリプライ） */
+async function sendTrainPassQuestion(replyToken: string, userId: string, from: string, to: string): Promise<void> {
+  await sendLineMessages(replyToken, userId, [
+    textWithQuickReply(
+      "定期券の区間を通りますか？\n" +
+        `お持ちの定期券：${stripStationSuffix(from)} ⇄ ${stripStationSuffix(to)}\n\n` +
+        "定期券の区間はすでに定期代が支給されているため、支給の対象外になります。",
+      [
+        flexPostback("定期券区間を通る", "action=trpass&v=1", "定期券区間を通る"),
+        flexPostback("通らない", "action=trpass&v=0", "通らない"),
+        flexPostback("✖ キャンセル", "action=trx", "✖ キャンセル"),
+      ]
+    ),
+  ])
+}
+
+/** 定期券区間を出る駅（区間の端）を本人に選んでもらう */
+async function askPassExit(replyToken: string, userId: string, from: string, to: string, lead = ""): Promise<void> {
+  await sendLineMessages(replyToken, userId, [
+    textWithQuickReply(lead + "定期券の区間を出る駅（目的地に近い方の端）を選んでください。", [
+      flexPostback(stripStationSuffix(from), "action=trpass&v=end&e=from", stripStationSuffix(from)),
+      flexPostback(stripStationSuffix(to), "action=trpass&v=end&e=to", stripStationSuffix(to)),
+      flexPostback("✖ キャンセル", "action=trx", "✖ キャンセル"),
+    ]),
+  ])
+}
+
+/** 定期券区間の選択（action=trpass&v=1|0|out|end&e=from|to） */
+async function handleTrainPassPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getTransitSession(supabase, source.userId)
+  if (!session?.staffMemberId || session.step !== "train_pass") {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  const staffId = session.staffMemberId
+  const data = session.data
+  const v = params.get("v")
+
+  if (v === "0") {
+    // 通らない → 自宅最寄り駅から全額
+    await setTransitSession(supabase, source.userId, staffId, "train_shinkansen", { ...data, passDeducted: false })
+    await askShinkansen(replyToken, source.userId)
+    return
+  }
+
+  const state = await loadStaffLineState(supabase, staffId)
+  const pass = state ? activeCommuterPass(state.profile) : null
+  if (!pass) {
+    await setTransitSession(supabase, source.userId, staffId, "train_shinkansen", data)
+    await askShinkansen(replyToken, source.userId)
+    return
+  }
+
+  const applyEnd = async (end: { station: string; pref: string }) => {
+    const next: TransitData = {
+      ...data,
+      fromStation: toStationName(end.station),
+      fromPref: end.pref,
+      passDeducted: true,
+      passSegment: { from: pass.from, to: pass.to },
+    }
+    await setTransitSession(supabase, source.userId, staffId, "train_shinkansen", next)
+    await askShinkansen(
+      replyToken,
+      source.userId,
+      `🎫 定期券区間の端の ${toStationName(end.station)} を出発駅として計算します。\n\n`
+    )
+  }
+
+  if (v === "end") {
+    const e = params.get("e") === "to" ? "to" : "from"
+    await applyEnd(e === "from" ? { station: pass.from, pref: pass.from_pref || "" } : { station: pass.to, pref: pass.to_pref || "" })
+    return
+  }
+  if (v === "out") {
+    // 「区間の外です」→ 端の駅を本人に選んでもらう
+    await askPassExit(replyToken, source.userId, pass.from, pass.to)
+    return
+  }
+
+  // 通る → 区間内か／どちらの端から出るかを判定（ロジックは lib/commuter-pass-deduction.ts に集約）
+  const decision = await decidePassDeparture(
+    { from: pass.from, fromPref: pass.from_pref, to: pass.to, toPref: pass.to_pref },
+    { station: toStationName(data.toStation || ""), pref: data.toPref || "" }
+  )
+  if (decision.kind === "inside") {
+    // 目的地が定期券区間内 → 支給なし（カードは出さずテキストで終える。判定違いは「区間の外です」で覆せる）
+    await sendLineMessages(replyToken, source.userId, [
+      textWithQuickReply("目的地が定期券の区間内のため、支給はありません。", [
+        flexPostback("区間の外です", "action=trpass&v=out", "区間の外です"),
+        flexPostback("閉じる", "action=trx", "閉じる"),
+      ]),
+    ])
+    return
+  }
+  if (decision.kind === "unknown") {
+    await askPassExit(replyToken, source.userId, pass.from, pass.to, "自動で判定できませんでした。\n")
+    return
+  }
+  await applyEnd({ station: decision.station, pref: decision.pref })
+}
+
+/** 定期券区間の質問中のテキスト（ボタンで選んでもらう） */
+async function handleTrainPassText(
+  event: LineEvent,
+  supabase: ServiceClient,
+  session: TransitSession,
+  inputText: string
+): Promise<void> {
+  const { replyToken, source } = event
+  if (/^(キャンセル|中止|やめる|やめます|終了)$/.test(inputText)) {
+    await clearTransitSession(supabase, source.userId)
+    await sendLineMessage(replyToken, source.userId, "✋ 交通費の申請を中止しました。")
+    return
+  }
+  const state = session.staffMemberId ? await loadStaffLineState(supabase, session.staffMemberId) : null
+  const pass = state ? activeCommuterPass(state.profile) : null
+  if (!pass) {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  await sendTrainPassQuestion(replyToken, source.userId, pass.from, pass.to)
+}
+
+/** ⑧ 電車代の確認カード（推定できたときのみ） */
+async function sendTrainConfirmCard(
+  replyToken: string,
+  userId: string,
+  data: TransitData,
+  oneWay: number,
+  total: number,
+  legs: { label: string; amount: number }[] | undefined,
+  fallbackText: string
+): Promise<void> {
+  const card = trainConfirmCard({
+    fromStation: toStationName(data.fromStation || ""),
+    fromIsPassEnd: !!data.passDeducted,
+    toStation: toStationName(data.toStation || ""),
+    shinkansenLegs: legs,
+    oneWay,
+    trip: data.trip === "round" ? "round" : "one",
+    total,
+    passNote: data.passDeducted && data.passSegment ? passDeductionNote(data.passSegment) : undefined,
+    estimateNote: "運賃は自動計算です。実際と違う場合は「修正する」を押してください。",
+    okData: "action=trok",
+    fixData: "action=trfix",
+  })
+  const passLine =
+    data.passDeducted && data.passSegment ? `\n${passDeductionNote(data.passSegment)}` : ""
+  await sendFlexCard(replyToken, userId, card, fallbackText + passLine)
+}
+
+/** 電車代の「修正する」→ 正しい金額の入力を促す（金額を送れば上書きして確定） */
+async function handleTransitFixPostback(event: LineEvent): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const session = await getTransitSession(supabase, source.userId)
+  if (!session?.staffMemberId || session.step !== "train_confirm") {
+    await sendTransitExpired(replyToken, source.userId)
+    return
+  }
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    `正しい金額（${session.data.trip === "round" ? "往復の合計" : "片道"}）を数字で送ってください。\n例：1480`,
+    [transitCancelItem()]
   )
 }
 
@@ -2990,23 +4284,11 @@ async function registerMultiReceipts(params: MultiRegisterParams): Promise<void>
   }
   console.log(`[LINE Bot] 複数領収書を一括登録: ${insertedIds.length}件`)
 
-  const total = candidates.reduce((sum, c) => sum + c.amount, 0)
-  const detailLines = candidates
-    .map(
-      (c, i) =>
-        `${circled(i)} ${(c.store || "不明").slice(0, 20)} ¥${formatAmount(c.amount)}（${c.date || fallbackDate}）`
-    )
-    .join("\n")
-  const header =
-    `📸 領収書を${candidates.length}件検出しました。\n` +
-    "─────────────\n" +
-    `${detailLines}\n` +
-    `💰 合計 ¥${formatAmount(total)}\n` +
-    "─────────────\n" +
-    `※選んだ区分は全${candidates.length}件に適用されます。区分が異なる領収書は、お手数ですが別々に送ってください（登録後に管理画面から個別修正もできます）。`
-
-  await sendTier1(replyToken, source.userId, insertedIds[0], header)
-  console.log("[LINE Bot] 複数件の区分質問（第1階層）送信完了")
+  // 初回設定が未完了なら1回だけ挟み、完了後にこの領収書の区分選択へ戻る
+  const gate = await beginApplication(event, supabase, staffId, { kind: "receipt", rid: insertedIds[0] })
+  if (!gate.proceed) return
+  await sendReceiptCard(event, supabase, insertedIds[0], gate.greeting)
+  console.log("[LINE Bot] 複数件の区分質問（カード）送信完了")
 }
 
 /**
@@ -3088,16 +4370,12 @@ async function settleMultiReceipts(
     .map((s, i) => `${circled(i)} ${(s.store_name || "不明").slice(0, 20)} ¥${formatAmount(s.amount)}（${s.date || "日付不明"}）`)
     .join("\n")
 
-  await sendLineMessage(
-    replyToken,
-    source.userId,
-    `✅ ${siblings.length}件登録しました。給与支給で処理されます。\n` +
-      "─────────────\n" +
-      `${lines}\n` +
-      `💰 合計 ¥${formatAmount(totalAmount)}／💴 支給額合計 ¥${formatAmount(totalSubsidy)}（${isHalf ? "半額" : "全額"}）\n` +
-      "─────────────\n" +
-      "お疲れさまでした！"
-  )
+  await sendLineMessages(replyToken, source.userId, [
+    registeredMessage(
+      submissionMonthLabel(null, siblings[0].created_at),
+      `${siblings.length}件（合計 ¥${formatAmount(totalAmount)}／支給額 ¥${formatAmount(totalSubsidy)}）を`
+    ),
+  ])
 
   // 院長へpush通知（件数と内訳を含める）。テストスタッフは通知しない
   const adminId = process.env.ADMIN_LINE_USER_ID
@@ -3128,29 +4406,16 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     return
   }
 
-  // スタッフ名の解決: キャッシュ → displayName → 名前入力を促す
-  let matchedStaff: { id: string; name: string } | undefined
-
-  // 1. キャッシュから検索（テキストで事前送信されたスタッフ名）
-  const cached = staffNameCache.get(source.userId)
-  if (cached && cached.expiresAt > Date.now()) {
-    matchedStaff = { id: cached.staffId, name: cached.staffName }
-  }
-
-  // 2. キャッシュに無い場合、LINEのdisplayNameで部分一致検索
-  if (!matchedStaff) {
-    const profile = await getLineUserProfile(source.userId)
-    if (profile) {
-      matchedStaff = findStaffByName(staffMembers, profile.displayName)
-    }
-  }
-
-  // 3. どちらでも見つからない場合→テキストで名前入力を促す
+  // スタッフの解決: line_user_id の紐づけ（DB）→ 30分キャッシュ（DB更新に失敗した場合の保険）。
+  // LINEの表示名による部分一致は、同姓のスタッフを取り違えるため使わない。
+  const matchedStaff = resolveStaffForUser(staffMembers as StaffRow[], source.userId) ?? undefined
   if (!matchedStaff) {
     await sendLineMessage(
       replyToken,
       source.userId,
-      "⚠️ お名前をテキストで送ってください\n例：楠葉"
+      "まだお名前が登録されていません。\n" +
+        "お名前をフルネームで送信してください。\n（例：南 ひふ子）\n\n" +
+        "登録が終わったら、もう一度写真を送ってください。"
     )
     return
   }
@@ -3302,21 +4567,18 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
       await sendLineMessage(
         replyToken,
         source.userId,
-        `✅ 解析しました\n${storeName} ¥${amountStr}（${dateStr}）\nDropboxに保存しました。\n⚠️ 金額が読み取れなかったため、精算は経理側で手動登録してください。`
+        `✅ 解析しました\n${storeName} ¥${amountStr}（${dateStr}）\nDropboxに保存しました。\n⚠️ 金額が読み取れなかったため、担当が手動で登録します。`
       )
       console.log("[LINE Bot] 処理完了（金額未読のためボタンなし）")
       return
     }
 
-    // 第1階層の区分選択（アチーブメント関連/それ以外）をクイックリプライで質問する
-    const header =
-      "📸 領収書を受け取りました。\n" +
-      "─────────────\n" +
-      `🏪 ${storeName.slice(0, 30)}\n` +
-      `💰 ¥${amountStr}\n` +
-      "─────────────"
-    await sendTier1(replyToken, source.userId, receiptId, header)
-    console.log("[LINE Bot] 区分質問（第1階層）送信完了")
+    // 初回設定が未完了なら1回だけ挟み、完了後にこの領収書の区分選択へ戻る
+    const gate = await beginApplication(event, supabase, matchedStaff.id, { kind: "receipt", rid: receiptId })
+    if (!gate.proceed) return
+    // 読み取り結果のカード＋区分選択（クイックリプライ）
+    await sendReceiptCard(event, supabase, receiptId, gate.greeting)
+    console.log("[LINE Bot] 区分質問（カード）送信完了")
   } catch (error) {
     // 予期しないエラーが発生しても必ずLINEに返信する
     console.error("[LINE Bot] 画像処理中にエラー発生:", error)
