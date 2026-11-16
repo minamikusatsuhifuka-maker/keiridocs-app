@@ -76,7 +76,7 @@ interface TaxCopyRunRow {
 const RUN_TYPE_LABEL: Record<RunType, string> = {
   range_copy: "単月/期間指定コピー",
   additional_import: "追加分の一括取り込み",
-  // 自動実行（毎月20日・月末の22時）。20日分/月末分の別は run_by に記録される
+  // 自動実行（毎月21日・22日・月末の22時）。20日締め分/月末分の別は run_by に記録される
   auto_copy: "自動コピー（cron）",
 }
 

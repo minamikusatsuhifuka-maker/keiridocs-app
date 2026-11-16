@@ -13,12 +13,19 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
  * 税理士フォルダ一括コピーの自動実行（Vercel Cron）
  *
  * - cron は毎日 UTC 13:00（= JST 22:00）に起動（vercel.json）。
- * - ハンドラ内で「今日がJSTで20日 または 月の最終日か」を判定し、該当日のみ当月分を実行。
+ * - ハンドラ内で「今日がJSTで21日・22日 または 月の最終日か」を判定し、該当日のみ当月分を実行。
+ *
+ * ■ 20日締め分を「21日」に動かしている理由
+ *   締めは20日の24時まで。20日の22時にコピーすると、22時〜24時の申請が初回コピーから漏れ、
+ *   月末実行まで（約10日）会計士へ渡らず支給も遅れる（実際に22件漏れた事例あり）。
+ *   21日に動かすことで20日中の申請をすべて含められる。
+ *   22日にも同じ内容で実行するのは、21日が失敗したときの取りこぼし防止。
+ *   コピーは既存ファイルをスキップするため、2回目はほぼ空振りで副作用はない。
  * - 認証: CRON_SECRET（Bearer）。未設定時は fail-closed で拒否。
  * - 実行結果は tax_folder_copy_runs に run_type="auto_copy" で記録し、院長LINEへ通知する。
  *
  * 動作確認用（実行日を待たずに検証する場合。CRON_SECRET 必須）:
- *   GET /api/cron/tax-folder-copy?force=20   → 20日分として即実行
+ *   GET /api/cron/tax-folder-copy?force=20   → 20日締め分として即実行
  *   GET /api/cron/tax-folder-copy?force=eom  → 月末分として即実行
  */
 export async function GET(request: NextRequest) {
@@ -45,18 +52,19 @@ export async function GET(request: NextRequest) {
   // 月の最終日（うるう年・月ごとの日数変動も Date が正しく解決する）
   const lastDayOfMonth = new Date(Date.UTC(year, month, 0)).getUTCDate()
 
-  // 実行日判定: 20日 or 月末（force パラメータで検証用に強制実行可能）
+  // 実行日判定: 21日・22日（20日締め分）or 月末（force パラメータで検証用に強制実行可能）
+  // 22日は21日が失敗したときの取りこぼし防止。既存ファイルはスキップされるため二重コピーにならない。
   const force = new URL(request.url).searchParams.get("force")
-  let runKind: "20日分" | "月末分" | null = null
-  if (force === "20") runKind = "20日分"
+  let runKind: "20日締め分" | "月末分" | null = null
+  if (force === "20") runKind = "20日締め分"
   else if (force === "eom") runKind = "月末分"
-  else if (day === 20) runKind = "20日分"
+  else if (day === 21 || day === 22) runKind = "20日締め分"
   else if (day === lastDayOfMonth) runKind = "月末分"
 
   if (!runKind) {
     return NextResponse.json({
       skipped: true,
-      reason: `JST ${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")} は実行日（20日・月末${lastDayOfMonth}日）ではありません`,
+      reason: `JST ${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")} は実行日（21日・22日・月末${lastDayOfMonth}日）ではありません`,
       expiredSessionsDeleted: expiredSessions,
     })
   }
