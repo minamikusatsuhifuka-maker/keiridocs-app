@@ -158,7 +158,7 @@ export async function GET(request: NextRequest) {
   // 異常があるときだけ知らせる（毎日「正常です」は読まれなくなるため）
   let notified = false
   if (failures.length > 0) {
-    // 申請できない状態は担当も困るため、院長と受付担当の両方へ送る
+    // 申請できない状態は担当も困るため、院長と担当の両方へ送る
     notified =
       (await notifyAdmins(
         createServiceClient() as never,

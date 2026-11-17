@@ -85,7 +85,7 @@ export interface PriorCourse {
  * 出すかどうかを判定する。別に手動スイッチを持たず記録1つで決めることで、
  * 2か所の食い違いによる確認もれ・過大支給を防ぐ。
  */
-/** 受付担当か（スタッフからの問い合わせの転送先） */
+/** 担当か（スタッフからの問い合わせの転送先） */
 export function isReceptionist(raw: unknown): boolean {
   return parseLineProfile(raw).is_receptionist === true
 }
@@ -139,7 +139,7 @@ export interface SuspendedState {
 
 export interface LineProfile {
   /**
-   * 受付担当か（スタッフからの問い合わせをこの人のLINEへ転送する）。
+   * 担当か（スタッフからの問い合わせをこの人のLINEへ転送する）。
    * 院長は ADMIN_LINE_USER_ID で常に受け取るため、ここは担当者用。
    */
   is_receptionist?: boolean

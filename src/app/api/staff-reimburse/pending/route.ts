@@ -7,7 +7,7 @@ import { EXPENSE_ITEM_LABELS, type ExpenseItem, type HoldReason } from "@/lib/su
 import type { Database } from "@/types/database"
 
 /**
- * 受付担当の「要対応」一覧。
+ * 担当の「要対応」一覧。
  *
  * GET /api/staff-reimburse/pending
  *

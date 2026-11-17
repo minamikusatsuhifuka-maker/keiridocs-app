@@ -97,7 +97,7 @@ interface Row {
   subsidy: number
   source: ReimburseSource
   registeredBy: string
-  /** 受付担当が確認した日時（ISO文字列）。未確認は "" */
+  /** 担当が確認した日時（ISO文字列）。未確認は "" */
   reviewedAt: string
   /** 確認した担当者。未確認は "" */
   reviewedBy: string
@@ -264,7 +264,7 @@ export default function StaffReimbursePage() {
   const [editRow, setEditRow] = useState<Row | null>(null)
   const [deleteRow, setDeleteRow] = useState<Row | null>(null)
 
-  // 確認済みの記録（受付担当の進捗管理。支給・税理士提出には影響しない）
+  // 確認済みの記録（担当の進捗管理。支給・税理士提出には影響しない）
   const [savingReviewIds, setSavingReviewIds] = useState<Set<string>>(new Set())
 
   // 要対応（上限超過の承認・講座の確認・添付待ち・未完了の申請）
@@ -1041,7 +1041,7 @@ export default function StaffReimbursePage() {
           <CardDescription>
             列見出しをクリックで並べ替えできます（空欄は常に末尾）。
             同じ資料から分割登録された行には「分割 n/N」が付きます。
-            「確認」列は受付担当の進捗管理用で、支給額や税理士提出には影響しません。
+            「確認」列は担当の進捗管理用で、支給額や税理士提出には影響しません。
           </CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto">
@@ -1107,7 +1107,7 @@ export default function StaffReimbursePage() {
                       }
                     />
                   </TableHead>
-                  {/* 確認列は受付担当が毎日使うため、横スクロールせずに見える先頭に置く */}
+                  {/* 確認列は担当が毎日使うため、横スクロールせずに見える先頭に置く */}
                   <TableHead className="whitespace-nowrap">確認</TableHead>
                   {COLUMNS.map((c) => (
                     <TableHead

@@ -123,7 +123,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const [togglingSuspendId, setTogglingSuspendId] = useState<string | null>(null)
   // LINEで連絡する相手（null のときはダイアログを閉じる）
   const [notifyTarget, setNotifyTarget] = useState<{ id: string; name: string } | null>(null)
-  // 受付担当の切り替え処理中のID
+  // 担当の切り替え処理中のID
   const [togglingReceptionistId, setTogglingReceptionistId] = useState<string | null>(null)
   const [editHomeStation, setEditHomeStation] = useState("")
   const [editHomeStationPref, setEditHomeStationPref] = useState("")
@@ -264,7 +264,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
    * 退職と違い在籍したままで、LINEからの申請だけを止める。
    * 過去の申請・LINEの紐づけ・設定はすべて残るので、再開すればそのまま使える。
    */
-  /** 受付担当の切り替え（スタッフの問い合わせの転送先） */
+  /** 担当の切り替え（スタッフの問い合わせの転送先） */
   async function handleToggleReceptionist(member: StaffMember, next: boolean) {
     setTogglingReceptionistId(member.id)
     try {
@@ -276,7 +276,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
       const json = (await res.json().catch(() => ({}))) as { error?: string }
       if (!res.ok) throw new Error(json.error || "更新に失敗しました")
       toast.success(
-        next ? `${member.name}さんが問い合わせを受け取ります` : `${member.name}さんへの転送を止めました`
+        next ? `${member.name}さんを担当にしました` : `${member.name}さんを担当から外しました`
       )
       fetchStaff()
     } catch (e) {
@@ -870,14 +870,22 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                           </div>
                         </div>
 
-                        {/* 受付担当。スタッフの「問い合わせ」がこの人のLINEに届く */}
+                        {/* 担当。スタッフの「問い合わせ」がこの人のLINEに届く */}
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="min-w-0">
-                            <p className="text-sm font-medium">受付担当</p>
+                            <p className="text-sm font-medium">担当</p>
                             <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                              ONにすると、スタッフがLINEの「問い合わせ」で送った内容が
-                              この方のLINEに届きます。返信は「連絡」ボタンから送れます。
-                              （院長には常に届きます）
+                              立替申請の担当にします。ONにすると、この方のLINEに次が届きます。
+                              <br />
+                              ・スタッフからの問い合わせ（返信は「連絡」ボタンから）
+                              <br />
+                              ・締め日が近いときの要対応のまとめ（17日・20日）
+                              <br />
+                              ・スタッフが新しくLINEを登録したお知らせ
+                              <br />
+                              ・アプリやLINEに異常が出たときのお知らせ
+                              <br />
+                              院長には常に届きます。複数の方をONにもできます。
                             </p>
                           </div>
                           <div className="flex items-center gap-2">
@@ -885,7 +893,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                               checked={isReceptionist(member.line_profile)}
                               onCheckedChange={(checked) => handleToggleReceptionist(member, checked)}
                               disabled={togglingReceptionistId === member.id}
-                              aria-label="受付担当の切り替え"
+                              aria-label="担当の切り替え"
                             />
                             <span
                               className="inline-flex items-center gap-1 text-sm font-medium"
@@ -898,7 +906,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                               {togglingReceptionistId === member.id && (
                                 <Loader2 className="h-3 w-3 animate-spin" />
                               )}
-                              {isReceptionist(member.line_profile) ? "受け取る" : "受け取らない"}
+                              {isReceptionist(member.line_profile) ? "担当" : "担当でない"}
                             </span>
                           </div>
                         </div>

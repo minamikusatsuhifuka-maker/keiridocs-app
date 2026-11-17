@@ -1,15 +1,15 @@
 import { isReceptionist } from "@/lib/line-staff-profile"
 
 /**
- * 担当（院長・受付担当）へのLINE通知の宛先を1か所にまとめる。
+ * 担当へのLINE通知の宛先を1か所にまとめる。
  *
  * ■ 作る理由
- * ふだん確認するのは受付担当（河村さん）なので、担当に届かない通知は
+ * ふだん確認するのは担当（河村さん）なので、担当に届かない通知は
  * 気づかれないまま残る。院長だけに送っていると確認もれにつながる。
  *
  * ■ 宛先
  *   - 院長（ADMIN_LINE_USER_ID）
- *   - スタッフ一覧で「受付担当」をONにした方（複数可）
+ *   - スタッフ一覧で「担当」をONにした方（複数可）
  *
  * ■ 使い分け
  *   notifyAdmins       … 運用のお知らせ（要対応のまとめ、新規登録、異常）。
@@ -49,7 +49,7 @@ async function push(to: string, text: string): Promise<boolean> {
   }
 }
 
-/** 受付担当のLINE IDを集める（取得できなければ空） */
+/** 担当のLINE IDを集める（取得できなければ空） */
 export async function fetchReceptionistIds(supabase: MinimalClient): Promise<string[]> {
   try {
     const { data } = await supabase
@@ -66,7 +66,7 @@ export async function fetchReceptionistIds(supabase: MinimalClient): Promise<str
 }
 
 /**
- * 運用のお知らせを担当へ送る（院長＋受付担当）。
+ * 運用のお知らせを送る（院長と、スタッフ一覧で「担当」にした方）。
  *
  * @returns 送れた人数
  */

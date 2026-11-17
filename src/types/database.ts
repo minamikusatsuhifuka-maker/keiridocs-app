@@ -868,7 +868,7 @@ export interface Database {
           subsidy_category: string | null
           // 029_staff_receipt_expense_detail.sql で追加（スタッフ立替の詳細区分）
           expense_detail: string | null
-          // 042_staff_reimburse_review.sql で追加（受付担当の確認済み記録）
+          // 042_staff_reimburse_review.sql で追加（担当の確認済み記録）
           reviewed_at: string | null
           reviewed_by: string | null
           // 044_phase2_courses_and_caps.sql（講座・内訳・上限超過の承認・保留理由）

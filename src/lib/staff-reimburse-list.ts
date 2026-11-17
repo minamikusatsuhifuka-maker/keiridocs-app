@@ -84,7 +84,7 @@ export interface StaffReimburseRow {
   holdReason: "excess" | "course" | "attach" | null
   /** 講座マスタに無い講座名で申請された場合の入力値 */
   coursePendingName: string
-  /** 受付担当が確認した日時（ISO文字列）。未確認は "" */
+  /** 担当が確認した日時（ISO文字列）。未確認は "" */
   reviewedAt: string
   /** 確認した担当者。未確認は "" */
   reviewedBy: string
@@ -147,7 +147,7 @@ interface TxRow {
   note: string | null
   registered_by: string | null
   staff_receipt_id: string | null
-  /** 受付担当が内容を確認した日時。migration 042 未適用の環境では undefined */
+  /** 担当が内容を確認した日時。migration 042 未適用の環境では undefined */
   reviewed_at?: string | null
   /** 確認した担当者。migration 042 未適用の環境では undefined */
   reviewed_by?: string | null

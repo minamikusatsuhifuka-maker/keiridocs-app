@@ -240,7 +240,7 @@ export async function GET(request: NextRequest) {
       ).catch(() => [] as { hold_reason: string | null }[])
 
       const total = holds.length + incomplete.length
-      // ふだん確認するのは受付担当なので、院長だけでなく担当にも送る
+      // ふだん確認するのは担当なので、院長だけでなく担当にも送る
       const sentCount = await notifyAdmins(
         supabase as never,
         (day === CLOSING_DAY ? "【本日が締め日です】\n" : "【締め日が近づいています】\n") +

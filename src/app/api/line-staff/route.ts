@@ -248,7 +248,7 @@ export async function PATCH(request: NextRequest) {
       suspended?: boolean
       /** 休止の理由（画面に出すだけ。判定には使わない） */
       suspendReason?: string | null
-      /** 受付担当か（スタッフからの問い合わせをこの人のLINEへ転送する） */
+      /** 担当か（スタッフからの問い合わせをこの人のLINEへ転送する） */
       receptionist?: boolean
     }
     if (!body.id) {
@@ -257,7 +257,7 @@ export async function PATCH(request: NextRequest) {
 
     const service = createServiceClient()
 
-    // 受付担当。スタッフが「問い合わせ」で送った内容がこの人のLINEに届く
+    // 担当。スタッフが「問い合わせ」で送った内容がこの人のLINEに届く
     if (typeof body.receptionist === "boolean") {
       const { data: member, error: readError } = await service
         .from("staff_members")
@@ -277,7 +277,7 @@ export async function PATCH(request: NextRequest) {
         .select("*")
         .single()
       if (error) {
-        console.error("受付担当の更新エラー:", error.message)
+        console.error("担当の更新エラー:", error.message)
         return NextResponse.json({ error: "更新に失敗しました" }, { status: 500 })
       }
       return NextResponse.json({ data })

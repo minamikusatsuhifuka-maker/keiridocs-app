@@ -12,7 +12,7 @@ import type { Database } from "@/types/database"
  *   ids は petty_cash_transactions.id（明細1行ごと。分割登録は行ごとに確認する）。
  *   reviewed=true で確認済み、false で取り消し。
  *
- * この記録は受付担当の進捗管理のためだけに使う。
+ * この記録は担当の進捗管理のためだけに使う。
  * 支給額・税理士提出・自動コピーの挙動は一切変えない（締めに間に合わない事故を防ぐため）。
  */
 
