@@ -117,7 +117,7 @@ interface Row {
  */
 interface PendingItem {
   id: string
-  kind: "excess" | "course" | "attach" | "pass" | "term" | "incomplete"
+  kind: "excess" | "course" | "attach" | "pass" | "term" | "detail" | "incomplete"
   staffName: string
   courseName: string
   itemLabel: string
@@ -135,6 +135,7 @@ const PENDING_LABELS: Record<PendingItem["kind"], string> = {
   attach: "添付待ち",
   pass: "定期券区間",
   term: "会員期間外",
+  detail: "内訳がその他",
   incomplete: "未完了",
 }
 
@@ -143,6 +144,7 @@ const PENDING_HELP: Record<PendingItem["kind"], string> = {
   excess: "上限を超えた分を承認するか決めてください。承認するとスタッフへ自動で通知されます。",
   course: "講座マスタに無い講座名で申請されています。/mkadmin の講座マスタで登録・割り当てしてください。",
   attach: "合格通知または修了通知の写真が届いていません。スタッフへ催促してください。",
+  detail: "講座に紐づく「その他」で申請されています。スタッフが書いた内容を確認し、支給してよければ「このまま確定する」を押してください。金額を変える場合は下の明細で直してから確定してください。",
   term: "アカデミー会員の有効期間（開始日から3年）を過ぎているか、開始日が未登録です。スタッフの「設定」→「アカデミー会員の登録」で開始日を登録してもらうか、期間外の扱いを決めてから確定してください。",
   pass: "切符などで定期券区間が含まれている可能性があります。院が通勤手当を払っているため、その区間の運賃を差し引いて承認してください（差し引く額は「金額を指定して承認」で入力できます）。",
   incomplete:
@@ -802,7 +804,7 @@ export default function StaffReimbursePage() {
                     </div>
 
                     {/* 定期券区間の確認。含まれていなければそのまま確定できる */}
-                    {p.kind === "pass" && (
+                    {(p.kind === "pass" || p.kind === "detail") && (
                       <div className="flex flex-col gap-2 sm:w-64 sm:shrink-0">
                         <Button
                           size="sm"
@@ -810,8 +812,11 @@ export default function StaffReimbursePage() {
                           onClick={() => {
                             if (
                               !confirm(
-                                `${p.staffName}さんの交通費 ${yen(p.amount)} を、この金額のまま確定します。\n\n` +
-                                  "定期券区間が含まれていないことを確認してから押してください。\n\nよろしいですか？"
+                                `${p.staffName}さんの ${p.itemLabel} ${yen(p.amount)} を、この金額のまま確定します。\n\n` +
+                                  (p.kind === "pass"
+                                    ? "定期券区間が含まれていないことを確認してから押してください。"
+                                    : "内容を確認してから押してください。") +
+                                  "\n\nよろしいですか？"
                               )
                             ) {
                               return
@@ -827,7 +832,7 @@ export default function StaffReimbursePage() {
                           このまま確定する
                         </Button>
                         <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-                          定期券区間が含まれていた場合は、下の明細で金額を直してから確定してください。
+                          金額を変える場合は、下の明細で直してから確定してください。
                         </p>
                       </div>
                     )}

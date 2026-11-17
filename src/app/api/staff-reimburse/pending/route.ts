@@ -143,6 +143,7 @@ export async function GET() {
         attach: all.filter((i) => i.kind === "attach").length,
         pass: all.filter((i) => i.kind === "pass").length,
         term: all.filter((i) => i.kind === "term").length,
+        detail: all.filter((i) => i.kind === "detail").length,
         incomplete: all.filter((i) => i.kind === "incomplete").length,
       },
     })

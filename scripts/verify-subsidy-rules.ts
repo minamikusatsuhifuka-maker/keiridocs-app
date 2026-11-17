@@ -17,6 +17,7 @@ import {
   availableItems,
   academyTermEnd,
   computeSubsidy,
+  isCourseOtherItem,
   isWithinAcademyTerm,
   type CourseKind,
   type CourseRule,
@@ -170,8 +171,14 @@ check("頂点への道の内訳に弁当代とアカデミー会費が出る", a
   "lodging",
   "bento",
   "membership",
+  "other",
 ])
-check("JPSAの内訳は3つだけ", availableItems("jpsa"), ["tuition", "transport", "lodging"])
+check("JPSAの内訳は受講料・交通費・宿泊費とその他", availableItems("jpsa"), [
+  "tuition",
+  "transport",
+  "lodging",
+  "other",
+])
 
 /* ---------- 頂点への道・初回 ---------- */
 
@@ -267,7 +274,13 @@ check("アチーブメント以外の内訳に弁当代が出ない", availableI
   "tuition",
   "transport",
   "lodging",
+  "other",
 ])
+
+/* ---------- 講座の「その他」は担当の確認待ちにする ---------- */
+check("講座を選んだ「その他」は確認待ち", isCourseOtherItem("other", "course-1"), true)
+check("講座に紐づかない「その他」は確認待ちにしない", isCourseOtherItem("other", null), false)
+check("「その他」以外は確認待ちにしない", isCourseOtherItem("tuition", "course-1"), false)
 
 /* ---------- 書籍代・診療費（月上限・別枠） ---------- */
 

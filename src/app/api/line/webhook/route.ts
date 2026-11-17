@@ -931,9 +931,9 @@ async function handlePhase2ItemPostback(event: LineEvent, params: URLSearchParam
     return
   }
 
-  // その他: 何を立て替えたのか1行入力してもらう（買い物の立替があるため）
+  // その他: 何を立て替えたのか1行入力してもらう（買い物の立替・講座の教材費など）
   if (item === "other" && params.get("note") !== "1") {
-    await askOtherDetailNote(event, receiptId, "other")
+    await askOtherDetailNote(event, receiptId, "other", courseId)
     return
   }
 
@@ -1571,7 +1571,8 @@ function readExpensePurpose(aiRaw: unknown): string {
 async function askOtherDetailNote(
   event: LineEvent,
   receiptId: string,
-  detailKey: string
+  detailKey: string,
+  courseId: string | null = null
 ): Promise<void> {
   const { replyToken, source } = event
   const supabase = createServiceClient()
@@ -1589,6 +1590,7 @@ async function askOtherDetailNote(
   const ok = await setTransitSession(supabase, source.userId, staffMemberId, "detail_note", {
     noteReceiptId: receiptId,
     noteDetailKey: detailKey,
+    noteCourseId: courseId ?? undefined,
   })
   if (!ok) {
     await sendLineMessage(replyToken, source.userId, "⚠️ 処理中にエラーが発生しました。もう一度お試しください。")
@@ -1597,9 +1599,13 @@ async function askOtherDetailNote(
   await sendLineMessage(
     replyToken,
     source.userId,
-    "何を立て替えましたか？\n短く1行で送ってください。\n\n" +
-      "（例）事務用品の買い物\n（例）院内で使う文房具\n（例）スタッフ用の備品\n\n" +
-      "※入力が難しいときは「なし」と送ってください。"
+    courseId
+      ? "何の費用ですか？\n短く1行で送ってください。\n\n" +
+        "（例）教材費\n（例）認定料\n（例）会場までのバス代\n\n" +
+        "※規程に当てはまらない費用のため、担当が内容を確認してから支給額が決まります。"
+      : "何を立て替えましたか？\n短く1行で送ってください。\n\n" +
+        "（例）事務用品の買い物\n（例）院内で使う文房具\n（例）スタッフ用の備品\n\n" +
+        "※入力が難しいときは「なし」と送ってください。"
   )
 }
 
@@ -3137,7 +3143,14 @@ async function handleTransitText(
       await saveExpensePurpose(supabase, receiptId, purpose)
       await clearTransitSession(supabase, source.userId)
       // 内容の入力は済んだので、そのまま確認画面へ進む（再度聞かない）
-      await sendPhase2Confirm(event, receiptId, (detailKey || "other") as ExpenseItem, null, false, false)
+      await sendPhase2Confirm(
+        event,
+        receiptId,
+        (detailKey || "other") as ExpenseItem,
+        session.data.noteCourseId ?? null,
+        false,
+        false
+      )
       return
     }
     case "other_purpose": {
@@ -4024,6 +4037,18 @@ async function handleNameConfirmPostback(event: LineEvent, params: URLSearchPara
       return
     }
     console.log(`line_user_id登録: ${target.name} = ${source.userId}`)
+    // 担当に知らせる。氏名を知っていれば他人でも先に登録できてしまうため、
+    // 「身に覚えのない登録」にその場で気づけるようにする。
+    const adminId = process.env.ADMIN_LINE_USER_ID
+    if (adminId) {
+      await pushMessage(
+        adminId,
+        "【LINE登録のお知らせ】\n" +
+          `${target.name}さんがLINEの登録を完了しました。\n\n` +
+          "身に覚えのない登録の場合は、管理画面の「スタッフ」タブで\n" +
+          "そのスタッフの行を確認してください。"
+      ).catch(() => {})
+    }
   }
   // DB更新が反映されるまでの保険（30分）
   staffNameCache.set(source.userId, { staffId: target.id, staffName: target.name, expiresAt: Date.now() + CACHE_TTL_MS })

@@ -86,6 +86,9 @@ export function CourseMaster({ showHeader = true }: { showHeader?: boolean }) {
   const [newRule, setNewRule] = useState<CourseRule>("undecided")
   const [adding, setAdding] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
+  /** 講座名を編集中の行 */
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingName, setEditingName] = useState("")
 
   const fetchCourses = useCallback(async () => {
     setLoading(true)
@@ -133,6 +136,17 @@ export function CourseMaster({ showHeader = true }: { showHeader?: boolean }) {
     } finally {
       setAdding(false)
     }
+  }
+
+  /** 講座名を変更する（同じ名前が2つあると上限の判定が分かれるためAPI側で弾く） */
+  async function saveName(course: { id: string; name: string }) {
+    const name = editingName.trim()
+    if (!name || name === course.name) {
+      setEditingId(null)
+      return
+    }
+    await handlePatch(course as never, { name })
+    setEditingId(null)
   }
 
   async function handlePatch(course: Course, patch: Record<string, unknown>) {
@@ -320,7 +334,45 @@ export function CourseMaster({ showHeader = true }: { showHeader?: boolean }) {
                 <TableBody>
                   {visible.map((c) => (
                     <TableRow key={c.id} style={{ opacity: c.is_active ? 1 : 0.6 }}>
-                      <TableCell className="font-medium">{c.name}</TableCell>
+                      {/* 講座名は申請の集計単位。誤字などを直せるようにここで編集する */}
+                      <TableCell className="font-medium">
+                        {editingId === c.id ? (
+                          <div className="flex items-center gap-1.5">
+                            <Input
+                              className="w-64"
+                              value={editingName}
+                              autoFocus
+                              onChange={(e) => setEditingName(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") saveName(c)
+                                if (e.key === "Escape") setEditingId(null)
+                              }}
+                            />
+                            <Button
+                              size="sm"
+                              disabled={busyId === c.id || !editingName.trim()}
+                              onClick={() => saveName(c)}
+                            >
+                              保存
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
+                              やめる
+                            </Button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="text-left underline decoration-dotted underline-offset-4"
+                            title="クリックすると名前を変更できます"
+                            onClick={() => {
+                              setEditingId(c.id)
+                              setEditingName(c.name)
+                            }}
+                          >
+                            {c.name}
+                          </button>
+                        )}
+                      </TableCell>
                       <TableCell className="whitespace-nowrap">
                         <Select
                           value={c.kind}

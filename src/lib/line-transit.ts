@@ -90,6 +90,8 @@ export interface TransitData {
   noteReceiptId?: string
   /** 入力後に確認画面へ進むときの詳細区分キー */
   noteDetailKey?: string
+  /** 入力後に確認画面へ戻すときの講座ID（講座の「その他」で使う） */
+  noteCourseId?: string
   // 共通
   useDate?: string // 利用日 YYYY-MM-DD
   amount?: number // 確定額（確認後）

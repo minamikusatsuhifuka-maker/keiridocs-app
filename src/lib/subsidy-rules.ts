@@ -172,7 +172,21 @@ export function availableItems(kind: CourseKind): ExpenseItem[] {
   const items: ExpenseItem[] = ["tuition", "transport", "lodging"]
   if (allowsBento(kind)) items.push("bento")
   if (allowsMembership(kind)) items.push("membership")
+  // 規程に無い費用（教材費など）も申請できるようにする。
+  // 支給額を自動で決められないため、担当の確認待ちにする（isCourseOtherItem）。
+  items.push("other")
   return items
+}
+
+/**
+ * 講座の内訳で「その他」を選んだか。
+ *
+ * 講座に紐づく「その他」は規程に当てはめられないため、自動では確定させず
+ * 担当が内容を見て判断する。講座に紐づかない「その他（買い物など）」は
+ * これまでどおり全額支給で確定する。
+ */
+export function isCourseOtherItem(item: ExpenseItem, courseId: string | null | undefined): boolean {
+  return item === "other" && !!courseId
 }
 
 /**
@@ -408,6 +422,7 @@ export type HoldReason =
   | "history"
   | "pass"
   | "term"
+  | "detail"
 
 export const HOLD_REASON_LABELS: Record<HoldReason, string> = {
   excess: "上限超過の承認待ち",
@@ -417,6 +432,7 @@ export const HOLD_REASON_LABELS: Record<HoldReason, string> = {
   history: "既受講回数が未登録（担当の登録待ち）",
   pass: "定期券区間を含む可能性（担当の確認待ち）",
   term: "アカデミー会員の期間外・回数超過（担当の確認待ち）",
+  detail: "内訳が「その他」（担当の確認待ち）",
 }
 
 /** スタッフに見せる保留の説明 */
@@ -428,4 +444,5 @@ export const HOLD_REASON_STAFF_TEXT: Record<HoldReason, string> = {
   history: "受講回数の確認が必要なため、担当が確認のうえご連絡します。",
   pass: "定期券区間の分を差し引く必要があるため、担当が確認のうえ確定します。",
   term: "アカデミー会員の期間や回数の確認が必要なため、担当が確認のうえご連絡します。",
+  detail: "内容の確認が必要なため、担当が確認のうえご連絡します。",
 }
