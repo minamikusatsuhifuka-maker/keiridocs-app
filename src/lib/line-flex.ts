@@ -53,6 +53,8 @@ export const STATUS_BADGES = {
   cancelled: { label: "取り消し済み", bg: "#EDE4D6", text: "#6B5A4A" },
   awaiting_attachment: { label: "添付待ち", bg: "#F7E3C4", text: "#74440A" },
   category_pending: { label: "区分確認中", bg: "#E6EDFA", text: "#1E4175" },
+  // 担当の確認待ち（上限超過・内容の確認など）。支給月がずれることがある
+  reviewing: { label: "担当が確認中", bg: "#F7E3C4", text: "#74440A" },
 } as const
 
 export type ApplicationStatus = keyof typeof STATUS_BADGES
@@ -556,6 +558,8 @@ export interface HistoryItem {
   category: string
   amount: number | null
   subsidy: number | null
+  /** いつのお給与に入るか（例「2026年11月分」）。確認中は理由を入れる */
+  payoutNote?: string
 }
 
 /** ⑦ 申請履歴（直近4〜5件・1バブル） */
@@ -583,6 +587,10 @@ export function historyCard(params: { staffFamilyName: string; items: HistoryIte
       })
     )
     body.push(text(it.category, { size: "xs", color: FLEX_COLORS.textSub }))
+    // 本人が「いつ入るか」を自分で確かめられるようにする
+    if (it.payoutNote) {
+      body.push(text(it.payoutNote, { size: "xs", color: FLEX_COLORS.textSub }))
+    }
     body.push({
       type: "text",
       wrap: true,

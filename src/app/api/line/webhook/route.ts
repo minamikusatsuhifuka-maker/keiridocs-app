@@ -1251,7 +1251,11 @@ async function handlePhase2ConfirmPostback(event: LineEvent, params: URLSearchPa
     const holdReason = await readHoldReason(supabase, receiptId)
     const subject =
       `${EXPENSE_ITEM_LABELS[item]} ¥${formatAmount(settledAmount)}（支給 ¥${formatAmount(settledSubsidy)}）を\n` +
-      (holdReason ? `${holdNotice(holdReason)}\n` : "")
+      (holdReason
+        ? `${holdNotice(holdReason)}\n` +
+          "確認が長引いた場合は翌月のお給与になることがあります。\n" +
+          "いまの状況は「申請履歴」で確認できます。\n"
+        : "")
 
     await sendLineMessages(replyToken, source.userId, [
       registeredMessage(
@@ -1978,7 +1982,10 @@ const USAGE_TEXT =
   "・毎月20日までに完了した分が、その月のお給与に入ります\n" +
   "・区分を選ばずに終えると申請にならないため、最後まで進めてください\n" +
   "・上限を超えても申請できます。担当が確認してご連絡します\n" +
-  "・ICカードで定期券の区間を通った分は、もともと引き落とされません\n\n" +
+  "・ICカードで定期券の区間を通った分は、もともと引き落とされません\n" +
+  "・まれに、内容の確認のため当月ではなく翌月のお給与になることがあります。\n" +
+  "　その場合は担当からご連絡します。\n" +
+  "　いまどうなっているかは、メニューの「申請履歴」でいつでも確認できます\n\n" +
   "【メニューの使い分け】\n" +
   "・申請する … 領収書の写真から申請\n" +
   "・交通費 … ICカードの履歴や切符の写真から申請\n" +
@@ -4721,17 +4728,26 @@ async function sendHistory(event: LineEvent, supabase: ServiceClient, staffId: s
     ai_raw: unknown
   }[]
   const ids = receipts.map((r) => r.id)
-  const txByReceipt = new Map<string, { amount: number; subsidy_category: string | null; expense_detail: string | null }>()
+  const txByReceipt = new Map<
+    string,
+    {
+      amount: number
+      subsidy_category: string | null
+      expense_detail: string | null
+      hold_reason?: string | null
+    }
+  >()
   if (ids.length > 0) {
     const { data: txs } = await supabase
       .from("petty_cash_transactions")
-      .select("staff_receipt_id, amount, subsidy_category, expense_detail")
+      .select("staff_receipt_id, amount, subsidy_category, expense_detail, hold_reason")
       .in("staff_receipt_id", ids)
     for (const t of (txs ?? []) as {
       staff_receipt_id: string | null
       amount: number
       subsidy_category: string | null
       expense_detail: string | null
+      hold_reason?: string | null
     }[]) {
       if (t.staff_receipt_id) txByReceipt.set(t.staff_receipt_id, t)
     }
@@ -4746,7 +4762,16 @@ async function sendHistory(event: LineEvent, supabase: ServiceClient, staffId: s
     const raw = parseAiRawObject(r.ai_raw) ?? {}
     const tx = txByReceipt.get(r.id)
     // 状態は後から増やせるよう STATUS_BADGES のキーで表す（承認・差戻などはフェーズ2で追加）
-    const status: HistoryItem["status"] = raw.cancelled_at ? "cancelled" : tx ? "registered" : "category_pending"
+    // 担当の確認待ち（上限超過・内容の確認など）は、支給月がずれることがあるため
+    // 「登録済み」と区別して本人に見せる。
+    const held = !!tx?.hold_reason
+    const status: HistoryItem["status"] = raw.cancelled_at
+      ? "cancelled"
+      : tx
+        ? held
+          ? "reviewing"
+          : "registered"
+        : "category_pending"
     const createdJst = toJstDateString(new Date(r.created_at))
     if (status === "registered") {
       const m = resolveStaffSubmissionMonth(r.ai_raw, createdJst).month
@@ -4755,9 +4780,23 @@ async function sendHistory(event: LineEvent, supabase: ServiceClient, staffId: s
       }
     }
     const amount = tx?.amount ?? r.amount
+
+    // いつのお給与に入るかを1行で添える（本人が自分で確かめられるようにする）
+    let payoutNote: string | undefined
+    if (status === "registered") {
+      const m = resolveStaffSubmissionMonth(r.ai_raw, createdJst).month
+      if (m) payoutNote = `${labelYearMonth(m)}分のお給与に入ります`
+    } else if (status === "reviewing") {
+      payoutNote =
+        "担当が確認しています。確認が長引いた場合は翌月のお給与になることがあります（担当からご連絡します）"
+    } else if (status === "category_pending") {
+      payoutNote = "区分が選ばれていないため、まだ支給の対象になっていません"
+    }
+
     return {
       date: `${Number(createdJst.slice(5, 7))}/${Number(createdJst.slice(8, 10))}`,
       status,
+      payoutNote,
       store: (r.store_name || "不明").slice(0, 40),
       category: tx?.expense_detail || (status === "category_pending" ? "区分を選ぶ前の領収書" : "—"),
       amount,
@@ -4765,13 +4804,21 @@ async function sendHistory(event: LineEvent, supabase: ServiceClient, staffId: s
     }
   })
   const footer =
-    upcomingMonths.size > 0 ? `登録済みの分は ${[...upcomingMonths].map((m) => `${m}分`).join("・")} として提出されます。` : null
+    upcomingMonths.size > 0
+      ? `登録済みの分は ${[...upcomingMonths].map((m) => `${m}分`).join("・")} として提出されます。\n` +
+        "確認が必要なものは翌月のお給与になることがあります（担当からご連絡します）。"
+      : null
 
   const card = historyCard({ staffFamilyName: familyName(staffName), items, footer })
   const fallback =
     `📋 ${familyName(staffName)}さんの申請（直近${items.length}件）\n` +
     items
-      .map((i) => `${i.date} ${i.store} ¥${formatAmount(i.amount)}${i.subsidy != null ? ` → 支給 ¥${formatAmount(i.subsidy)}` : ""}`)
+      .map(
+        (i) =>
+          `${i.date} ${i.store} ¥${formatAmount(i.amount)}` +
+          (i.subsidy != null ? ` → 支給 ¥${formatAmount(i.subsidy)}` : "") +
+          (i.payoutNote ? `\n　${i.payoutNote}` : "")
+      )
       .join("\n") +
     (footer ? `\n\n${footer}` : "")
   await sendFlexCard(replyToken, source.userId, card, fallback)
