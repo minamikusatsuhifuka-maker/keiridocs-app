@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -398,6 +398,17 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">スタッフ一覧</CardTitle>
+          {/* どの操作がどこにあるか分かるようにする（アイコンだけでは探せない） */}
+          <CardDescription>
+            <strong>氏名の変更（フルネームへの修正・改姓）</strong>は右端の「編集」から。
+            自宅の最寄り駅も同じ画面で登録できます。
+            <br />
+            <strong>入職</strong>は上の「スタッフを追加」、
+            <strong>退職</strong>は「在籍」スイッチをOFFにしてください。
+            退職にすると一覧から隠れ、LINEからの申請も受け付けませんが、過去の申請記録は残ります。
+            <br />
+            「削除」は登録ミスの行を消すためのものです。申請があるスタッフは削除できません。
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {isLoading ? (
@@ -565,12 +576,10 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => openEditDialog(member)}
-                          >
+                          {/* アイコンだけでは見つけられないため文字を添える */}
+                          <Button variant="outline" size="sm" onClick={() => openEditDialog(member)}>
                             <Pencil className="h-4 w-4" />
+                            編集
                           </Button>
                           <Button
                             variant="ghost"
@@ -578,12 +587,14 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                             className="text-destructive hover:text-destructive"
                             onClick={() => handleDelete(member.id, member.name)}
                             disabled={deletingId === member.id}
+                            title="登録ミスの行を消すためのボタンです。退職は「在籍」スイッチで切り替えてください"
                           >
                             {deletingId === member.id ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
                             ) : (
                               <Trash2 className="h-4 w-4" />
                             )}
+                            削除
                           </Button>
                         </div>
                       </TableCell>
