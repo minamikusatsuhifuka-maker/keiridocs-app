@@ -724,9 +724,16 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                         {/* テストスタッフ。ON=テストフォルダ保存＋会計士CSV/集計/院長通知から除外 */}
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="min-w-0">
-                            <p className="text-sm font-medium">テストスタッフ</p>
+                            <p className="text-sm font-medium">テストスタッフ（練習用）</p>
                             <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                              ONにすると、会計士さんへの提出・集計・通知から除外されます。
+                              <strong>使う場面：</strong>本番で使う前に、ご自身でLINEの操作を試すとき。
+                              <br />
+                              ONにすると、その方の申請は<strong>練習扱い</strong>になり、
+                              会計士さんへの提出・給与の集計・担当への通知からすべて外れます
+                              （領収書もテスト用フォルダに保存されます）。
+                              <br />
+                              実際に働くスタッフは<strong>OFFのまま</strong>にしてください。
+                              OFFにし忘れると、そのスタッフの申請が給与に反映されません。
                             </p>
                           </div>
                           <div className="flex items-center gap-2">
@@ -751,8 +758,13 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                           <div className="min-w-0">
                             <p className="text-sm font-medium">この行を削除</p>
                             <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                              登録ミスの行を消すためのものです。退職は上の「在籍」スイッチで切り替えてください。
-                              申請があるスタッフは削除できません。
+                              <strong>使う場面：</strong>同じ人を2回登録してしまった、テスト用の名前で作ってしまった、
+                              といった<strong>登録のやり直し</strong>のときだけ。
+                              <br />
+                              <strong>退職には使いません。</strong>退職は上の「在籍」スイッチをOFFにしてください
+                              （記録が残り、あとから元に戻せます）。
+                              <br />
+                              申請が1件でもある方は、記録が壊れるため削除できません。
                             </p>
                           </div>
                           <Button
