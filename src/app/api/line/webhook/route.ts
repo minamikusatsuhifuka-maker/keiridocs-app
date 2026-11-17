@@ -100,7 +100,6 @@ import {
 import { labelYearMonth, resolveStaffSubmissionMonth } from "@/lib/submission-month"
 import { judgeStation, toStationName } from "@/lib/station-judge"
 import {
-  EXPENSE_GROUP_LABELS,
   expenseDetailsByGroup,
   getExpenseDetail,
   calcSubsidy,
@@ -4826,10 +4825,17 @@ async function sendHistory(event: LineEvent, supabase: ServiceClient, staffId: s
 
 /* ---------- 領収書の読み取り結果カード ---------- */
 
-/** 区分の第1階層（クイックリプライ） */
+/**
+ * 区分の第1階層（クイックリプライ）。
+ *
+ * 写真を送った直後の領収書カードに付く。ここがフェーズ2の入口になるため、
+ * sendTier1 と同じ action=p2g を送ること。
+ * 旧 action=t1 を送ると古い区分（初回ATC／セミナー2回目以降）の流れに入り、
+ * 講座ごとの上限や支給率が適用されない。
+ */
 function tier1Actions(receiptId: string): ActionDef[] {
-  return (["ach", "other"] as const).map((g) =>
-    flexPostback(EXPENSE_GROUP_LABELS[g], `action=t1&rid=${receiptId}&g=${g}`, EXPENSE_GROUP_LABELS[g])
+  return PHASE2_GROUPS.map((g) =>
+    flexPostback(g.label, `action=p2g&rid=${receiptId}&g=${g.key}`, g.label)
   )
 }
 
