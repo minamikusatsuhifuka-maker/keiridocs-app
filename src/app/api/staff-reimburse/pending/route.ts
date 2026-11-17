@@ -3,7 +3,13 @@ import { createClient } from "@supabase/supabase-js"
 import { createClient as createAuthClient } from "@/lib/supabase/server"
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
 import { parseAiRawObject } from "@/lib/staff-receipt-split"
-import { EXPENSE_ITEM_LABELS, type ExpenseItem, type HoldReason } from "@/lib/subsidy-rules"
+import {
+  EXPENSE_ITEM_LABELS,
+  calcBreakdownLines,
+  capForItem,
+  type ExpenseItem,
+  type HoldReason,
+} from "@/lib/subsidy-rules"
 import type { Database } from "@/types/database"
 
 /**
@@ -68,6 +74,11 @@ export interface PendingItem {
   suggested: number
   /** 2回目以降（超過分も半額になる）か */
   isRepeat: boolean
+  /**
+   * 上限と支給率の計算内訳（上限がある内訳のみ。無ければ空）。
+   * 何を承認するのかを担当が画面で確認できるようにするため。
+   */
+  calcNote: string[]
   /** 申請日時（ISO） */
   submittedAt: string
   /** 経過日数 */
@@ -127,6 +138,25 @@ export async function GET() {
           excess,
           suggested: Math.floor(excess * rate),
           isRepeat,
+          // 何を承認するのかが分かるよう、上限と支給率の計算内訳を添える。
+          // 残枠は保存済みの値から逆算する（上限 − 今回の対象額）。
+          calcNote: (() => {
+            const cap = capForItem(item, !!(t.course_id || t.course_pending_name))
+            if (cap === null) return []
+            const covered = Math.max(0, (t.amount ?? 0) - excess)
+            return calcBreakdownLines(
+              {
+                subsidy: Math.floor(covered * rate),
+                excess,
+                cap,
+                rate,
+                capUsed: excess > 0 ? Math.max(0, cap - covered) : 0,
+                holdReason: (t.hold_reason ?? null) as HoldReason | null,
+              },
+              t.amount ?? 0,
+              item
+            )
+          })(),
           submittedAt: t.created_at,
           daysWaiting: daysSince(t.created_at),
         }
@@ -269,6 +299,8 @@ async function fetchIncomplete(
       excess: 0,
       suggested: 0,
       isRepeat: false,
+      // 未完了は区分が決まっていないため、上限の計算内訳は出せない
+      calcNote: [],
       submittedAt: r.created_at,
       daysWaiting: daysSince(r.created_at),
     }))

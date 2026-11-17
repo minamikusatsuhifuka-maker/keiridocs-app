@@ -24,6 +24,7 @@ import { StaffAdminGuide } from "@/components/line-staff/staff-admin-guide"
 import { RichMenuSetup } from "@/components/line-staff/rich-menu-setup"
 import { CourseMaster } from "@/components/courses/course-master"
 import { PriorCourseRegistration } from "@/components/courses/prior-course-registration"
+import { TravelCapPanel } from "@/components/courses/travel-cap-panel"
 import { PaymentMemo } from "@/components/mkadmin/payment-memo"
 import { StaffReimburseList } from "@/components/mkadmin/staff-reimburse-list"
 import { StaffManualEntry } from "@/components/mkadmin/staff-manual-entry"
@@ -335,6 +336,8 @@ export default function MkadminPage() {
             <StaffManagement showHeader={false} />
             {/* 既受講の登録（アプリ導入前の受講回数。未登録だと既受講者に全額支給してしまう） */}
             <PriorCourseRegistration />
+            {/* 交通費・宿泊費の枠（講座ごと30,000円）。再受講のときに数え直す */}
+            <TravelCapPanel />
           </div>
         </TabsContent>
 

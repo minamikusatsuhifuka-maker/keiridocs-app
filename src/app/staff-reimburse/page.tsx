@@ -129,6 +129,8 @@ interface PendingItem {
   excess: number
   suggested: number
   isRepeat: boolean
+  /** 上限と支給率の計算内訳（上限がある内訳のみ。無ければ空） */
+  calcNote?: string[]
   submittedAt: string
   daysWaiting: number
 }
@@ -876,6 +878,31 @@ export default function StaffReimbursePage() {
                         {PENDING_HELP[p.kind]}
                         {p.kind === "excess" && p.isRepeat && "（2回目以降のため超過分も半額が規程どおりです）"}
                       </p>
+
+                      {/* なぜこの金額になったか（上限 → 残枠 → 支給率 → 支給額 → 超過分）。
+                          枠の使用額が分からないと、何を承認するのか判断できないため出す */}
+                      {p.calcNote && p.calcNote.length > 0 && (
+                        <div className="mt-2 rounded-md border bg-muted/40 px-2.5 py-2">
+                          <p className="text-xs font-medium">支給額の計算</p>
+                          <ul className="mt-1 space-y-0.5">
+                            {p.calcNote.map((line, i) => (
+                              <li
+                                key={i}
+                                className="text-xs leading-relaxed"
+                                style={{ color: "var(--muted-foreground)" }}
+                              >
+                                {line}
+                              </li>
+                            ))}
+                          </ul>
+                          {p.kind === "excess" && (
+                            <p className="mt-1.5 text-xs" style={{ color: "var(--muted-foreground)" }}>
+                              同じ講座を次の回として受講した分であれば、
+                              「スタッフ」タブの「交通費・宿泊費の枠」で枠を数え直してください。
+                            </p>
+                          )}
+                        </div>
+                      )}
 
                       {/* 本人に聞かないと進まないことが多いため、ここから直接連絡できるようにする */}
                       {p.staffMemberId && (

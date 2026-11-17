@@ -9,6 +9,14 @@
  *     Σ（立替額 − 上限超過額）
  *   で求める。超過分は枠を使っていない（担当が承認すれば枠外で加算される）ため差し引く。
  *
+ *   次のものは枠に数えない。数えると実際には支給していない額で枠が埋まり、
+ *   正しい申請が「上限超過・支給額0円」になってしまう。
+ *     - テストスタッフ（staff_members.is_test）の申請
+ *       … 会計士提出・給与集計から除外しているものを枠だけ数えるのは不整合
+ *     - 本人が取り消した申請（staff_receipts.ai_raw.cancelled_at）
+ *     - 担当が枠を数え直した日時より前の申請（line_profile.travel_cap_resets）
+ *       … 再受講のたびに枠を数え直すため
+ *
  * ■ 交通費＋宿泊費（講座ごと 30,000円）
  *   同じスタッフ・同じ講座の transport / lodging を合算する。
  *
@@ -22,7 +30,7 @@
  */
 
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
-import { academyStartDate, parseLineProfile } from "@/lib/line-staff-profile"
+import { academyStartDate, parseLineProfile, travelCapResetAt } from "@/lib/line-staff-profile"
 import { formatYearMonth, resolveStaffSubmissionMonth } from "@/lib/submission-month"
 import {
   computeSubsidy,
@@ -48,6 +56,7 @@ interface PriorRow {
   course_id: string | null
   excess_amount: number | null
   staff_receipt_id: string | null
+  created_at: string | null
 }
 
 export interface AssessInput {
@@ -105,6 +114,10 @@ export interface AssessResult extends SubsidyResult {
   holdReason: HoldReason | null
   /** 上限枠のうち既に使った立替額 */
   capUsed: number
+  /** 枠を最後に数え直した日時（講座ごと）。数え直していなければ null */
+  capResetAt: string | null
+  /** テストスタッフのため枠を数えていないか（テスト申請は枠を消費しない） */
+  capSkippedForTest: boolean
 }
 
 /**
@@ -120,7 +133,7 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
   const priors = await fetchAllRows<PriorRow>((from, to) =>
     supabase
       .from("petty_cash_transactions")
-      .select("id, amount, expense_item, course_id, excess_amount, staff_receipt_id")
+      .select("id, amount, expense_item, course_id, excess_amount, staff_receipt_id, created_at")
       .eq("category", "staff_refund")
       .eq("staff_member_id", staffMemberId)
       .order("id", { ascending: true })
@@ -130,11 +143,31 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
       }>
   )
 
-  // 2. 上限枠の消費分を数える
+  // 2. 上限枠の消費分を数える。
+  //    テストスタッフの申請・取り消した申請・数え直しより前の申請は数えない
+  //    （数えると実際には支給していない額で枠が埋まり、正しい申請が支給0円になる）。
+  const staffState = await fetchStaffCapState(supabase, staffMemberId, input.courseId ?? null)
+  const counted = staffState.isTest ? [] : await rejectCancelled(supabase, priors)
+
   const capUsed = isTravelItem(item)
-    ? sumCapUsed(priors.filter((p) => p.course_id && p.course_id === input.courseId && isTravelItem(p.expense_item as ExpenseItem)))
+    ? sumCapUsed(
+        counted
+          .filter(
+            (p) =>
+              p.course_id &&
+              p.course_id === input.courseId &&
+              isTravelItem(p.expense_item as ExpenseItem)
+          )
+          .filter((p) => isAfterReset(p, staffState.travelCapResetAt))
+      )
     : item === "books" || item === "medical"
-      ? sumCapUsed(await filterSameSubmissionMonth(supabase, priors.filter((p) => p.expense_item === item), input))
+      ? sumCapUsed(
+          await filterSameSubmissionMonth(
+            supabase,
+            counted.filter((p) => p.expense_item === item),
+            input
+          )
+        )
       : 0
 
   // 3. ATC方式の再受講の回数。
@@ -149,9 +182,10 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
       ? await fetchRegisteredPriorCount(supabase, staffMemberId, input.courseId)
       : { count: 0, registered: true }
 
+  // 取り消した申請・テスト申請は受講実績に数えない（counted を使う）
   const inApp =
     input.courseRule === "atc" && input.courseId
-      ? priors.filter((p) => p.course_id === input.courseId && p.expense_item === "tuition").length
+      ? counted.filter((p) => p.course_id === input.courseId && p.expense_item === "tuition").length
       : 0
 
   const priorTuitionCount = registered.count + inApp
@@ -160,10 +194,10 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
   const isRepeat =
     input.courseRule === "atc"
       ? priorTuitionCount > 0 ||
-        priors.some((p) => p.course_id === input.courseId && p.expense_item === "tuition")
+        counted.some((p) => p.course_id === input.courseId && p.expense_item === "tuition")
       : // 旧式（別の講座の実績があれば2回目以降）
         input.courseKind === "apex" &&
-        priors.some((p) => p.course_id && p.course_id !== input.courseId)
+        counted.some((p) => p.course_id && p.course_id !== input.courseId)
 
   // 4. 規程どおりに計算する
   const result = computeSubsidy({
@@ -211,6 +245,79 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
     priorTuitionCount,
     holdReason,
     capUsed,
+    capResetAt: staffState.travelCapResetAt,
+    capSkippedForTest: staffState.isTest,
+  }
+}
+
+/**
+ * 枠の判定に使うスタッフの状態を読む。
+ *
+ * - isTest             … テストスタッフか（テスト申請は枠を消費しない）
+ * - travelCapResetAt   … その講座の枠を最後に数え直した日時
+ */
+async function fetchStaffCapState(
+  supabase: ServiceClient,
+  staffMemberId: string,
+  courseId: string | null
+): Promise<{ isTest: boolean; travelCapResetAt: string | null }> {
+  try {
+    const { data, error } = await supabase
+      .from("staff_members")
+      .select("is_test, line_profile")
+      .eq("id", staffMemberId)
+      .maybeSingle()
+    if (error || !data) return { isTest: false, travelCapResetAt: null }
+    const row = data as { is_test?: boolean | null; line_profile?: unknown }
+    return {
+      isTest: !!row.is_test,
+      travelCapResetAt: travelCapResetAt(row.line_profile, courseId),
+    }
+  } catch {
+    // 読めないときは枠を数える側に倒す（過大支給を防ぐ）
+    return { isTest: false, travelCapResetAt: null }
+  }
+}
+
+/** 数え直した日時より後の申請か（数え直していなければ全件が対象） */
+function isAfterReset(row: PriorRow, resetAt: string | null): boolean {
+  if (!resetAt) return true
+  if (!row.created_at) return true // 日時が無いものは安全側（枠に数える）
+  return row.created_at > resetAt
+}
+
+/**
+ * 本人が取り消した申請を除く。
+ *
+ * 取り消し（LINEの「この申請を取り消す」）では明細を削除しているため通常は残らないが、
+ * 削除に失敗した場合や管理画面からの操作で残ることがある。
+ * 枠だけが埋まって正しい申請が支給0円になるのを防ぐため、ここでも除外する。
+ */
+async function rejectCancelled(supabase: ServiceClient, rows: PriorRow[]): Promise<PriorRow[]> {
+  const receiptIds = Array.from(
+    new Set(rows.map((r) => r.staff_receipt_id).filter((v): v is string => !!v))
+  )
+  if (receiptIds.length === 0) return rows
+
+  try {
+    const cancelled = await fetchAllRows<{ id: string }>((from, to) =>
+      supabase
+        .from("staff_receipts")
+        .select("id")
+        .in("id", receiptIds)
+        .not("ai_raw->>cancelled_at", "is", null)
+        .order("id", { ascending: true })
+        .range(from, to) as unknown as PromiseLike<{
+          data: { id: string }[] | null
+          error: { message: string } | null
+        }>
+    )
+    if (cancelled.length === 0) return rows
+    const drop = new Set(cancelled.map((c) => c.id))
+    return rows.filter((r) => !r.staff_receipt_id || !drop.has(r.staff_receipt_id))
+  } catch {
+    // 判定できないときは除外せずそのまま数える（過大支給を防ぐ）
+    return rows
   }
 }
 

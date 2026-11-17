@@ -16,6 +16,7 @@ import {
   allowsMembership,
   availableItems,
   academyTermEnd,
+  calcBreakdownLines,
   computeSubsidy,
   needsDetailReview,
   isWithinAcademyTerm,
@@ -354,6 +355,122 @@ check(
   calc({ amount: BOOKS_CAP_PER_MONTH, item: "books" }),
   { 支給: 5000, 超過: 0, 承認既定値: 0 }
 )
+
+/* ---------- ピークパフォーマンスコースの交通費（2026-11-18 の実機テスト） ----------
+ *
+ * 枠が空であれば、どちらも超過なしで半額支給になること。
+ * 実機では過去のテスト申請で枠が 2,190円 消費されていたため
+ * ①が支給0円・②が超過130円になっていた（枠の数え方の不具合）。
+ */
+{
+  const half = { item: "transport" as const, courseKind: "ach_other" as const, courseRule: "half" as const }
+
+  // ① 在来線 240+490+490+240 = 1,460円
+  check("在来線 ¥1,460（半額・枠未使用）→ 支給 ¥730・超過なし", calc({ ...half, amount: 1460 }), {
+    支給: 730,
+    超過: 0,
+    承認既定値: 0,
+  })
+
+  // ② 新幹線往復 13,970 × 2 = 27,940円
+  check("新幹線往復 ¥27,940（半額・枠未使用）→ 支給 ¥13,970・超過なし", calc({ ...half, amount: 27940 }), {
+    支給: 13970,
+    超過: 0,
+    承認既定値: 0,
+  })
+
+  // ①②を続けて申請した場合の合計（1,460 + 27,940 = 29,400円 ≦ 30,000円）
+  check(
+    "①のあとに②を申請しても上限内（合計 ¥29,400）",
+    calc({ ...half, amount: 27940, travelCapUsed: 1460 }),
+    { 支給: 13970, 超過: 0, 承認既定値: 0 }
+  )
+  check("①②の支給額の合計は ¥14,700", 730 + 13970, 14700)
+
+  // 不具合の再現（修正前の値）。枠が誤って消費されていると こうなる
+  check(
+    "【不具合の再現】枠が2,190円消費されていると ②は超過130円になる",
+    calc({ ...half, amount: 27940, travelCapUsed: 2190 }),
+    { 支給: 13905, 超過: 130, 承認既定値: 65 }
+  )
+  check(
+    "【不具合の再現】枠を使い切っていると ①は支給0円・超過1,460円になる",
+    calc({ ...half, amount: 1460, travelCapUsed: 30000 }),
+    { 支給: 0, 超過: 1460, 承認既定値: 730 }
+  )
+}
+
+/* ---------- 確認画面に出す計算内訳 ---------- */
+{
+  // 上限も控除もない申請では何も出さない（画面を無駄に長くしない）
+  check(
+    "通常業務の交通費は内訳を出さない",
+    calcBreakdownLines(
+      { subsidy: 1520, excess: 0, cap: null, rate: 1, capUsed: 0, holdReason: null },
+      1520,
+      "commute"
+    ),
+    []
+  )
+
+  // 半額だけの場合は支給率と支給額を出す
+  check(
+    "半額支給は支給率と支給額を出す",
+    calcBreakdownLines(
+      { subsidy: 730, excess: 0, cap: 30000, rate: 0.5, capUsed: 0, holdReason: null },
+      1460,
+      "transport"
+    ),
+    [
+      "上限：この講座の交通費＋宿泊費 合計 ¥30,000",
+      "今回の立替額：¥1,460",
+      "うち上限の対象：¥1,460",
+      "支給率：50％（半額支給の講座）",
+      "支給額：¥730",
+    ]
+  )
+
+  // 枠が消費されている場合は、残枠と超過の理由が分かるようにする
+  check(
+    "枠を使っている場合は すでに使った分と残枠を出す",
+    calcBreakdownLines(
+      { subsidy: 13905, excess: 130, cap: 30000, rate: 0.5, capUsed: 2190, holdReason: "excess" },
+      27940,
+      "transport"
+    ),
+    [
+      "上限：この講座の交通費＋宿泊費 合計 ¥30,000",
+      "すでに使った分：¥2,190",
+      "残りの枠：¥27,810",
+      "今回の立替額：¥27,940",
+      "うち上限の対象：¥27,810",
+      "支給率：50％（半額支給の講座）",
+      "支給額：¥13,905",
+      "上限を超えた分：¥130（担当が確認します）",
+    ]
+  )
+
+  // 定期券区間の控除も理由を出す
+  check(
+    "定期券区間を含む場合は控除の理由を出す",
+    calcBreakdownLines(
+      { subsidy: 1000, excess: 0, cap: 30000, rate: 1, capUsed: 0, holdReason: "pass" },
+      1000,
+      "transport"
+    ).slice(-1),
+    ["定期券区間の運賃が含まれている可能性があるため、担当が差し引く額を確認します。"]
+  )
+
+  check(
+    "書籍代は「今月」の上限として出す",
+    calcBreakdownLines(
+      { subsidy: 5000, excess: 1000, cap: 5000, rate: 1, capUsed: 0, holdReason: "excess" },
+      6000,
+      "books"
+    )[0],
+    "上限：今月 ¥5,000"
+  )
+}
 
 /* ---------- 結果 ---------- */
 

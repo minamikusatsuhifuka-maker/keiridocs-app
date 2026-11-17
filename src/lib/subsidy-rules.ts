@@ -344,10 +344,22 @@ function resolveRate(input: SubsidyInput): { rate: number; needsDecision: boolea
 
 /** 適用する上限額（上限なしは null） */
 function resolveCap(input: SubsidyInput): number | null {
-  if (input.item === "books") return BOOKS_CAP_PER_MONTH
-  if (input.item === "medical") return MEDICAL_CAP_PER_MONTH
-  // 交通費＋宿泊費は研修に紐づくときだけ上限がある（通常業務の交通費は commute で上限なし）
-  if (isTravelItem(input.item) && input.courseKind) return TRAVEL_CAP_PER_COURSE
+  return capForItem(input.item, !!input.courseKind)
+}
+
+/**
+ * その内訳に適用される上限額（上限なしは null）。
+ *
+ * 保存済みの明細から説明文を組み立てるときにも使う。
+ * 上限は**ここだけ**で決める（画面ごとに別の値を書かないこと）。
+ *
+ * @param hasCourse 講座に紐づく申請か（交通費・宿泊費は研修に紐づくときだけ上限がある）
+ */
+export function capForItem(item: ExpenseItem, hasCourse: boolean): number | null {
+  if (item === "books") return BOOKS_CAP_PER_MONTH
+  if (item === "medical") return MEDICAL_CAP_PER_MONTH
+  // 通常業務の交通費（commute）は上限なし
+  if (isTravelItem(item) && hasCourse) return TRAVEL_CAP_PER_COURSE
   return null
 }
 
@@ -411,6 +423,55 @@ export function calcStoredSubsidy(row: {
         : 1
   const approved = Math.max(0, Math.floor(row.approved_excess ?? 0))
   return Math.floor(covered * rate) + approved
+}
+
+/**
+ * 上限・支給率の計算内訳（確認画面と要対応一覧に出す文面）。
+ *
+ * 本人が「なぜこの金額なのか」を確認できるようにするため、
+ * **計算した順に**並べる（上限 → 残枠 → 支給率 → 支給額 → 超過分）。
+ *
+ * 上限も控除もない場合は空配列を返す（出す必要がない）。
+ */
+export function calcBreakdownLines(
+  assessed: {
+    subsidy: number
+    excess: number
+    cap: number | null
+    rate: number
+    capUsed: number
+    holdReason?: HoldReason | null
+  },
+  amount: number,
+  item: ExpenseItem
+): string[] {
+  const lines: string[] = []
+  
+  if (assessed.cap !== null) {
+    const unit = isTravelItem(item) ? "この講座の交通費＋宿泊費 合計" : "今月"
+    lines.push(`上限：${unit} ${yen(assessed.cap)}`)
+    if (assessed.capUsed > 0) {
+      lines.push(`すでに使った分：${yen(assessed.capUsed)}`)
+      lines.push(`残りの枠：${yen(Math.max(0, assessed.cap - assessed.capUsed))}`)
+    }
+    lines.push(`今回の立替額：${yen(amount)}`)
+    lines.push(`うち上限の対象：${yen(Math.max(0, amount - assessed.excess))}`)
+  }
+
+  if (assessed.rate !== 1) {
+    lines.push(`支給率：${Math.round(assessed.rate * 100)}％（半額支給の講座）`)
+  }
+
+  if (lines.length > 0) lines.push(`支給額：${yen(assessed.subsidy)}`)
+
+  if (assessed.excess > 0) {
+    lines.push(`上限を超えた分：${yen(assessed.excess)}（担当が確認します）`)
+  }
+  if (assessed.holdReason === "pass") {
+    lines.push("定期券区間の運賃が含まれている可能性があるため、担当が差し引く額を確認します。")
+  }
+
+  return lines
 }
 
 /* ---------- 保留の理由 ---------- */

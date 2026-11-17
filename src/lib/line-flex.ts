@@ -517,6 +517,11 @@ export function applicationConfirmCard(params: {
   subsidy: number
   subsidyRateLabel: string
   targetMonth: string
+  /**
+   * 上限・支給率の計算内訳（calcBreakdownLines の戻り値）。
+   * 上限も控除もない申請では空になるため、その場合は出さない。
+   */
+  calcNote?: string[]
   overLimit?: { category: string; exceeded: number }
   okData: string
   fixData: string
@@ -536,6 +541,15 @@ export function applicationConfirmCard(params: {
   body.push(
     payBlock(params.overLimit ? "支給額（上限分）" : "支給額", yen(params.subsidy), params.subsidyRateLabel)
   )
+  // 支給額が立替額と違う理由（上限・支給率）を、計算した順に見せる
+  if (params.calcNote && params.calcNote.length > 0) {
+    body.push(
+      panel([
+        text("支給額の計算", { size: "xs", weight: "bold", color: FLEX_COLORS.textSub }),
+        ...params.calcNote.map((line) => text(line, { size: "xs", margin: "xs" })),
+      ])
+    )
+  }
   if (params.overLimit) {
     body.push(cautionBlock([`上限を超えた ${yen(params.overLimit.exceeded)} については、担当が確認のうえご連絡します。`]))
   }

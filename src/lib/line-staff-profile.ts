@@ -111,6 +111,22 @@ export function hasPriorCourseRecord(raw: unknown): boolean {
 }
 
 /**
+ * その講座の枠を最後に数え直した日時。
+ *
+ * 同じ講座で複数回押された場合は**いちばん新しい1件**を使う。
+ *
+ * @returns ISO8601 の日時。数え直していなければ null
+ */
+export function travelCapResetAt(raw: unknown, courseId: string | null | undefined): string | null {
+  if (!courseId) return null
+  const hits = (parseLineProfile(raw).travel_cap_resets ?? [])
+    .filter((r) => r?.course_id === courseId && typeof r?.at === "string" && r.at)
+    .map((r) => r.at)
+    .sort()
+  return hits.length > 0 ? hits[hits.length - 1] : null
+}
+
+/**
  * アチーブメントアカデミー会員の情報。
  *
  * 再受講は「3年で6回」で、起算は会費を支払って会員になった日。
@@ -137,12 +153,31 @@ export interface SuspendedState {
   by?: string
 }
 
+/**
+ * 交通費・宿泊費の枠（講座ごと30,000円）を数え直した記録。
+ *
+ * 枠は「講座ごと」だが、講座マスタは同じ講座名を再受講でも使い回すため、
+ * 数え直さないと1回目の受講で枠を使い切り、2回目以降が全額超過になる。
+ * 担当が「次の受講分として数え直す」を押したら、この日時より後の申請だけを数える。
+ */
+export interface TravelCapReset {
+  course_id: string
+  /** この日時より後の申請だけを枠に数える（ISO8601） */
+  at: string
+  /** 操作した人（メールアドレス）。記録用 */
+  by?: string
+  /** 数え直す直前までに使っていた額（記録用。判定には使わない） */
+  used_before?: number
+}
+
 export interface LineProfile {
   /**
    * 担当か（スタッフからの問い合わせをこの人のLINEへ転送する）。
    * 院長は ADMIN_LINE_USER_ID で常に受け取るため、ここは担当者用。
    */
   is_receptionist?: boolean
+  /** 交通費・宿泊費の枠を数え直した記録（講座ごと・最後の1件だけを使う） */
+  travel_cap_resets?: TravelCapReset[]
   /** 一時休止。キーが無い＝利用中 */
   suspended?: SuspendedState
   /** アカデミー会員のサービス開始日。キーが無い＝未登録 */

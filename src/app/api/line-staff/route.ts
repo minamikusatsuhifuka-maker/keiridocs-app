@@ -2,7 +2,14 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import type { Database } from "@/types/database"
-import { hasPendingNameChange, parseLineProfile } from "@/lib/line-staff-profile"
+import {
+  hasPendingNameChange,
+  parseLineProfile,
+  travelCapResetAt,
+  type TravelCapReset,
+} from "@/lib/line-staff-profile"
+import { fetchAllRows } from "@/lib/supabase/fetch-all"
+import { isTravelItem, type ExpenseItem } from "@/lib/subsidy-rules"
 
 /** サービスロールキーでRLSをバイパスするSupabaseクライアント */
 function createServiceClient() {
@@ -12,6 +19,52 @@ function createServiceClient() {
     throw new Error("NEXT_PUBLIC_SUPABASE_URL と SUPABASE_SERVICE_ROLE_KEY が必要です")
   }
   return createSupabaseClient<Database>(url, serviceKey)
+}
+
+/**
+ * その講座で枠（交通費＋宿泊費 合計30,000円）を使っている立替額の合計。
+ *
+ * 画面に「いま枠をいくら使っているか」を出すためと、数え直しの記録を残すために使う。
+ * 数え直し済みならそれ以降の分だけを数える（assessSubsidy と同じ数え方にそろえる）。
+ */
+async function sumTravelCapUsed(
+  service: ReturnType<typeof createServiceClient>,
+  staffMemberId: string,
+  courseId: string
+): Promise<number> {
+  const resetAt = await (async () => {
+    const { data } = await service
+      .from("staff_members")
+      .select("line_profile")
+      .eq("id", staffMemberId)
+      .maybeSingle()
+    return travelCapResetAt((data as { line_profile?: unknown } | null)?.line_profile, courseId)
+  })()
+
+  type Row = {
+    amount: number | null
+    excess_amount: number | null
+    expense_item: string | null
+    created_at: string | null
+  }
+  const rows = await fetchAllRows<Row>((from, to) =>
+    service
+      .from("petty_cash_transactions")
+      .select("amount, excess_amount, expense_item, created_at")
+      .eq("category", "staff_refund")
+      .eq("staff_member_id", staffMemberId)
+      .eq("course_id", courseId)
+      .order("created_at", { ascending: true })
+      .range(from, to) as unknown as PromiseLike<{
+        data: Row[] | null
+        error: { message: string } | null
+      }>
+  )
+
+  return rows
+    .filter((r) => isTravelItem(r.expense_item as ExpenseItem))
+    .filter((r) => !resetAt || !r.created_at || r.created_at > resetAt)
+    .reduce((sum, r) => sum + Math.max(0, (r.amount ?? 0) - (r.excess_amount ?? 0)), 0)
 }
 
 /** 認証チェック（通常クライアントで行う） */
@@ -242,6 +295,11 @@ export async function PATCH(request: NextRequest) {
       retired?: boolean
       /** 既受講の登録（アプリ導入前に受講した回数）。count=null で登録を取り消す */
       priorCourse?: { courseId?: string; count?: number | null }
+      /**
+       * 交通費・宿泊費の枠（講座ごと30,000円）を数え直す。
+       * undo=true でいちばん新しい数え直しを取り消す。
+       */
+      travelCapReset?: { courseId?: string; undo?: boolean }
       /** アカデミー会員のサービス開始日（YYYY-MM-DD。null で登録を取り消す） */
       academyStart?: string | null
       /** 一時休止（産休・育休・休職など）。true で停止、false で再開 */
@@ -403,6 +461,71 @@ export async function PATCH(request: NextRequest) {
         .single()
       if (error) {
         console.error("既受講登録エラー:", error.message, error.code)
+        throw error
+      }
+      return NextResponse.json({ data })
+    }
+
+    /*
+     * 交通費・宿泊費の枠（講座ごと30,000円）を数え直す。
+     *
+     * ■ なぜ必要か
+     * 枠は「講座ごと」だが、講座マスタは同じ講座名を再受講でも使い回すため、
+     * 数え直さないと1回目の受講で枠を使い切り、2回目以降の交通費が
+     * 全額「上限超過・支給額0円」になってしまう。
+     *
+     * ■ 仕組み
+     * 押した日時を記録し、それより後の申請だけを枠に数える。
+     * 過去の明細は書き換えないので、確定済みの支給額は変わらない。
+     */
+    if (body.travelCapReset) {
+      const courseId = body.travelCapReset.courseId
+      if (!courseId) {
+        return NextResponse.json({ error: "講座が指定されていません" }, { status: 400 })
+      }
+
+      const { data: member, error: readError } = await service
+        .from("staff_members")
+        .select("line_profile")
+        .eq("id", body.id)
+        .single()
+      if (readError || !member) {
+        return NextResponse.json({ error: "スタッフが見つかりません" }, { status: 404 })
+      }
+      const profile = parseLineProfile(member.line_profile)
+      const existing = profile.travel_cap_resets ?? []
+
+      let next: TravelCapReset[]
+      if (body.travelCapReset.undo) {
+        // いちばん新しい1件だけを取り消す（それ以前の数え直しは残す）
+        const mine = existing.filter((r) => r.course_id === courseId).sort((a, b) => a.at.localeCompare(b.at))
+        const latest = mine[mine.length - 1]
+        if (!latest) {
+          return NextResponse.json({ error: "数え直しの記録がありません" }, { status: 400 })
+        }
+        next = existing.filter((r) => !(r.course_id === courseId && r.at === latest.at))
+      } else {
+        // 記録用に、数え直す直前までに使っていた額を残す（判定には使わない）
+        const used = await sumTravelCapUsed(service, body.id, courseId)
+        next = [
+          ...existing,
+          {
+            course_id: courseId,
+            at: new Date().toISOString(),
+            by: user.email ?? undefined,
+            used_before: used,
+          },
+        ]
+      }
+
+      const { data, error } = await service
+        .from("staff_members")
+        .update({ line_profile: JSON.parse(JSON.stringify({ ...profile, travel_cap_resets: next })) })
+        .eq("id", body.id)
+        .select("*")
+        .single()
+      if (error) {
+        console.error("枠の数え直しエラー:", error.message, error.code)
         throw error
       }
       return NextResponse.json({ data })
