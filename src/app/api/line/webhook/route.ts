@@ -45,6 +45,7 @@ import {
   matchStaffByFullName,
   mayHaveCommuterPass,
   normalizePersonName,
+  parseLineProfile,
   stripStationSuffix,
   updateLineProfile,
   type CommuteMethod,
@@ -927,6 +928,14 @@ async function handlePhase2ItemPostback(event: LineEvent, params: URLSearchParam
     return
   }
 
+  // 交通費: 定期券のあるスタッフだけに、定期区間が含まれていないかを確認する。
+  // ICカードは定期区間の運賃を引き落とさないので履歴の金額をそのまま申請してよいが、
+  // 切符を買った場合は定期区間も含まれ、院が払う通勤手当と二重払いになる。
+  if ((item === "transport" || item === "commute") && params.get("pz") === null) {
+    const asked = await askCommuterPassIncluded(event, receiptId, item, courseId)
+    if (asked) return
+  }
+
   // 検定・試験: 合格通知・修了通知の写真があるかを確認する
   if (item === "exam" && params.get("at") === null) {
     await sendLineQuickReply(replyToken, source.userId, examAttachPrompt(), [
@@ -946,7 +955,71 @@ async function handlePhase2ItemPostback(event: LineEvent, params: URLSearchParam
     return
   }
 
-  await sendPhase2Confirm(event, receiptId, item, courseId, params.get("at") === "0")
+  await sendPhase2Confirm(
+    event,
+    receiptId,
+    item,
+    courseId,
+    params.get("at") === "0",
+    params.get("pz") === "1"
+  )
+}
+
+/**
+ * 定期券区間が金額に含まれていないかを確認する。
+ *
+ * 定期券が未登録の方には聞かない（聞いても答えようがないため）。
+ * 戻り値 true＝質問を送った（呼び出し元はここで止める）。
+ */
+async function askCommuterPassIncluded(
+  event: LineEvent,
+  receiptId: string,
+  item: ExpenseItem,
+  courseId: string | null
+): Promise<boolean> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const { data } = await supabase
+    .from("staff_receipts")
+    .select("staff_members!inner(line_profile)")
+    .eq("id", receiptId)
+    .maybeSingle()
+  const profile = parseLineProfile(
+    (data as unknown as { staff_members?: { line_profile?: unknown } } | null)?.staff_members?.line_profile
+  )
+  const pass = activeCommuterPass(profile)
+  if (!pass) return false // 定期券なし・未登録の方には聞かない
+
+  const base = `action=p2i&rid=${receiptId}&i=${item}` + (courseId ? `&c=${courseId}` : "")
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    `定期券（${pass.from} ⇄ ${pass.to}）の区間について確認させてください。\n\n` +
+      "この金額に、定期券区間の運賃は含まれていますか？\n\n" +
+      "・ICカードで乗った場合は、定期券区間は引き落とされないため「含まれていない」です\n" +
+      "・切符を買った場合は「含まれている」ことがあります",
+    [
+      {
+        type: "postback",
+        label: "含まれていない",
+        data: `${base}&pz=0`,
+        displayText: "定期券区間は含まれていません",
+      },
+      {
+        type: "postback",
+        label: "含まれている",
+        data: `${base}&pz=1`,
+        displayText: "定期券区間が含まれています",
+      },
+      {
+        type: "postback",
+        label: "わからない",
+        data: `${base}&pz=1`,
+        displayText: "わかりません",
+      },
+    ]
+  )
+  return true
 }
 
 /** 確認カードを送る（支給額・上限・保留の理由をここで見せる） */
@@ -955,7 +1028,8 @@ async function sendPhase2Confirm(
   receiptId: string,
   item: ExpenseItem,
   courseId: string | null,
-  awaitingAttachment: boolean
+  awaitingAttachment: boolean,
+  commuterPassIncluded = false
 ): Promise<void> {
   const { replyToken, source } = event
   try {
@@ -994,6 +1068,7 @@ async function sendPhase2Confirm(
       courseRule: course?.rule ?? null,
       pendingCourseName,
       awaitingAttachment,
+      commuterPassIncluded,
       submittedAt: new Date(receipt.created_at),
     })
 
@@ -1004,7 +1079,8 @@ async function sendPhase2Confirm(
     const okData =
       `action=p2ok&rid=${receiptId}&i=${item}` +
       (course ? `&c=${course.id}` : "") +
-      (awaitingAttachment ? "&at=0" : "")
+      (awaitingAttachment ? "&at=0" : "") +
+      (commuterPassIncluded ? "&pz=1" : "")
     const fixData = `action=fix&rid=${receiptId}`
 
     const card = applicationConfirmCard({
@@ -1072,6 +1148,7 @@ async function handlePhase2ConfirmPostback(event: LineEvent, params: URLSearchPa
   const item = params.get("i") as ExpenseItem | null
   const courseId = params.get("c")
   const awaitingAttachment = params.get("at") === "0"
+  const commuterPassIncluded = params.get("pz") === "1"
   if (!receiptId || !item || !(item in EXPENSE_ITEM_LABELS)) {
     await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
     return
@@ -1094,6 +1171,7 @@ async function handlePhase2ConfirmPostback(event: LineEvent, params: URLSearchPa
       courseRule: course?.rule ?? null,
       pendingCourseName,
       awaitingAttachment,
+      commuterPassIncluded,
     }
 
     // 分割（1ファイル複数領収証）は全件を同じ区分で確定する
@@ -1708,9 +1786,18 @@ interface ApplicationMenuItem {
 /** 申請メニューに並べる項目（Quick Reply は最大13個。キャンセルの1枠を除き12件まで） */
 const APPLICATION_MENU: ApplicationMenuItem[] = [
   {
-    key: "train",
-    label: "🚃 電車代（領収書なし）",
+    // 交通費はすべてここに集約する。
+    // 電車・地下鉄・バス・飛行機を区別せず「交通費」1つにまとめ、
+    // ICカードの履歴・切符・領収書の写真から申請してもらう。
+    // 金額を推定する方式はやめた（記録が残らず、定期券区間の扱いも曖昧になるため）。
+    key: "transit",
+    label: "🚃 交通費（電車・地下鉄・飛行機）",
     triggers: [
+      "交通費",
+      "交通費申請",
+      "交通費の申請",
+      "交通費を申請",
+      "こうつうひ",
       "電車代",
       "電車",
       "電車の交通費",
@@ -1722,38 +1809,20 @@ const APPLICATION_MENU: ApplicationMenuItem[] = [
       "電車交通費",
       "電車賃",
       "でんしゃだい",
-    ],
-    start: (event, supabase, staffMembers) => startTrainTransit(event, supabase, staffMembers),
-  },
-  {
-    key: "other",
-    label: "🚌 交通費（バス・車など）",
-    triggers: [
       "交通費その他",
       "その他の交通費",
       "バス代",
       "バス代申請",
       "ガソリン代",
       "駐車場代",
+      "地下鉄",
+      "飛行機",
+      "航空券",
+      "新幹線",
     ],
-    start: (event, supabase, staffMembers) => startOtherTransit(event, supabase, staffMembers),
-  },
-  {
-    key: "transit",
-    label: "🚏 交通費（手段を選ぶ）",
-    triggers: [
-      "交通費",
-      "交通費申請",
-      "交通費の申請",
-      "交通費を申請",
-      "交通費領収書なし",
-      "交通費領収書無し",
-      "領収書なし交通費",
-      "領収書なしの交通費",
-      "領収書無し交通費",
-      "こうつうひ",
-    ],
-    start: (event, supabase, staffMembers) => handleTransitEntry(event, supabase, staffMembers),
+    start: async (event) => {
+      await sendLineMessage(event.replyToken, event.source.userId, TRANSIT_GUIDE_TEXT)
+    },
   },
   {
     key: "receipt",
@@ -1882,6 +1951,27 @@ const FOLLOW_TEXT =
   "（例：南 ひふ子 ／ 南ひふ子）\n※姓と名の間のスペースは、あってもなくても大丈夫です"
 
 /** 領収書の送り方の案内文 */
+/**
+ * 交通費の案内（リッチメニューの「交通費」・「電車代」などで表示）。
+ *
+ * 記録が残る写真を必ず送ってもらう。
+ * ICカードは定期券区間の運賃を引き落とさないため、履歴の写真があれば
+ * 二重払いにならない。切符の場合だけ、あとで1タップ確認する。
+ */
+const TRANSIT_GUIDE_TEXT =
+  "🚃 交通費の申請\n" +
+  "─────────────\n" +
+  "次のどれかの写真を、このトークに送ってください。\n\n" +
+  "・ICカード（ICOCA・PiTaPaなど）の利用履歴の画面\n" +
+  "・切符や領収書\n" +
+  "・新幹線や飛行機のチケット・予約画面\n\n" +
+  "電車・地下鉄・バス・飛行機は、どれも「交通費」で申請できます。\n" +
+  "写真を送ると、区分を選ぶボタンが出ます。\n\n" +
+  "※ICカードで定期券区間を通ったときは、その分はもともと引き落とされません。\n" +
+  "　履歴の金額をそのまま申請してください。\n" +
+  "※切符を買って定期券区間が含まれるときは、申請のときにお尋ねします。\n" +
+  "※金額が読み取りにくいときは、金額の部分がはっきり写るように撮ってください。"
+
 const RECEIPT_GUIDE_TEXT =
   "🧾 領収書の送り方\n" +
   "─────────────\n" +
@@ -2998,7 +3088,7 @@ async function handleTransitText(
       await saveExpensePurpose(supabase, receiptId, purpose)
       await clearTransitSession(supabase, source.userId)
       // 内容の入力は済んだので、そのまま確認画面へ進む（再度聞かない）
-      await sendPhase2Confirm(event, receiptId, (detailKey || "other") as ExpenseItem, null, false)
+      await sendPhase2Confirm(event, receiptId, (detailKey || "other") as ExpenseItem, null, false, false)
       return
     }
     case "other_purpose": {

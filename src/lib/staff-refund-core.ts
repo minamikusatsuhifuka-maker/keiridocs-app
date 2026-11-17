@@ -83,6 +83,8 @@ export async function settleStaffReceipt(params: {
     courseRule?: CourseRule | null
     pendingCourseName?: string | null
     awaitingAttachment?: boolean
+    /** 交通費の金額に定期券区間が含まれている可能性があるか */
+    commuterPassIncluded?: boolean
   }
 }): Promise<SettleResult> {
   const supabase = params.client ?? createServiceClient()
@@ -187,6 +189,7 @@ export async function settleStaffReceipt(params: {
       courseRule: params.phase2.courseRule ?? null,
       pendingCourseName: params.phase2.pendingCourseName ?? null,
       awaitingAttachment: params.phase2.awaitingAttachment,
+      commuterPassIncluded: params.phase2.commuterPassIncluded,
       submittedAt: new Date((r.created_at as string | null) ?? Date.now()),
       manualSubmissionMonthRaw: r.ai_raw,
     })

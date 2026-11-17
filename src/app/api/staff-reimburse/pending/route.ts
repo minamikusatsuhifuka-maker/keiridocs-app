@@ -141,6 +141,7 @@ export async function GET() {
         excess: all.filter((i) => i.kind === "excess").length,
         course: all.filter((i) => i.kind === "course").length,
         attach: all.filter((i) => i.kind === "attach").length,
+        pass: all.filter((i) => i.kind === "pass").length,
         incomplete: all.filter((i) => i.kind === "incomplete").length,
       },
     })

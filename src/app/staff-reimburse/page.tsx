@@ -117,7 +117,7 @@ interface Row {
  */
 interface PendingItem {
   id: string
-  kind: "excess" | "course" | "attach" | "incomplete"
+  kind: "excess" | "course" | "attach" | "pass" | "incomplete"
   staffName: string
   courseName: string
   itemLabel: string
@@ -133,6 +133,7 @@ const PENDING_LABELS: Record<PendingItem["kind"], string> = {
   excess: "上限超過",
   course: "講座の確認",
   attach: "添付待ち",
+  pass: "定期券区間",
   incomplete: "未完了",
 }
 
@@ -141,6 +142,7 @@ const PENDING_HELP: Record<PendingItem["kind"], string> = {
   excess: "上限を超えた分を承認するか決めてください。承認するとスタッフへ自動で通知されます。",
   course: "講座マスタに無い講座名で申請されています。/mkadmin の講座マスタで登録・割り当てしてください。",
   attach: "合格通知または修了通知の写真が届いていません。スタッフへ催促してください。",
+  pass: "切符などで定期券区間が含まれている可能性があります。院が通勤手当を払っているため、その区間の運賃を差し引いて承認してください（差し引く額は「金額を指定して承認」で入力できます）。",
   incomplete:
     "領収書は届いていますが、費用区分が選ばれず支給の対象になっていません。本人は申請したつもりの可能性があります。",
 }
@@ -796,6 +798,37 @@ export default function StaffReimbursePage() {
                         {p.kind === "excess" && p.isRepeat && "（2回目以降のため超過分も半額が規程どおりです）"}
                       </p>
                     </div>
+
+                    {/* 定期券区間の確認。含まれていなければそのまま確定できる */}
+                    {p.kind === "pass" && (
+                      <div className="flex flex-col gap-2 sm:w-64 sm:shrink-0">
+                        <Button
+                          size="sm"
+                          disabled={approvingId === p.id}
+                          onClick={() => {
+                            if (
+                              !confirm(
+                                `${p.staffName}さんの交通費 ${yen(p.amount)} を、この金額のまま確定します。\n\n` +
+                                  "定期券区間が含まれていないことを確認してから押してください。\n\nよろしいですか？"
+                              )
+                            ) {
+                              return
+                            }
+                            approveExcess(p, true, 0)
+                          }}
+                        >
+                          {approvingId === p.id ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <Check className="size-3.5" />
+                          )}
+                          このまま確定する
+                        </Button>
+                        <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+                          定期券区間が含まれていた場合は、下の明細で金額を直してから確定してください。
+                        </p>
+                      </div>
+                    )}
 
                     {/* 未完了は承認・却下が無いため、対応済みにして画面から外せるようにする */}
                     {p.kind === "incomplete" && (

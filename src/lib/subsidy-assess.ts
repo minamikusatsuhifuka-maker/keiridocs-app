@@ -63,6 +63,13 @@ export interface AssessInput {
   pendingCourseName?: string | null
   /** 資格試験で合格通知・修了通知が未添付か */
   awaitingAttachment?: boolean
+  /**
+   * 交通費の金額に定期券区間の運賃が含まれている可能性があるか。
+   *
+   * ICカードは定期券区間を引き落とさないので通常は false。
+   * 切符を買った場合や本人が分からない場合に true にし、担当の確認待ちにする。
+   */
+  commuterPassIncluded?: boolean
   /** 提出日（20日締めの月割りに使う。既定は今） */
   submittedAt?: Date
   /** 提出月の手動指定（staff_receipts.ai_raw.submission_month） */
@@ -157,7 +164,10 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
   //    既受講回数が未登録のまま確定させると、既受講者に全額を支給してしまうため保留する。
   //    入力漏れでも過大支給にならないよう、登録が無い＝保留とする（0回の登録とは区別する）。
   let holdReason: HoldReason | null = null
-  if (input.awaitingAttachment) holdReason = "attach"
+  // 定期券区間が金額に含まれている可能性があるものは、院が払う通勤手当との
+  // 二重払いになるため自動で確定させない（差し引く額は担当が判断する）。
+  if (input.commuterPassIncluded) holdReason = "pass"
+  else if (input.awaitingAttachment) holdReason = "attach"
   else if (input.pendingCourseName && !input.courseId) holdReason = "course"
   else if (!registered.registered && item === "tuition") holdReason = "history"
   else if (result.needsDecision) holdReason = "undecided"
