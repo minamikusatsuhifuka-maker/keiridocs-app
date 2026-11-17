@@ -562,6 +562,8 @@ export interface HistoryItem {
   subsidy: number | null
   /** いつのお給与に入るか（例「2026年11月分」）。確認中は理由を入れる */
   payoutNote?: string
+  /** 取り消しボタンのpostbackデータ（取り消せるものだけ入る） */
+  cancelData?: string
 }
 
 /** ⑦ 申請履歴（直近4〜5件・1バブル） */
@@ -592,6 +594,10 @@ export function historyCard(params: { staffFamilyName: string; items: HistoryIte
     // 本人が「いつ入るか」を自分で確かめられるようにする
     if (it.payoutNote) {
       body.push(text(it.payoutNote, { size: "xs", color: FLEX_COLORS.textSub }))
+    }
+    // 取り消せるものには、その場で取り消せるボタンを添える
+    if (it.cancelData) {
+      body.push(secondaryButton(postback("この申請を取り消す", it.cancelData)))
     }
     body.push({
       type: "text",

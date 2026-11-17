@@ -254,6 +254,8 @@ async function fetchIncomplete(
     .filter((r) => !(r.staff_member_id && testStaff.has(r.staff_member_id)))
     // 担当が「対応済み」にしたものは要対応から外す（/api/staff-reimburse/dismiss）
     .filter((r) => !parseAiRawObject(r.ai_raw)?.pending_dismissed_at)
+    // 本人が取り消した申請は未完了ではない
+    .filter((r) => !parseAiRawObject(r.ai_raw)?.cancelled_at)
     .map((r) => ({
       id: r.id,
       kind: (parseAiRawObject(r.ai_raw)?.help_requested_at ? "help" : "incomplete") as

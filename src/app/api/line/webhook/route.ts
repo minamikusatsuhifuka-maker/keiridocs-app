@@ -598,6 +598,16 @@ async function handlePostback(event: LineEvent): Promise<void> {
       )
       return
     // ICカードの利用履歴から選ぶ／読み取れなかったときの進み方
+    // 申請の取り消し（間違えた申請の取りやめ・出し直し）
+    case "cxl":
+      await handleCancelPostback(event, params)
+      return
+    case "cxlok":
+      await handleCancelConfirmPostback(event, params)
+      return
+    case "cxlno":
+      await sendLineMessage(event.replyToken, event.source.userId, "取り消しをやめました。")
+      return
     case "ictog": // 1件の選択を切り替える
       await handleIcTogglePostback(event, params)
       return
@@ -872,6 +882,154 @@ async function sendTransitGuide(
       displayText: "領収書がないので入力します",
     },
   ])
+}
+
+/* ---------- 申請の取り消し ---------- */
+
+/**
+ * 本人が申請を取り消す（確認を挟む）。
+ *
+ * 間違えて申請したとき、取り消してから出し直せるようにする。
+ * 金額や区分の修正も「取り消して出し直す」で行う
+ * （部分的に書き換えるより、記録が素直で担当も追いやすい）。
+ */
+async function handleCancelPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  if (!receiptId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。")
+    return
+  }
+  const supabase = createServiceClient()
+  const { data } = await supabase
+    .from("staff_receipts")
+    .select("id, store_name, amount, date, staff_member_id")
+    .eq("id", receiptId)
+    .maybeSingle()
+  const row = data as {
+    store_name: string | null
+    amount: number | null
+    date: string | null
+    staff_member_id: string | null
+  } | null
+  if (!row) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 対象の申請が見つかりませんでした。")
+    return
+  }
+
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    "この申請を取り消します。\n" +
+      "─────────────\n" +
+      `　${row.date ?? "日付不明"}\n` +
+      `　${row.store_name ?? "不明"}\n` +
+      `　¥${formatAmount(row.amount)}\n` +
+      "─────────────\n" +
+      "取り消すと支給の対象から外れます。\n" +
+      "正しい内容で出し直す場合は、取り消したあと\n" +
+      "もう一度写真を送ってください（同じ写真で大丈夫です）。\n\n" +
+      "よろしいですか？",
+    [
+      {
+        type: "postback",
+        label: "取り消す",
+        data: `action=cxlok&rid=${receiptId}`,
+        displayText: "取り消します",
+      },
+      {
+        type: "postback",
+        label: "やめる",
+        data: "action=cxlno",
+        displayText: "やめます",
+      },
+    ]
+  )
+}
+
+/**
+ * 取り消しの確定。
+ *
+ * - 精算（petty_cash_transactions）を消して支給の対象から外す
+ * - 領収書は取り消し済みとして残す（いつ何を取り消したかを追えるようにする）
+ * - 画像のハッシュを外し、同じ写真で出し直せるようにする
+ * - 担当にも知らせる（確認済みにした分が消えることがあるため）
+ */
+async function handleCancelConfirmPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  if (!receiptId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。")
+    return
+  }
+  const supabase = createServiceClient()
+
+  try {
+    const { data } = await supabase
+      .from("staff_receipts")
+      .select("ai_raw, store_name, amount, date")
+      .eq("id", receiptId)
+      .maybeSingle()
+    const row = data as {
+      ai_raw?: unknown
+      store_name: string | null
+      amount: number | null
+      date: string | null
+    } | null
+    if (!row) {
+      await sendLineMessage(replyToken, source.userId, "⚠️ 対象の申請が見つかりませんでした。")
+      return
+    }
+    const raw = parseAiRawObject(row.ai_raw) ?? {}
+    if (raw.cancelled_at) {
+      await sendLineMessage(replyToken, source.userId, "この申請はすでに取り消し済みです。")
+      return
+    }
+
+    // 支給の対象から外す
+    const { error: delError } = await supabase
+      .from("petty_cash_transactions")
+      .delete()
+      .eq("staff_receipt_id", receiptId)
+    if (delError) throw new Error(delError.message)
+
+    // 記録は残し、同じ写真で出し直せるようにハッシュだけ外す
+    await supabase
+      .from("staff_receipts")
+      .update({
+        image_hash: null,
+        ai_raw: JSON.parse(
+          JSON.stringify({ ...raw, cancelled_at: new Date().toISOString(), cancelled_by: "self" })
+        ),
+      })
+      .eq("id", receiptId)
+
+    const staffMembers = await fetchStaffMembers(supabase)
+    const me = staffMembers ? resolveStaffForUser(staffMembers, source.userId) : null
+    await notifyAdmins(
+      supabase as never,
+      "【申請の取り消し】\n" +
+        `${me?.name ?? "お名前未登録の方"}さんが申請を取り消しました。\n\n` +
+        `　${row.date ?? "日付不明"}　${row.store_name ?? "不明"}　¥${formatAmount(row.amount)}\n\n` +
+        "支給の対象から外しています。確認済みにしていた場合はご注意ください。"
+    ).catch(() => {})
+
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "✅ 申請を取り消しました。\n" +
+        "支給の対象から外れています。\n\n" +
+        "正しい内容で出し直す場合は、もう一度写真を送ってください。\n" +
+        "同じ写真でも登録できます。"
+    )
+  } catch (error) {
+    console.error("[LINE Bot] 取り消しエラー:", error)
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ 取り消しに失敗しました。\nお手数ですが「問い合わせ」から担当にご連絡ください。"
+    )
+  }
 }
 
 /* ---------- 交通系ICカードの利用履歴 ---------- */
@@ -2863,6 +3021,9 @@ const USAGE_TEXT =
   "・区分を選ばずに終えると申請にならないため、最後まで進めてください\n" +
   "・上限を超えても申請できます。担当が確認してご連絡します\n" +
   "・ICカードで定期券の区間を通った分は、もともと引き落とされません\n" +
+  "・間違えて申請したときは「申請履歴」から取り消せます。\n" +
+  "　取り消したあと、正しい内容で出し直してください（同じ写真で大丈夫です）。\n" +
+  "　会計士さんへ提出したあとの月は取り消せないため、「問い合わせ」からご連絡ください。\n" +
   "・まれに、内容の確認のため当月ではなく翌月のお給与になることがあります。\n" +
   "　その場合は担当からご連絡します。\n" +
   "　いまどうなっているかは、メニューの「申請履歴」でいつでも確認できます\n\n" +
@@ -5617,10 +5778,22 @@ async function sendHistory(event: LineEvent, supabase: ServiceClient, staffId: s
       payoutNote = "区分が選ばれていないため、まだ支給の対象になっていません"
     }
 
+    // 取り消せるのは、まだ会計士さんに提出していない当月分だけ。
+    // 提出済みの月を本人が消すと、提出した資料と食い違ってしまう。
+    const itemMonth = resolveStaffSubmissionMonth(r.ai_raw, createdJst).month
+    const isCurrentMonth =
+      !!itemMonth &&
+      !!currentMonth &&
+      itemMonth.year === currentMonth.year &&
+      itemMonth.month === currentMonth.month
+    const cancelData =
+      status !== "cancelled" && isCurrentMonth ? `action=cxl&rid=${r.id}` : undefined
+
     return {
       date: `${Number(createdJst.slice(5, 7))}/${Number(createdJst.slice(8, 10))}`,
       status,
       payoutNote,
+      cancelData,
       store: (r.store_name || "不明").slice(0, 40),
       category: tx?.expense_detail || (status === "category_pending" ? "区分を選ぶ前の領収書" : "—"),
       amount,
@@ -5630,7 +5803,9 @@ async function sendHistory(event: LineEvent, supabase: ServiceClient, staffId: s
   const footer =
     upcomingMonths.size > 0
       ? `登録済みの分は ${[...upcomingMonths].map((m) => `${m}分`).join("・")} として提出されます。\n` +
-        "確認が必要なものは翌月のお給与になることがあります（担当からご連絡します）。"
+        "確認が必要なものは翌月のお給与になることがあります（担当からご連絡します）。\n" +
+        "間違えた申請は「この申請を取り消す」で取り消せます。\n" +
+        "取り消したあと、正しい内容で出し直してください。"
       : null
 
   const card = historyCard({ staffFamilyName: familyName(staffName), items, footer })
