@@ -21,10 +21,11 @@ import { FloatingButtonSettings } from "@/components/settings/floating-button-se
 import { RegistrantList } from "@/components/settings/registrant-list"
 import { DocumentStaffList } from "@/components/settings/document-staff-list"
 import { StaffManagement } from "@/components/line-staff/staff-management"
+import { CourseMaster } from "@/components/courses/course-master"
 import { PaymentMemo } from "@/components/mkadmin/payment-memo"
 import { StaffReimburseList } from "@/components/mkadmin/staff-reimburse-list"
 import { StaffManualEntry } from "@/components/mkadmin/staff-manual-entry"
-import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus, Users, MessageCircle, Wallet, Loader2, Receipt, ArrowRight, ClipboardList, HandCoins } from "lucide-react"
+import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus, Users, MessageCircle, Wallet, Loader2, Receipt, ArrowRight, ClipboardList, HandCoins, GraduationCap } from "lucide-react"
 
 // 管理画面（/mkadmin）認証用 sessionStorage キー
 const SESSION_KEY = "mkadmin-auth"
@@ -198,6 +199,10 @@ export default function MkadminPage() {
             <Receipt className="size-4" />
             LINE領収書
           </TabsTrigger>
+          <TabsTrigger value="courses" className="flex items-center gap-1.5">
+            <GraduationCap className="size-4" />
+            講座マスタ
+          </TabsTrigger>
           <TabsTrigger value="line-staff" className="flex items-center gap-1.5">
             <MessageCircle className="size-4" />
             LINEスタッフ管理
@@ -293,6 +298,10 @@ export default function MkadminPage() {
           </Card>
         </TabsContent>
 
+        <TabsContent value="courses">
+          {/* 講座マスタ（スタッフが申請時に選ぶ講座。支給率と30,000円上限の判定に使う） */}
+          <CourseMaster showHeader={false} />
+        </TabsContent>
         <TabsContent value="line-staff">
           {/* LINEスタッフ管理（タブ内なので見出しは非表示） */}
           <StaffManagement showHeader={false} />
