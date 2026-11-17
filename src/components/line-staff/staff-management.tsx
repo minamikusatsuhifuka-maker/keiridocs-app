@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -40,10 +40,8 @@ import {
   hasPendingNameChange,
   hasSeparateLegalName,
   mayHaveCommuterPass,
-  normalizePersonName,
   parseLineProfile,
   payrollName,
-  staffNameVariants,
 } from "@/lib/line-staff-profile"
 
 interface StaffMember {
@@ -123,8 +121,6 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const [togglingId, setTogglingId] = useState<string | null>(null)
   // テストスタッフ ON/OFFトグル処理中のID
   const [togglingTestId, setTogglingTestId] = useState<string | null>(null)
-  // 書類登録スタッフ（書類の登録者マスタ）の氏名。2つのマスタで表記を揃えるため比較する
-  const [documentStaffNames, setDocumentStaffNames] = useState<string[]>([])
   // 退職 ON/OFFトグル処理中のID
   const [togglingRetiredId, setTogglingRetiredId] = useState<string | null>(null)
   // 退職者も一覧に表示するか（既定は在籍者のみ）
@@ -134,21 +130,6 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const activeStaff = staff.filter((m) => !m.retired_at)
   const retiredCount = staff.length - activeStaff.length
   const visibleStaff = showRetired ? staff : activeStaff
-
-  // 書類登録スタッフとの表記のずれ。
-  // 2つのマスタで氏名の表記が違うと、書類とスタッフ立替で同じ人が別名で並んでしまう。
-  // 比較は正規化するため、スペースや全角半角の違いは「ずれ」としない。
-  // 給与・行政上の氏名（旧姓で勤務している方）は、どちらで登録されていてもずれとしない。
-  const nameGaps = useMemo(() => {
-    const lineNames = new Set(activeStaff.flatMap((m) => staffNameVariants(m)))
-    const docNames = new Set(documentStaffNames.map(normalizePersonName))
-    return {
-      onlyInDocument: documentStaffNames.filter((n) => !lineNames.has(normalizePersonName(n))),
-      onlyInLine: activeStaff
-        .filter((m) => !staffNameVariants(m).some((v) => docNames.has(v)))
-        .map((m) => m.name),
-    }
-  }, [activeStaff, documentStaffNames])
 
   // 同姓・同名の警告（LINEの氏名登録で候補提示が必要になる組み合わせ）
   // 退職者は氏名照合の対象外なので、在籍者だけで判定する
@@ -281,20 +262,6 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
     }
   }
 
-  /* 書類登録スタッフの氏名を取得（表記を揃えるための比較用） */
-  useEffect(() => {
-    ;(async () => {
-      try {
-        const res = await fetch("/api/document-staff")
-        if (!res.ok) return
-        const json = (await res.json()) as { data?: { name: string }[] }
-        setDocumentStaffNames((json.data ?? []).map((d) => d.name))
-      } catch {
-        // 取得できなくてもスタッフ一覧は使える
-      }
-    })()
-  }, [])
-
   /* ---------- 退職 ON/OFFトグル（論理削除。記録は残す） ---------- */
   async function handleToggleRetired(member: StaffMember, next: boolean) {
     if (next && !confirm(`「${member.name}」を退職にしますか？\n\n一覧から隠れ、LINEからの申請も受け付けなくなります。\n過去の申請記録と支給額はそのまま残ります。`)) return
@@ -421,7 +388,15 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
         <CardContent className="flex items-start gap-3 pt-5">
           <MessageCircle className="mt-0.5 h-5 w-5 shrink-0" style={{ color: "var(--dusk-primary)" }} />
           <div className="text-sm" style={{ color: "var(--dusk-text-muted)" }}>
-            <p>スタッフがLINEでフルネームを送り、確認ボタンを押すと登録されます（同姓が複数いる場合は候補から本人が選びます）。</p>
+            <p>
+              スタッフがLINEでフルネームを送り、確認ボタンを押すと登録されます。
+              照合は<strong>この一覧の氏名との完全一致のみ</strong>です（姓と名の間のスペース・全角半角は問いません）。
+            </p>
+            <p>
+              他のスタッフの氏名が見えてしまうため、<strong>候補は表示しません</strong>。
+              一致しなければ入力し直してもらい、同姓同名が2名いる場合は担当にご連絡いただく案内になります。
+              そのため<strong>この一覧はフルネームで登録</strong>してください。
+            </p>
             <p>LINE未登録のスタッフにはリマインダーが届きません。</p>
             {staff.length > 0 && (
               <p className="mt-1">
@@ -448,27 +423,14 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
             退職にすると一覧から隠れ、LINEからの申請も受け付けませんが、過去の申請記録は残ります。
             <br />
             「削除」は登録ミスの行を消すためのものです。申請があるスタッフは削除できません。
-            {(nameGaps.onlyInDocument.length > 0 || nameGaps.onlyInLine.length > 0) && (
-              <>
-                <br />
-                <span className="text-amber-700 dark:text-amber-400">
-                  <strong>書類登録スタッフとの表記のずれ：</strong>
-                  {nameGaps.onlyInDocument.length > 0 && (
-                    <>
-                      書類登録スタッフにのみ（{nameGaps.onlyInDocument.join("・")}）
-                    </>
-                  )}
-                  {nameGaps.onlyInDocument.length > 0 && nameGaps.onlyInLine.length > 0 && " ／ "}
-                  {nameGaps.onlyInLine.length > 0 && (
-                    <>
-                      こちらにのみ（{nameGaps.onlyInLine.join("・")}）
-                    </>
-                  )}
-                  。同じ方なら表記を揃えてください（「書類種別」などと同じ /mkadmin の
-                  「書類登録スタッフ」タブで編集できます）。スペースや全角半角の違いはずれとして扱いません。
-                </span>
-              </>
-            )}
+            <br />
+            <strong>「初回ATCの表示」</strong>は、LINEの申請画面に「初回ATC＋アカデミー会員費」を出すかどうかです。
+            本人が「セミナー2回目以降」で申請すると自動で「非表示」に切り替わり、以降は初回を選べなくなります
+            （初回の全額支給を2回受けられないようにするためです）。
+            間違って切り替わったときだけ、ここで戻してください。会計の記録は変わりません。
+            <br />
+            なお、アプリを使う前の受講回数は下の<strong>「既受講の登録」</strong>で講座ごとに登録します。
+            そちらが支給率（全額／半額）の判定に使われます。
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -491,7 +453,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                     <TableHead>LINE登録状況</TableHead>
                     <TableHead>自宅最寄り駅</TableHead>
                     <TableHead>LINE初回設定・定期券</TableHead>
-                    <TableHead>セミナー2回目以降</TableHead>
+                    <TableHead>初回ATCの表示</TableHead>
                     <TableHead>テスト</TableHead>
                     <TableHead>在籍</TableHead>
                     <TableHead className="text-right">操作</TableHead>
@@ -584,7 +546,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                               checked={!!member.seminar_repeat_claimed_at}
                               onCheckedChange={(checked) => handleToggleSeminarRepeat(member, checked)}
                               disabled={togglingId === member.id}
-                              aria-label="セミナー2回目以降 登録済の切り替え"
+                              aria-label="LINEで初回ATCを表示するかの切り替え"
                             />
                             <span
                               className="inline-flex items-center gap-1 text-sm font-medium"
@@ -595,7 +557,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                               }}
                             >
                               {togglingId === member.id && <Loader2 className="h-3 w-3 animate-spin" />}
-                              {member.seminar_repeat_claimed_at ? "登録済（初回ATC非表示）" : "未登録（初回ATC表示）"}
+                              {member.seminar_repeat_claimed_at ? "非表示（初回は済み）" : "表示（初回を選べる）"}
                             </span>
                           </div>
                           {member.seminar_repeat_claimed_at && (

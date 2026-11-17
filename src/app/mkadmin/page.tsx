@@ -19,7 +19,6 @@ import { DownloadSourceSettings } from "@/components/settings/download-source-se
 import { AccountantSettings } from "@/components/settings/accountant-settings"
 import { FloatingButtonSettings } from "@/components/settings/floating-button-settings"
 import { RegistrantList } from "@/components/settings/registrant-list"
-import { DocumentStaffList } from "@/components/settings/document-staff-list"
 import { StaffManagement } from "@/components/line-staff/staff-management"
 import { StaffAdminGuide } from "@/components/line-staff/staff-admin-guide"
 import { CourseMaster } from "@/components/courses/course-master"
@@ -31,6 +30,67 @@ import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersH
 
 // 管理画面（/mkadmin）認証用 sessionStorage キー
 const SESSION_KEY = "mkadmin-auth"
+
+/* ---------- タブの並び（用途ごとのグループ） ---------- */
+
+/**
+ * タブ一覧の折り返し対応。
+ * 既定では一覧の高さが h-9 に固定され、各タブの高さが「一覧全体の100%」になるため、
+ * 折り返すと2段目以降が伸びて文字が重なる。h-auto で両方を解除する。
+ */
+const TABS_LIST = "flex h-auto w-full flex-wrap items-start justify-start gap-x-4 gap-y-2 p-2"
+
+/** 各タブ。高さを固定し、flex-1 の引き伸ばしを解除する（TabsTrigger 側の指定を上書き） */
+const TAB_ITEM = "flex h-8 flex-none items-center gap-1.5 px-2.5"
+
+const TAB_GROUPS: {
+  label: string
+  tabs: { value: string; label: string; icon: typeof Users }[]
+}[] = [
+  {
+    label: "スタッフ・経費申請",
+    tabs: [
+      { value: "staff", label: "スタッフ", icon: Users },
+      { value: "courses", label: "講座マスタ", icon: GraduationCap },
+      { value: "staff-reimburse", label: "立替まとめ", icon: ClipboardList },
+      { value: "staff-manual-entry", label: "立替手動登録", icon: HandCoins },
+      { value: "line-receipts", label: "LINE領収書", icon: Receipt },
+    ],
+  },
+  {
+    label: "書類",
+    tabs: [
+      { value: "doc-types", label: "書類種別", icon: FileType },
+      { value: "auto-classify", label: "自動仕分け", icon: SlidersHorizontal },
+      { value: "folders", label: "フォルダ管理", icon: FolderOpen },
+      { value: "registrants", label: "登録者管理", icon: UserPlus },
+      { value: "accountant", label: "税理士提出", icon: Briefcase },
+      { value: "payment-memo", label: "支払いメモ", icon: Wallet },
+    ],
+  },
+  {
+    label: "メール・取り込み",
+    tabs: [
+      { value: "senders", label: "送信元管理", icon: Mail },
+      { value: "download-sources", label: "自動取得", icon: Download },
+    ],
+  },
+  {
+    label: "通知",
+    tabs: [
+      { value: "notify", label: "通知先管理", icon: Bell },
+      { value: "notification-settings", label: "通知設定", icon: BellRing },
+    ],
+  },
+  {
+    label: "その他の設定",
+    tabs: [
+      { value: "ai", label: "AI設定", icon: Sparkles },
+      { value: "floating-button", label: "フローティングボタン", icon: MousePointerClick },
+      { value: "account", label: "アカウント", icon: UserCog },
+    ],
+  },
+]
 
 // 管理画面（旧「設定」+ LINEスタッフ管理 を統合、パスワード保護）
 export default function MkadminPage() {
@@ -135,87 +195,38 @@ export default function MkadminPage() {
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">管理画面</h1>
 
-      <Tabs defaultValue="senders" className="space-y-6">
+      <Tabs defaultValue="staff" className="space-y-6">
         {/*
-          タブ数が多く折り返すため、
-          ・一覧の高さ固定（h-9）を h-auto で解除
-          ・各タブの高さ h-[calc(100%-1px)]（＝一覧全体の高さ）も h-auto で解除
-          ・flex-1 の引き伸ばしを flex-none で解除
-          の3つが必要。解除しないと2段目以降が重なって文字が読めなくなる。
+          タブ数が多いため、用途ごとにグループ分けして並べる。
+
+          折り返しで文字が重なる問題（h-9 の固定・各タブの
+          h-[calc(100%-1px)]＝一覧全体の高さ・flex-1 の引き伸ばし）は、
+          TABS_LIST と TAB_ITEM の指定でまとめて解除している。
+          TAB_ITEM は TabsTrigger の className に渡すため tailwind-merge が
+          元の指定を確実に打ち消す（セレクタ経由の上書きでは効かないことがある）。
         */}
-        <TabsList className="flex h-auto w-full flex-wrap items-stretch justify-start gap-1 [&>button]:h-auto! [&>button]:flex-none! [&>button]:py-1.5">
-          <TabsTrigger value="senders" className="flex items-center gap-1.5">
-            <Mail className="size-4" />
-            送信元管理
-          </TabsTrigger>
-          <TabsTrigger value="notify" className="flex items-center gap-1.5">
-            <Bell className="size-4" />
-            通知先管理
-          </TabsTrigger>
-          <TabsTrigger value="registrants" className="flex items-center gap-1.5">
-            <UserPlus className="size-4" />
-            登録者管理
-          </TabsTrigger>
-          <TabsTrigger value="doc-types" className="flex items-center gap-1.5">
-            <FileType className="size-4" />
-            書類種別
-          </TabsTrigger>
-          <TabsTrigger value="auto-classify" className="flex items-center gap-1.5">
-            <SlidersHorizontal className="size-4" />
-            自動仕分け
-          </TabsTrigger>
-          <TabsTrigger value="folders" className="flex items-center gap-1.5">
-            <FolderOpen className="size-4" />
-            フォルダ管理
-          </TabsTrigger>
-          <TabsTrigger value="notification-settings" className="flex items-center gap-1.5">
-            <BellRing className="size-4" />
-            通知設定
-          </TabsTrigger>
-          <TabsTrigger value="download-sources" className="flex items-center gap-1.5">
-            <Download className="size-4" />
-            自動取得
-          </TabsTrigger>
-          <TabsTrigger value="accountant" className="flex items-center gap-1.5">
-            <Briefcase className="size-4" />
-            税理士提出
-          </TabsTrigger>
-          <TabsTrigger value="floating-button" className="flex items-center gap-1.5">
-            <MousePointerClick className="size-4" />
-            フローティングボタン
-          </TabsTrigger>
-          <TabsTrigger value="ai" className="flex items-center gap-1.5">
-            <Sparkles className="size-4" />
-            AI設定
-          </TabsTrigger>
-          <TabsTrigger value="payment-memo" className="flex items-center gap-1.5">
-            <Wallet className="size-4" />
-            支払いメモ
-          </TabsTrigger>
-          <TabsTrigger value="staff-manual-entry" className="flex items-center gap-1.5">
-            <HandCoins className="size-4" />
-            立替手動登録
-          </TabsTrigger>
-          <TabsTrigger value="staff-reimburse" className="flex items-center gap-1.5">
-            <ClipboardList className="size-4" />
-            立替まとめ
-          </TabsTrigger>
-          <TabsTrigger value="line-receipts" className="flex items-center gap-1.5">
-            <Receipt className="size-4" />
-            LINE領収書
-          </TabsTrigger>
-          <TabsTrigger value="courses" className="flex items-center gap-1.5">
-            <GraduationCap className="size-4" />
-            講座マスタ
-          </TabsTrigger>
-          <TabsTrigger value="staff" className="flex items-center gap-1.5">
-            <Users className="size-4" />
-            スタッフ
-          </TabsTrigger>
-          <TabsTrigger value="account" className="flex items-center gap-1.5">
-            <UserCog className="size-4" />
-            アカウント
-          </TabsTrigger>
+        <TabsList className={TABS_LIST}>
+          {TAB_GROUPS.map((group) => (
+            <div key={group.label} className="flex flex-col gap-1">
+              <span
+                className="px-1 text-[10px] font-semibold tracking-wide"
+                style={{ color: "var(--muted-foreground)" }}
+              >
+                {group.label}
+              </span>
+              <div className="flex flex-wrap gap-1">
+                {group.tabs.map((tab) => {
+                  const Icon = tab.icon
+                  return (
+                    <TabsTrigger key={tab.value} value={tab.value} className={TAB_ITEM}>
+                      <Icon className="size-4" />
+                      {tab.label}
+                    </TabsTrigger>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
         </TabsList>
 
         <TabsContent value="senders">
@@ -316,8 +327,6 @@ export default function MkadminPage() {
             <StaffManagement showHeader={false} />
             {/* 既受講の登録（アプリ導入前の受講回数。未登録だと既受講者に全額支給してしまう） */}
             <PriorCourseRegistration />
-            {/* 書類登録スタッフ（経費申請とは別マスタ。表記を揃えるため隣に置く） */}
-            <DocumentStaffList />
           </div>
         </TabsContent>
 
