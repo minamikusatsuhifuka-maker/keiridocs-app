@@ -71,6 +71,8 @@ export function PriorCourseRegistration() {
   const [savingId, setSavingId] = useState<string | null>(null)
   /** 入力中の値（スタッフID → 文字列） */
   const [draft, setDraft] = useState<Record<string, string>>({})
+  /** アカデミー会員のサービス開始日の入力中の値 */
+  const [academyDraft, setAcademyDraft] = useState<Record<string, string>>({})
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -135,6 +137,39 @@ export function PriorCourseRegistration() {
       load()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "登録に失敗しました")
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  /**
+   * アカデミー会員のサービス開始日を保存する。
+   *
+   * 本人はLINEで1回登録するだけで変更できないため、間違いの修正はここで行う。
+   */
+  async function saveAcademy(member: StaffRow, date: string | null) {
+    setSavingId(member.id)
+    try {
+      const res = await fetch("/api/line-staff", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: member.id, academyStart: date }),
+      })
+      const json = (await res.json().catch(() => ({}))) as { error?: string }
+      if (!res.ok) throw new Error(json.error || "保存に失敗しました")
+      toast.success(
+        date
+          ? `${member.name}さんのサービス開始日を ${date} にしました`
+          : `${member.name}さんの登録を取り消しました`
+      )
+      setAcademyDraft((d) => {
+        const next = { ...d }
+        delete next[member.id]
+        return next
+      })
+      load()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "保存に失敗しました")
     } finally {
       setSavingId(null)
     }
@@ -266,21 +301,43 @@ export function PriorCourseRegistration() {
                       <TableCell className="whitespace-nowrap text-sm">
                         {(() => {
                           const start = academyStartDate(m.line_profile)
-                          if (!start) {
-                            return (
-                              <span className="text-amber-700 dark:text-amber-400">
-                                未登録
-                                <span className="ml-1 text-xs">（本人がLINEの「設定」から登録）</span>
-                              </span>
-                            )
-                          }
                           const end = academyTermEnd(start)
                           const expired = !!end && end < new Date().toISOString().slice(0, 10)
+                          const value = academyDraft[m.id] ?? start ?? ""
                           return (
-                            <span className={expired ? "text-amber-700 dark:text-amber-400" : undefined}>
-                              {start} 〜 {end ?? "?"}
-                              {expired && <span className="ml-1 text-xs">（期限切れ）</span>}
-                            </span>
+                            <div className="flex flex-col gap-1">
+                              <div className="flex items-center gap-1.5">
+                                <Input
+                                  type="date"
+                                  className="w-40"
+                                  value={value}
+                                  onChange={(e) =>
+                                    setAcademyDraft((d) => ({ ...d, [m.id]: e.target.value }))
+                                  }
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={savingId === m.id || value === (start ?? "")}
+                                  onClick={() => saveAcademy(m, value || null)}
+                                >
+                                  保存
+                                </Button>
+                              </div>
+                              {start ? (
+                                <span
+                                  className={`text-xs ${expired ? "text-amber-700 dark:text-amber-400" : ""}`}
+                                  style={expired ? undefined : { color: "var(--muted-foreground)" }}
+                                >
+                                  期限 {end ?? "?"}
+                                  {expired && "（期限切れ）"}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-amber-700 dark:text-amber-400">
+                                  未登録（本人がLINEの「設定」から登録できます）
+                                </span>
+                              )}
+                            </div>
                           )
                         })()}
                       </TableCell>

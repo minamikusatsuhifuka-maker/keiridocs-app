@@ -242,12 +242,53 @@ export async function PATCH(request: NextRequest) {
       retired?: boolean
       /** 既受講の登録（アプリ導入前に受講した回数）。count=null で登録を取り消す */
       priorCourse?: { courseId?: string; count?: number | null }
+      /** アカデミー会員のサービス開始日（YYYY-MM-DD。null で登録を取り消す） */
+      academyStart?: string | null
     }
     if (!body.id) {
       return NextResponse.json({ error: "IDは必須です" }, { status: 400 })
     }
 
     const service = createServiceClient()
+
+    // アカデミー会員のサービス開始日。
+    // 本人はLINEで1回登録するだけで、あとから変更できない（期限切れの申請を
+    // 通せてしまうため）。間違いの修正はここで担当が行う。
+    if (body.academyStart !== undefined) {
+      const raw = (body.academyStart ?? "").trim()
+      if (raw && !/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+        return NextResponse.json({ error: "日付は YYYY-MM-DD の形式で指定してください" }, { status: 400 })
+      }
+      const { data: member, error: readError } = await service
+        .from("staff_members")
+        .select("line_profile")
+        .eq("id", body.id)
+        .single()
+      if (readError || !member) {
+        return NextResponse.json({ error: "スタッフが見つかりません" }, { status: 404 })
+      }
+      const profile = parseLineProfile(member.line_profile)
+      if (raw) {
+        profile.academy = {
+          start_date: raw,
+          updated_at: new Date().toISOString(),
+          updated_by: user.email ?? "担当",
+        }
+      } else {
+        delete profile.academy
+      }
+      const { data, error } = await service
+        .from("staff_members")
+        .update({ line_profile: JSON.parse(JSON.stringify(profile)) })
+        .eq("id", body.id)
+        .select("*")
+        .single()
+      if (error) {
+        console.error("アカデミー会員の更新エラー:", error.message)
+        return NextResponse.json({ error: "更新に失敗しました" }, { status: 500 })
+      }
+      return NextResponse.json({ data })
+    }
 
     // 既受講の登録（アプリ導入前・旧LINEでの受講回数）。
     // 登録しないと既受講者が「初受講＝全額支給」と判定され過大支給になるため、

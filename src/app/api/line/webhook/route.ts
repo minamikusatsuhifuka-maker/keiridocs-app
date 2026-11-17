@@ -662,6 +662,13 @@ async function handlePostback(event: LineEvent): Promise<void> {
     case "trfix":
       await handleTransitFixPostback(event)
       return
+    // アカデミー会員のサービス開始日（確認してから保存する）
+    case "acok":
+      await handleAcademyConfirmPostback(event, params)
+      return
+    case "acre":
+      await sendLineMessage(event.replyToken, event.source.userId, ACADEMY_START_PROMPT)
+      return
     // 氏名の登録（同姓対策）
     case "nmpick": // 候補から選択 → 確認カード
       await handleNamePickPostback(event, params)
@@ -3064,19 +3071,29 @@ async function handleTransitText(
         return
       }
       const end = academyTermEnd(date)
-      await updateLineProfile(supabase, staffId, {
-        academy: { start_date: date, updated_at: new Date().toISOString(), updated_by: "self" },
-      })
-      await clearTransitSession(supabase, source.userId)
-      await sendLineMessage(
+      // あとから本人が直せないため、保存の前に必ず確認する
+      await sendLineQuickReply(
         replyToken,
         source.userId,
-        "アカデミー会員の登録が完了しました。\n\n" +
+        "この内容で登録します。間違いありませんか？\n\n" +
           `　サービス開始日：${jpDate(date)}\n` +
           (end ? `　再受講の期限：${jpDate(end)}\n` : "") +
-          "\n受講料を申請すると、初回か再受講かを自動で判定します。\n" +
-          "期限を過ぎたあとの申請は、担当が確認してからの確定になります。\n\n" +
-          "間違えて登録した場合は、メニューの「設定」からやり直せます。"
+          "\n※登録後はご自身で変更できません。\n" +
+          "　間違えた場合は担当が修正しますので、「問い合わせ」からご連絡ください。",
+        [
+          {
+            type: "postback",
+            label: "この内容で登録",
+            data: `action=acok&d=${date}`,
+            displayText: "この内容で登録します",
+          },
+          {
+            type: "postback",
+            label: "入力し直す",
+            data: "action=acre",
+            displayText: "入力し直します",
+          },
+        ]
       )
       return
     }
@@ -4343,7 +4360,24 @@ async function handleSettingsPostback(event: LineEvent, params: URLSearchParams)
       return
     }
     case "ac": {
-      // アカデミー会員のサービス開始日。本人に登録してもらう
+      // アカデミー会員のサービス開始日。本人が登録するのは1回だけ。
+      // 登録後の変更は担当が行う（支給額の判定に使う日付のため、本人が後から
+      // 書き換えられると期限切れの申請を通せてしまう）。
+      const state = await loadStaffLineState(supabase, staff.id)
+      const already = state ? academyStartDate(state.profile) : null
+      if (already) {
+        const end = academyTermEnd(already)
+        await sendLineMessage(
+          replyToken,
+          source.userId,
+          "アカデミー会員は登録済みです。\n\n" +
+            `　サービス開始日：${jpDate(already)}\n` +
+            (end ? `　再受講の期限：${jpDate(end)}\n` : "") +
+            "\n内容が違う場合は、メニューの「問い合わせ」から担当にご連絡ください。\n" +
+            "担当が確認して修正します。"
+        )
+        return
+      }
       const ok = await setTransitSession(supabase, source.userId, staff.id, "academy_start", {})
       if (!ok) {
         await sendLineMessage(replyToken, source.userId, "⚠️ 処理中にエラーが発生しました。もう一度お試しください。")
@@ -4401,6 +4435,47 @@ const ACADEMY_START_PROMPT =
   "入会のご案内や会員証に書かれている日付をご確認ください。\n\n" +
   "※再受講は開始日から3年間です。\n" +
   "　例：2025年12月1日に開始 → 2028年11月30日まで"
+
+/** 「この内容で登録」→ サービス開始日を保存する */
+async function handleAcademyConfirmPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const date = params.get("d")
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
+    return
+  }
+  const supabase = createServiceClient()
+  const staffMembers = await fetchStaffMembers(supabase)
+  const staff = staffMembers ? resolveStaffForUser(staffMembers, source.userId) : null
+  if (!staff) {
+    await sendLineMessage(replyToken, source.userId, NOT_REGISTERED_TEXT)
+    return
+  }
+
+  // 二重登録の防止（確認カードを2回押した場合など）
+  const state = await loadStaffLineState(supabase, staff.id)
+  if (state && academyStartDate(state.profile)) {
+    await sendLineMessage(replyToken, source.userId, "すでに登録済みです。変更は担当にご連絡ください。")
+    return
+  }
+
+  await updateLineProfile(supabase, staff.id, {
+    academy: { start_date: date, updated_at: new Date().toISOString(), updated_by: "self" },
+  })
+  await clearTransitSession(supabase, source.userId)
+
+  const end = academyTermEnd(date)
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    "アカデミー会員の登録が完了しました。\n\n" +
+      `　サービス開始日：${jpDate(date)}\n` +
+      (end ? `　再受講の期限：${jpDate(end)}\n` : "") +
+      "\n受講料を申請すると、初回か再受講かを自動で判定します。\n" +
+      "期限を過ぎたあとの申請は、担当が確認してからの確定になります。\n\n" +
+      "内容が違う場合は「問い合わせ」から担当にご連絡ください。"
+  )
+}
 
 /* ---------- 申請履歴 ---------- */
 
