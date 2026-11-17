@@ -59,19 +59,29 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const body = await request.json() as { name?: string }
+    const body = await request.json() as { name?: string; legal_name?: string | null }
     const name = body.name?.trim()
+    // 給与・行政上の氏名（旧姓で勤務している場合のみ）。同じなら保存しない
+    const legalName = body.legal_name?.trim() || null
 
     if (!name) {
       return NextResponse.json({ error: "名前は必須です" }, { status: 400 })
     }
 
     const service = createServiceClient()
-    const { data, error } = await service
+    let { data, error } = await service
       .from("staff_members")
-      .insert({ name })
+      .insert(legalName ? { name, legal_name: legalName } : { name })
       .select("*")
       .single()
+
+    // 046 未適用の環境では legal_name が無いので、氏名だけで登録し直す
+    if (error && legalName && /legal_name|PGRST204|42703/.test(`${error.message} ${error.code}`)) {
+      console.warn("legal_name 未適用のため氏名のみで登録します:", error.message)
+      const retry = await service.from("staff_members").insert({ name }).select("*").single()
+      data = retry.data
+      error = retry.error
+    }
 
     if (error) {
       console.error("スタッフ追加エラー:", error.message, error.details, error.hint, error.code)

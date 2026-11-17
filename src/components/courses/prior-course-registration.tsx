@@ -23,7 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { AlertTriangle, Check, Loader2 } from "lucide-react"
-import { parseLineProfile } from "@/lib/line-staff-profile"
+import { hasSeparateLegalName, parseLineProfile, payrollName } from "@/lib/line-staff-profile"
 import { COURSE_RULE_LABELS, type CourseRule } from "@/lib/subsidy-rules"
 
 /**
@@ -51,6 +51,8 @@ interface CourseOption {
 interface StaffRow {
   id: string
   name: string
+  /** 給与・行政上の氏名（旧姓で勤務している場合のみ入る） */
+  legal_name?: string | null
   is_test?: boolean
   retired_at?: string | null
   line_profile?: unknown
@@ -151,6 +153,10 @@ export function PriorCourseRegistration() {
           「初受講＝全額支給」と判定され、過大支給になります。
           <br />
           回数は<strong>アプリ導入前に受講した回数</strong>です。初受講だけ済んでいる方は <strong>1</strong> を入れてください。
+          <br />
+          ここに並ぶのは<strong>上の「スタッフ一覧」と同じ在籍スタッフ</strong>です（別の名簿ではありません）。
+          氏名を直すときは「スタッフ一覧」の「編集」から行ってください。
+          受講回数を1回以上登録すると、そのスタッフのLINEから「初回ATC＋アカデミー会員費」が自動で消えます。
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -210,7 +216,25 @@ export function PriorCourseRegistration() {
                   const next = saved === null ? null : saved === 0 ? "初受講（全額）" : `再受講${saved}回目（半額）`
                   return (
                     <TableRow key={m.id}>
-                      <TableCell className="whitespace-nowrap font-medium">{m.name}</TableCell>
+                      {/* 氏名の表示はスタッフ一覧と揃える（別の名簿に見えて混乱しないように） */}
+                      <TableCell className="whitespace-nowrap font-medium">
+                        <div className="flex flex-col gap-0.5">
+                          <span>{m.name}</span>
+                          {hasSeparateLegalName(m) && (
+                            <span className="flex items-center gap-1.5">
+                              <Badge
+                                variant="outline"
+                                className="border-violet-500 text-[10px] text-violet-700 dark:text-violet-300"
+                              >
+                                院内は旧姓
+                              </Badge>
+                              <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+                                給与・手続き：{payrollName(m)}
+                              </span>
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
                       <TableCell className="whitespace-nowrap">
                         <div className="flex items-center gap-2">
                           <Input

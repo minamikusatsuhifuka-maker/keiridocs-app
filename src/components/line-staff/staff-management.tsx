@@ -21,6 +21,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Switch } from "@/components/ui/switch"
+import { Badge } from "@/components/ui/badge"
 import {
   Users,
   Plus,
@@ -104,6 +105,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   // 追加ダイアログ
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [newName, setNewName] = useState("")
+  const [newLegalName, setNewLegalName] = useState("")
   const [isAdding, setIsAdding] = useState(false)
 
   // 編集ダイアログ
@@ -176,7 +178,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
       const res = await fetch("/api/line-staff", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newName.trim() }),
+        body: JSON.stringify({ name: newName.trim(), legal_name: newLegalName.trim() || null }),
       })
       if (!res.ok) {
         const json = (await res.json().catch(() => ({}))) as { error?: string }
@@ -184,6 +186,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
       }
       toast.success("スタッフを追加しました")
       setNewName("")
+      setNewLegalName("")
       setAddDialogOpen(false)
       fetchStaff()
     } catch (error) {
@@ -453,14 +456,16 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>名前</TableHead>
-                    <TableHead>LINE登録状況</TableHead>
-                    <TableHead>自宅最寄り駅</TableHead>
-                    <TableHead>LINE初回設定・定期券</TableHead>
-                    <TableHead>初回ATCの表示</TableHead>
-                    <TableHead>テスト</TableHead>
-                    <TableHead>在籍</TableHead>
-                    <TableHead className="text-right">操作</TableHead>
+                    {/* 氏名と在籍は最初に置く。横に長い表では右端の列が画面外になり、
+                        退職のスイッチが「無い」ように見えてしまうため */}
+                    <TableHead className="whitespace-nowrap">名前</TableHead>
+                    <TableHead className="whitespace-nowrap">在籍</TableHead>
+                    <TableHead className="whitespace-nowrap">LINE登録状況</TableHead>
+                    <TableHead className="whitespace-nowrap">自宅最寄り駅</TableHead>
+                    <TableHead className="whitespace-nowrap">LINE初回設定・定期券</TableHead>
+                    <TableHead className="whitespace-nowrap">初回ATCの表示</TableHead>
+                    <TableHead className="whitespace-nowrap">テスト</TableHead>
+                    <TableHead className="whitespace-nowrap text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -469,12 +474,28 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                       <TableCell className="font-medium">
                         <div className="flex flex-col gap-0.5">
                           <span>{member.name}</span>
-                          {/* 旧姓で勤務している方は、給与・行政上の氏名を併記する */}
+                          {/* 改姓して院内では旧姓のまま、という状態がひと目で分かるようにする */}
                           {hasSeparateLegalName(member) && (
-                            <span className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                              給与・行政上：{payrollName(member)}
+                            <span className="flex flex-wrap items-center gap-1.5">
+                              <Badge
+                                variant="outline"
+                                className="border-violet-500 text-[10px] text-violet-700 dark:text-violet-300"
+                              >
+                                院内は旧姓
+                              </Badge>
+                              <span className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                                給与・手続き：{payrollName(member)}
+                              </span>
                             </span>
                           )}
+                          {/* フルネームでないと氏名照合が通らないため、姓だけの登録を警告する */}
+                          {!member.name.trim().includes(" ") &&
+                            !member.name.trim().includes("　") &&
+                            member.name.trim().length <= 3 && (
+                              <span className="text-xs text-amber-700 dark:text-amber-400">
+                                フルネームで登録してください
+                              </span>
+                            )}
                           {nameConflicts.get(member.id) && (
                             <span className="inline-flex items-center gap-1 text-xs text-amber-600">
                               <AlertTriangle className="h-3 w-3" />
@@ -484,6 +505,24 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                           {hasPendingNameChange(parseLineProfile(member.line_profile)) && (
                             <span className="text-xs text-amber-600">お名前の変更依頼あり（編集から変更すると完了）</span>
                           )}
+                        </div>
+                      </TableCell>
+                      {/* 在籍/退職。退職＝一覧から隠し、LINEからの申請も受け付けない。記録は残る */}
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Switch
+                            checked={!member.retired_at}
+                            onCheckedChange={(checked) => handleToggleRetired(member, !checked)}
+                            disabled={togglingRetiredId === member.id}
+                            aria-label="在籍の切り替え"
+                          />
+                          <span
+                            className="inline-flex items-center gap-1 text-sm font-medium"
+                            style={{ color: member.retired_at ? "var(--dusk-text-muted)" : undefined }}
+                          >
+                            {togglingRetiredId === member.id && <Loader2 className="h-3 w-3 animate-spin" />}
+                            {member.retired_at ? "退職" : "在籍"}
+                          </span>
                         </div>
                       </TableCell>
                       <TableCell>
@@ -597,24 +636,6 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                           </span>
                         </div>
                       </TableCell>
-                      {/* 在籍/退職。退職＝一覧から隠し、LINEからの申請も受け付けない。記録は残る */}
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Switch
-                            checked={!member.retired_at}
-                            onCheckedChange={(checked) => handleToggleRetired(member, !checked)}
-                            disabled={togglingRetiredId === member.id}
-                            aria-label="在籍の切り替え"
-                          />
-                          <span
-                            className="inline-flex items-center gap-1 text-sm font-medium"
-                            style={{ color: member.retired_at ? "var(--dusk-text-muted)" : undefined }}
-                          >
-                            {togglingRetiredId === member.id && <Loader2 className="h-3 w-3 animate-spin" />}
-                            {member.retired_at ? "退職" : "在籍"}
-                          </span>
-                        </div>
-                      </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">
                           {/* アイコンだけでは見つけられないため文字を添える */}
@@ -656,16 +677,34 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
           </DialogHeader>
           <div className="space-y-4 pt-2">
             <div className="space-y-2">
-              <Label htmlFor="new-name">名前</Label>
+              <Label htmlFor="new-name">① 院内で使っているお名前</Label>
               <Input
                 id="new-name"
-                placeholder="例: 山田太郎"
+                placeholder="例: 南 ひふ子"
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !isAdding) handleAdd()
                 }}
               />
+              <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                <strong>必ずフルネーム</strong>で入力してください。
+                LINEの氏名照合はこの氏名との完全一致のみで、姓だけでは本人と判定できません。
+              </p>
+            </div>
+            {/* 給与・行政上の氏名。入職時点で旧姓勤務が分かっている場合に入れる */}
+            <div className="space-y-2">
+              <Label htmlFor="new-legal-name">② 給与や手続きに使うお名前（任意）</Label>
+              <Input
+                id="new-legal-name"
+                placeholder="同じ場合は空欄のまま"
+                value={newLegalName}
+                onChange={(e) => setNewLegalName(e.target.value)}
+              />
+              <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                院内で使っているお名前と異なる場合のみ、フルネームでご入力ください。
+                あとから「編集」でも登録できます。
+              </p>
             </div>
             <div className="flex justify-end gap-2">
               <Button
@@ -673,6 +712,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                 onClick={() => {
                   setAddDialogOpen(false)
                   setNewName("")
+                  setNewLegalName("")
                 }}
               >
                 キャンセル
