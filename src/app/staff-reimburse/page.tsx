@@ -107,16 +107,42 @@ interface Row {
   splitTotal: number
 }
 
-/** 未完了の申請（staff_receipts はあるが精算されていない＝スタッフが途中でやめた分） */
-interface IncompleteRow {
-  receiptId: string
+/**
+ * 要対応の1件（/api/staff-reimburse/pending の戻り）。
+ *
+ *   excess     上限超過の承認待ち
+ *   course     講座の割り当て待ち
+ *   attach     合格通知の添付待ち
+ *   incomplete 未完了の申請（スタッフが費用区分を選ばずに離脱した）
+ */
+interface PendingItem {
+  id: string
+  kind: "excess" | "course" | "attach" | "incomplete"
   staffName: string
-  storeName: string
+  courseName: string
+  itemLabel: string
   amount: number
-  paymentDate: string
+  excess: number
+  suggested: number
+  isRepeat: boolean
   submittedAt: string
-  fileName: string
-  dropboxPath: string
+  daysWaiting: number
+}
+
+const PENDING_LABELS: Record<PendingItem["kind"], string> = {
+  excess: "上限超過",
+  course: "講座の確認",
+  attach: "添付待ち",
+  incomplete: "未完了",
+}
+
+/** 種別ごとの説明（担当が何をすればよいか） */
+const PENDING_HELP: Record<PendingItem["kind"], string> = {
+  excess: "上限を超えた分を承認するか決めてください。承認するとスタッフへ自動で通知されます。",
+  course: "講座マスタに無い講座名で申請されています。/mkadmin の講座マスタで登録・割り当てしてください。",
+  attach: "合格通知または修了通知の写真が届いていません。スタッフへ催促してください。",
+  incomplete:
+    "領収書は届いていますが、費用区分が選ばれず支給の対象になっていません。本人は申請したつもりの可能性があります。",
 }
 
 interface Subtotal {
@@ -229,9 +255,14 @@ export default function StaffReimbursePage() {
   // 確認済みの記録（受付担当の進捗管理。支給・税理士提出には影響しない）
   const [savingReviewIds, setSavingReviewIds] = useState<Set<string>>(new Set())
 
-  // 未完了の申請（スタッフが区分を選ばずに離脱した分）
-  const [incomplete, setIncomplete] = useState<IncompleteRow[]>([])
-  const [showIncomplete, setShowIncomplete] = useState(false)
+  // 要対応（上限超過の承認・講座の確認・添付待ち・未完了の申請）
+  const [pending, setPending] = useState<PendingItem[]>([])
+  const [showPending, setShowPending] = useState(true)
+  // 承認処理中のID
+  const [approvingId, setApprovingId] = useState<string | null>(null)
+  // 金額を指定して承認する対象（null は入力なしのワンクリック承認）
+  const [customAmountFor, setCustomAmountFor] = useState<PendingItem | null>(null)
+  const [customAmount, setCustomAmount] = useState("")
 
   const query = useMemo(() => {
     const p = new URLSearchParams()
@@ -265,21 +296,65 @@ export default function StaffReimbursePage() {
     fetchData()
   }, [fetchData])
 
-  // 未完了の申請を取得する（期間フィルタとは独立。常に全件を見せて取りこぼしを防ぐ）
-  const fetchIncomplete = useCallback(async () => {
+  // 要対応を取得する（期間フィルタとは独立。常に全件を見せて取りこぼしを防ぐ）
+  const fetchPending = useCallback(async () => {
     try {
-      const res = await fetch("/api/staff-reimburse/incomplete")
+      const res = await fetch("/api/staff-reimburse/pending")
       if (!res.ok) return
-      const json = (await res.json()) as { rows?: IncompleteRow[] }
-      setIncomplete(json.rows ?? [])
+      const json = (await res.json()) as { items?: PendingItem[] }
+      setPending(json.items ?? [])
     } catch {
       // 取得できなくても本体の一覧は使えるようにする（警告は出さない）
     }
   }, [])
 
   useEffect(() => {
-    fetchIncomplete()
-  }, [fetchIncomplete])
+    fetchPending()
+  }, [fetchPending])
+
+  /**
+   * 上限超過を承認／却下する。
+   * amount を省略すると規程どおりの既定値（ボタンに表示している額）で承認する。
+   */
+  const approveExcess = useCallback(
+    async (item: PendingItem, approve: boolean, amount?: number) => {
+      const yenStr = (n: number) => `¥${n.toLocaleString("ja-JP")}`
+      const toApprove = amount ?? item.suggested
+      const message = approve
+        ? `${item.staffName}さんの${item.itemLabel}について、超過分 ${yenStr(toApprove)} を追加して承認します。\n\nよろしいですか？`
+        : `${item.staffName}さんの${item.itemLabel}について、超過分を承認しません。\n上限額のまま確定し、スタッフへ通知されます。\n\nよろしいですか？`
+      if (!confirm(message)) return
+
+      setApprovingId(item.id)
+      try {
+        const res = await fetch("/api/staff-reimburse/approve-excess", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: item.id, approve, amount: approve ? toApprove : undefined }),
+        })
+        const json = (await res.json().catch(() => ({}))) as {
+          error?: string
+          finalSubsidy?: number
+          notified?: boolean
+        }
+        if (!res.ok) throw new Error(json.error || "承認に失敗しました")
+
+        toast.success(
+          `${approve ? "承認しました" : "承認しませんでした"}。支給額は ${yenStr(json.finalSubsidy ?? 0)} です` +
+            (json.notified ? "（スタッフへ通知済み）" : "（LINE通知は送れませんでした）")
+        )
+        setCustomAmountFor(null)
+        setCustomAmount("")
+        fetchPending()
+        fetchData()
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "承認に失敗しました")
+      } finally {
+        setApprovingId(null)
+      }
+    },
+    [fetchPending, fetchData]
+  )
 
   /**
    * 明細の「確認済み」を切り替える。
@@ -598,52 +673,151 @@ export default function StaffReimbursePage() {
         </Card>
       </div>
 
-      {/* 未完了の申請（スタッフが区分を選ばずに離脱した分）。放置すると本人は申請したつもりで支給されない */}
-      {incomplete.length > 0 && (
+      {/* 要対応：上限超過の承認・講座の確認・添付待ち・未完了の申請を1か所に集める */}
+      {pending.length > 0 && (
         <Card className="border-amber-500/60">
           <CardHeader className="pb-3">
             <CardTitle className="flex flex-wrap items-center gap-2 text-base">
               <AlertTriangle className="size-4 text-amber-600" />
-              未完了の申請が {incomplete.length} 件あります
+              要対応
+              <Badge className="bg-red-600 text-white hover:bg-red-600">{pending.length} 件</Badge>
             </CardTitle>
             <CardDescription>
-              領収書は届いていますが、スタッフが費用区分を選ばずに終了したため、支給の対象になっていません。
-              本人は申請したつもりの可能性があります。内容を確認のうえ、本人に再申請を依頼するか、
-              「立替手動登録」から登録してください。
+              支給額が確定していない申請です。<strong>確定するまで税理士提出リストに載りません。</strong>
+              放置するとスタッフへの支給が遅れます。
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button variant="outline" size="sm" onClick={() => setShowIncomplete((v) => !v)}>
-              {showIncomplete ? "閉じる" : "一覧を見る"}
+            <Button variant="outline" size="sm" onClick={() => setShowPending((v) => !v)}>
+              {showPending ? "閉じる" : "一覧を見る"}
             </Button>
-            {showIncomplete && (
-              <div className="mt-3 overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="whitespace-nowrap">申請日時</TableHead>
-                      <TableHead className="whitespace-nowrap">スタッフ名</TableHead>
-                      <TableHead className="whitespace-nowrap">支払先</TableHead>
-                      <TableHead className="whitespace-nowrap text-right">金額</TableHead>
-                      <TableHead className="whitespace-nowrap">支払年月日</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {incomplete.map((r) => (
-                      <TableRow key={r.receiptId}>
-                        <TableCell className="whitespace-nowrap">
-                          {formatReviewedAt(r.submittedAt)}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap font-medium">{r.staffName}</TableCell>
-                        <TableCell className="max-w-[200px] truncate" title={r.storeName}>
-                          {r.storeName}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-right">{yen(r.amount)}</TableCell>
-                        <TableCell className="whitespace-nowrap">{r.paymentDate || "—"}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+            {showPending && (
+              <div className="mt-3 flex flex-col gap-3">
+                {pending.map((p) => (
+                  <div
+                    key={`${p.kind}-${p.id}`}
+                    className="flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-start sm:justify-between"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge
+                          variant="outline"
+                          className={
+                            p.kind === "excess"
+                              ? "border-amber-500 text-amber-700 dark:text-amber-400"
+                              : p.kind === "incomplete"
+                                ? "border-red-500 text-red-700 dark:text-red-400"
+                                : "border-blue-500 text-blue-700 dark:text-blue-400"
+                          }
+                        >
+                          {PENDING_LABELS[p.kind]}
+                        </Badge>
+                        <span className="text-sm font-medium">{p.staffName}</span>
+                        {p.courseName && (
+                          <span className="text-sm" style={{ color: "var(--muted-foreground)" }}>
+                            ／{p.courseName}
+                          </span>
+                        )}
+                        <span className="text-sm" style={{ color: "var(--muted-foreground)" }}>
+                          ／{p.itemLabel}
+                        </span>
+                        <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+                          {p.daysWaiting > 0 ? `${p.daysWaiting}日経過` : "本日"}
+                        </span>
+                      </div>
+
+                      <div className="mt-1.5 text-sm">
+                        領収書 <strong>{yen(p.amount)}</strong>
+                        {p.excess > 0 && (
+                          <>
+                            {" "}
+                            ／ 上限超過{" "}
+                            <strong className="text-amber-700 dark:text-amber-400">{yen(p.excess)}</strong>
+                          </>
+                        )}
+                      </div>
+
+                      <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
+                        {PENDING_HELP[p.kind]}
+                        {p.kind === "excess" && p.isRepeat && "（2回目以降のため超過分も半額が規程どおりです）"}
+                      </p>
+                    </div>
+
+                    {/* 上限超過だけがこの画面で確定できる。既定はワンクリック（入力なし） */}
+                    {p.kind === "excess" && (
+                      <div className="flex flex-col gap-2 sm:w-64 sm:shrink-0">
+                        {customAmountFor?.id === p.id ? (
+                          <div className="flex flex-col gap-2">
+                            <label className="text-xs font-medium" htmlFor={`amt-${p.id}`}>
+                              追加支給額（0〜{p.excess.toLocaleString("ja-JP")}円）
+                            </label>
+                            <Input
+                              id={`amt-${p.id}`}
+                              type="number"
+                              min={0}
+                              max={p.excess}
+                              value={customAmount}
+                              onChange={(e) => setCustomAmount(e.target.value)}
+                            />
+                            <div className="flex gap-2">
+                              <Button
+                                size="sm"
+                                disabled={approvingId === p.id || customAmount === ""}
+                                onClick={() => approveExcess(p, true, Number(customAmount))}
+                              >
+                                この金額で承認
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setCustomAmountFor(null)
+                                  setCustomAmount("")
+                                }}
+                              >
+                                やめる
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <Button
+                              size="sm"
+                              disabled={approvingId === p.id}
+                              onClick={() => approveExcess(p, true)}
+                            >
+                              {approvingId === p.id ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                <Check className="size-3.5" />
+                              )}
+                              {yen(p.suggested)} を追加して承認
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={approvingId === p.id}
+                              onClick={() => {
+                                setCustomAmountFor(p)
+                                setCustomAmount(String(p.suggested))
+                              }}
+                            >
+                              金額を指定して承認
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={approvingId === p.id}
+                              onClick={() => approveExcess(p, false)}
+                            >
+                              承認しない
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </CardContent>
