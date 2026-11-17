@@ -17,8 +17,10 @@ export interface Database {
         Row: {
           id: string
           name: string
-          /** apex=頂点への道 / ach_other=その他のアチーブメント講座 / non_ach=アチーブメント以外 */
+          /** 分類：apex / ach_other / jpsa / exam / non_ach */
           kind: string
+          /** 支給率の方式：full / atc / undecided（045で追加） */
+          rule: string
           is_active: boolean
           note: string | null
           created_at: string
@@ -27,6 +29,7 @@ export interface Database {
           id?: string
           name: string
           kind: string
+          rule?: string
           is_active?: boolean
           note?: string | null
           created_at?: string
@@ -35,6 +38,7 @@ export interface Database {
           id?: string
           name?: string
           kind?: string
+          rule?: string
           is_active?: boolean
           note?: string | null
           created_at?: string

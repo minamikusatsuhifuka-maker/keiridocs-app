@@ -27,6 +27,7 @@ import {
   computeSubsidy,
   isTravelItem,
   type CourseKind,
+  type CourseRule,
   type ExpenseItem,
   type HoldReason,
   type SubsidyResult,
@@ -55,6 +56,8 @@ export interface AssessInput {
   /** 研修・セミナーの場合の講座。講座マスタに無い場合は null＋pendingCourseName */
   courseId?: string | null
   courseKind?: CourseKind | null
+  /** 講座の支給率の方式（courses.rule）。undecided なら担当の判断待ちにする */
+  courseRule?: CourseRule | null
   /** 講座マスタに無い講座名で申請された場合 */
   pendingCourseName?: string | null
   /** 資格試験で合格通知・修了通知が未添付か */
@@ -70,6 +73,8 @@ export interface AssessResult extends SubsidyResult {
   isRepeat: boolean
   /** 2回目以降と判断した根拠の講座ID（記録用） */
   repeatBasisCourseId: string | null
+  /** ATC方式での、これまでの受講料申請の回数（0 なら初回） */
+  priorTuitionCount: number
   /** 確定していない理由。NULL なら確定 */
   holdReason: HoldReason | null
   /** 上限枠のうち既に使った立替額 */
@@ -106,33 +111,49 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
       ? sumCapUsed(await filterSameSubmissionMonth(supabase, priors.filter((p) => p.expense_item === item), input))
       : 0
 
-  // 3. 頂点への道の初回／2回目以降（別の講座の実績があれば2回目以降）
-  const repeatBasis =
-    input.courseKind === "apex"
-      ? priors.find((p) => p.course_id && p.course_id !== input.courseId) ?? null
-      : null
-  const isRepeat = !!repeatBasis
+  // 3. ATC方式の再受講の回数。
+  //    同じ講座を繰り返し受講するため、講座の違いではなく
+  //    「その講座の受講料を何回申請したか」で数える。
+  const priorTuitionCount =
+    input.courseRule === "atc" && input.courseId
+      ? priors.filter((p) => p.course_id === input.courseId && p.expense_item === "tuition").length
+      : 0
+
+  // 交通費・宿泊費も半額の回は半額にするため、受講料の実績から半額かどうかを引き継ぐ
+  const isRepeat =
+    input.courseRule === "atc"
+      ? priorTuitionCount > 0 ||
+        priors.some((p) => p.course_id === input.courseId && p.expense_item === "tuition")
+      : // 旧式（別の講座の実績があれば2回目以降）
+        input.courseKind === "apex" &&
+        priors.some((p) => p.course_id && p.course_id !== input.courseId)
 
   // 4. 規程どおりに計算する
   const result = computeSubsidy({
     amount,
     item,
     courseKind: input.courseKind ?? null,
+    courseRule: input.courseRule ?? null,
+    priorTuitionCount: item === "tuition" ? priorTuitionCount : isRepeat ? 1 : 0,
     isRepeat,
     travelCapUsed: isTravelItem(item) ? capUsed : undefined,
     monthlyCapUsed: item === "books" || item === "medical" ? capUsed : undefined,
   })
 
-  // 5. 保留の理由（優先順：添付待ち → 講座の割り当て → 上限超過）
+  // 5. 保留の理由（優先順：添付待ち → 講座の割り当て → 支給率が未定 → 上限超過）
+  //    支給率が未定のものを上限超過より先に見るのは、どちらも担当判断だが
+  //    「金額の決め方そのものが未定」のほうが先に解決すべきだから。
   let holdReason: HoldReason | null = null
   if (input.awaitingAttachment) holdReason = "attach"
   else if (input.pendingCourseName && !input.courseId) holdReason = "course"
+  else if (result.needsDecision) holdReason = "undecided"
   else if (result.excess > 0) holdReason = "excess"
 
   return {
     ...result,
     isRepeat,
-    repeatBasisCourseId: repeatBasis?.course_id ?? null,
+    repeatBasisCourseId: null,
+    priorTuitionCount,
     holdReason,
     capUsed,
   }

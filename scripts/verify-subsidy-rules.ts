@@ -13,9 +13,11 @@ import {
   BOOKS_CAP_PER_MONTH,
   TRAVEL_CAP_PER_COURSE,
   allowsBento,
+  allowsMembership,
   availableItems,
   computeSubsidy,
   type CourseKind,
+  type CourseRule,
   type ExpenseItem,
 } from "../src/lib/subsidy-rules"
 
@@ -37,6 +39,8 @@ function calc(p: {
   amount: number
   item: ExpenseItem
   courseKind?: CourseKind | null
+  courseRule?: CourseRule | null
+  priorTuitionCount?: number
   isRepeat?: boolean
   travelCapUsed?: number
   monthlyCapUsed?: number
@@ -44,6 +48,96 @@ function calc(p: {
   const r = computeSubsidy(p)
   return { 支給: r.subsidy, 超過: r.excess, 承認既定値: r.suggestedApproval }
 }
+
+/** 担当判断（未定）になるかどうかも含めて見る */
+function calcWithDecision(p: {
+  amount: number
+  item: ExpenseItem
+  courseKind?: CourseKind | null
+  courseRule?: CourseRule | null
+  priorTuitionCount?: number
+}) {
+  const r = computeSubsidy(p)
+  return { 支給: r.subsidy, 担当判断: r.needsDecision }
+}
+
+/* ---------- 頂点への道：アチーブメントテクノロジーコース（ATC方式） ---------- */
+
+check(
+  "【院長の確認依頼】ATC 再受講料 ¥10,000 → 支給 ¥5,000",
+  calc({ amount: 10000, item: "tuition", courseKind: "apex", courseRule: "atc", priorTuitionCount: 1 }),
+  { 支給: 5000, 超過: 0, 承認既定値: 0 }
+)
+
+check(
+  "ATC 初回の受講料 ¥330,000 → 全額",
+  calc({ amount: 330000, item: "tuition", courseKind: "apex", courseRule: "atc", priorTuitionCount: 0 }),
+  { 支給: 330000, 超過: 0, 承認既定値: 0 }
+)
+
+check(
+  "ATC 再受講6回目 ¥10,000 → 半額（担当判断にならない）",
+  calcWithDecision({ amount: 10000, item: "tuition", courseKind: "apex", courseRule: "atc", priorTuitionCount: 6 }),
+  { 支給: 5000, 担当判断: false }
+)
+
+check(
+  "ATC 再受講7回目 ¥10,000 → 規程が未定のため担当判断",
+  calcWithDecision({ amount: 10000, item: "tuition", courseKind: "apex", courseRule: "atc", priorTuitionCount: 7 }),
+  { 支給: 5000, 担当判断: true }
+)
+
+check(
+  "会員割引後 ¥8,000 の再受講 → その額を基準に半額 ¥4,000",
+  calc({ amount: 8000, item: "tuition", courseKind: "apex", courseRule: "atc", priorTuitionCount: 1 }),
+  { 支給: 4000, 超過: 0, 承認既定値: 0 }
+)
+
+check(
+  "アカデミー会費 ¥55,000 → 全額（受講料とは別枠・上限なし・再受講でも半額にしない）",
+  calc({ amount: 55000, item: "membership", courseKind: "apex", courseRule: "atc", priorTuitionCount: 3 }),
+  { 支給: 55000, 超過: 0, 承認既定値: 0 }
+)
+
+check("アカデミー会費は頂点への道で選べる", allowsMembership("apex"), true)
+check("アカデミー会費はその他のアチーブメント講座では選べない", allowsMembership("ach_other"), false)
+check("アカデミー会費はJPSAでは選べない", allowsMembership("jpsa"), false)
+
+check(
+  "ATC 再受講の交通費 ¥10,000 → 半額 ¥5,000（上限内）",
+  calc({
+    amount: 10000,
+    item: "transport",
+    courseKind: "apex",
+    courseRule: "atc",
+    priorTuitionCount: 1,
+    isRepeat: true,
+  }),
+  { 支給: 5000, 超過: 0, 承認既定値: 0 }
+)
+
+/* ---------- 支給率が未定の講座 ---------- */
+
+check(
+  "支給率 未定の講座は自動で確定させず担当判断（ダイナミックコース等）",
+  calcWithDecision({ amount: 100000, item: "tuition", courseKind: "apex", courseRule: "undecided" }),
+  { 支給: 100000, 担当判断: true }
+)
+
+check(
+  "常に全額の講座は担当判断にならない",
+  calcWithDecision({ amount: 100000, item: "tuition", courseKind: "non_ach", courseRule: "full" }),
+  { 支給: 100000, 担当判断: false }
+)
+
+check("頂点への道の内訳に弁当代とアカデミー会費が出る", availableItems("apex"), [
+  "tuition",
+  "transport",
+  "lodging",
+  "bento",
+  "membership",
+])
+check("JPSAの内訳は3つだけ", availableItems("jpsa"), ["tuition", "transport", "lodging"])
 
 /* ---------- 頂点への道・初回 ---------- */
 

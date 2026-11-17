@@ -24,7 +24,12 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { AlertTriangle, Loader2, Plus, Trash2 } from "lucide-react"
-import { COURSE_KIND_LABELS, type CourseKind } from "@/lib/subsidy-rules"
+import {
+  COURSE_KIND_LABELS,
+  COURSE_RULE_LABELS,
+  type CourseKind,
+  type CourseRule,
+} from "@/lib/subsidy-rules"
 
 /**
  * 講座マスタの管理画面。
@@ -42,6 +47,8 @@ interface Course {
   name: string
   kind: string
   kindLabel: string
+  /** 支給率の方式（full / atc / undecided） */
+  rule: string
   is_active: boolean
   note: string | null
   created_at: string
@@ -49,11 +56,21 @@ interface Course {
   useCount: number
 }
 
-/** 区分ごとの支給ルールの要約（担当が選ぶときの判断材料） */
+/** 分類ごとの説明（どの講座をここに入れるか） */
 const KIND_SUMMARY: Record<CourseKind, string> = {
-  apex: "初回は全額／2回目以降は受講料・交通費・宿泊費すべて半額。交通費＋宿泊費は合計30,000円まで。弁当代あり",
-  ach_other: "常に全額。交通費＋宿泊費は合計30,000円まで。弁当代あり",
-  non_ach: "常に全額。交通費＋宿泊費は合計30,000円まで。弁当代なし",
+  apex: "アチーブメントテクノロジーコース／ダイナミックコース／ダイナミックアドバンスコース／ピークパフォーマンスコース。弁当代とアカデミー会費を申請できます",
+  ach_other: "頂点への道以外のアチーブメント講座。弁当代を申請できます",
+  jpsa: "JPSAの講座。弁当代とアカデミー会費は対象外です",
+  exam: "検定・試験。弁当代とアカデミー会費は対象外です",
+  non_ach: "アチーブメント以外のセミナー・研修。弁当代とアカデミー会費は対象外です",
+}
+
+/** 支給率の方式ごとの説明（担当が選ぶときの判断材料） */
+const RULE_SUMMARY: Record<CourseRule, string> = {
+  full: "受講料は常に全額。交通費＋宿泊費は合計30,000円まで（超えた分は要対応で承認）",
+  atc: "受講料は初回が全額、再受講1〜6回目は半額。7回目以降は規程が未定のため担当の判断待ちになります。交通費・宿泊費も半額の回は半額",
+  undecided:
+    "支給率が決まっていない講座に使います。申請は受け付けますが自動では確定せず、すべて要対応に上がって担当が金額を決めます",
 }
 
 export function CourseMaster({ showHeader = true }: { showHeader?: boolean }) {
@@ -65,6 +82,7 @@ export function CourseMaster({ showHeader = true }: { showHeader?: boolean }) {
   // 追加フォーム
   const [newName, setNewName] = useState("")
   const [newKind, setNewKind] = useState<CourseKind>("apex")
+  const [newRule, setNewRule] = useState<CourseRule>("undecided")
   const [adding, setAdding] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
 
@@ -102,7 +120,7 @@ export function CourseMaster({ showHeader = true }: { showHeader?: boolean }) {
       const res = await fetch("/api/courses", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newName.trim(), kind: newKind }),
+        body: JSON.stringify({ name: newName.trim(), kind: newKind, rule: newRule }),
       })
       const json = (await res.json().catch(() => ({}))) as { error?: string }
       if (!res.ok) throw new Error(json.error || "追加に失敗しました")
@@ -218,13 +236,33 @@ export function CourseMaster({ showHeader = true }: { showHeader?: boolean }) {
                 </SelectContent>
               </Select>
             </div>
+            <div className="flex min-w-[300px] flex-col gap-1.5">
+              <Label htmlFor="course-rule">支給率の方式</Label>
+              <Select value={newRule} onValueChange={(v) => setNewRule(v as CourseRule)}>
+                <SelectTrigger id="course-rule">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(COURSE_RULE_LABELS) as CourseRule[]).map((r) => (
+                    <SelectItem key={r} value={r}>
+                      {COURSE_RULE_LABELS[r]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <Button onClick={handleAdd} disabled={adding || !!notReady}>
               {adding ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
               追加
             </Button>
           </div>
           <p className="mt-2.5 text-xs leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
+            <strong>分類：</strong>
             {KIND_SUMMARY[newKind]}
+          </p>
+          <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
+            <strong>支給率：</strong>
+            {RULE_SUMMARY[newRule]}
           </p>
           <p className="mt-1.5 text-xs leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
             期ごとに分けて登録してください（30,000円の上限は講座1件ごとに判定します）。
@@ -271,7 +309,8 @@ export function CourseMaster({ showHeader = true }: { showHeader?: boolean }) {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="whitespace-nowrap">講座名</TableHead>
-                    <TableHead className="whitespace-nowrap">区分</TableHead>
+                    <TableHead className="whitespace-nowrap">分類</TableHead>
+                    <TableHead className="whitespace-nowrap">支給率</TableHead>
                     <TableHead className="whitespace-nowrap">申請</TableHead>
                     <TableHead className="whitespace-nowrap">選択肢に出す</TableHead>
                     <TableHead className="whitespace-nowrap text-right">操作</TableHead>
@@ -298,6 +337,29 @@ export function CourseMaster({ showHeader = true }: { showHeader?: boolean }) {
                             ))}
                           </SelectContent>
                         </Select>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        <Select
+                          value={c.rule}
+                          onValueChange={(v) => handlePatch(c, { rule: v })}
+                          disabled={busyId === c.id}
+                        >
+                          <SelectTrigger className="w-[300px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(Object.keys(COURSE_RULE_LABELS) as CourseRule[]).map((r) => (
+                              <SelectItem key={r} value={r}>
+                                {COURSE_RULE_LABELS[r]}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {c.rule === "undecided" && (
+                          <span className="ml-1 text-xs text-amber-700 dark:text-amber-400">
+                            申請は要対応に上がります
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-sm">
                         {c.useCount > 0 ? `${c.useCount}件` : "—"}

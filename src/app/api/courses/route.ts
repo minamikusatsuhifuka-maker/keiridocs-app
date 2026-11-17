@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js"
 import { createClient as createAuthClient } from "@/lib/supabase/server"
 import { getCurrentUserRole } from "@/lib/auth"
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
-import { COURSE_KIND_LABELS, type CourseKind } from "@/lib/subsidy-rules"
+import { COURSE_KIND_LABELS, type CourseKind, type CourseRule } from "@/lib/subsidy-rules"
 import type { Database } from "@/types/database"
 
 /**
@@ -19,7 +19,8 @@ import type { Database } from "@/types/database"
  *   DELETE /api/courses?id=...     削除（申請が紐づいている講座は拒否）
  */
 
-const VALID_KINDS: CourseKind[] = ["apex", "ach_other", "non_ach"]
+const VALID_KINDS: CourseKind[] = ["apex", "ach_other", "jpsa", "exam", "non_ach"]
+const VALID_RULES: CourseRule[] = ["full", "atc", "undecided"]
 
 function createServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -70,17 +71,19 @@ export async function GET(request: NextRequest) {
       id: string
       name: string
       kind: string
+      rule: string
       is_active: boolean
       note: string | null
       created_at: string
     }>((from, to) => {
-      const q = supabase.from("courses").select("id, name, kind, is_active, note, created_at")
+      const q = supabase.from("courses").select("id, name, kind, rule, is_active, note, created_at")
       const scoped = includeInactive ? q : q.eq("is_active", true)
       return scoped.order("id", { ascending: true }).range(from, to) as unknown as PromiseLike<{
         data: {
           id: string
           name: string
           kind: string
+          rule: string
           is_active: boolean
           note: string | null
           created_at: string
@@ -128,7 +131,7 @@ export async function POST(request: NextRequest) {
   const auth = await requireAuth(true)
   if (auth.error) return auth.error
 
-  let body: { name?: unknown; kind?: unknown; note?: unknown }
+  let body: { name?: unknown; kind?: unknown; rule?: unknown; note?: unknown }
   try {
     body = (await request.json()) as typeof body
   } catch {
@@ -138,7 +141,9 @@ export async function POST(request: NextRequest) {
   const name = typeof body.name === "string" ? body.name.trim() : ""
   const kind = VALID_KINDS.find((k) => k === body.kind)
   if (!name) return NextResponse.json({ error: "講座名を入力してください" }, { status: 400 })
-  if (!kind) return NextResponse.json({ error: "区分を選んでください" }, { status: 400 })
+  if (!kind) return NextResponse.json({ error: "分類を選んでください" }, { status: 400 })
+  // 未指定は undecided（未定）にする。推測で支給率を決めないため
+  const rule = VALID_RULES.find((r) => r === body.rule) ?? "undecided"
 
   try {
     const supabase = createServiceClient()
@@ -154,7 +159,12 @@ export async function POST(request: NextRequest) {
 
     const { data, error } = await supabase
       .from("courses")
-      .insert({ name, kind, note: typeof body.note === "string" ? body.note.trim() || null : null })
+      .insert({
+        name,
+        kind,
+        rule,
+        note: typeof body.note === "string" ? body.note.trim() || null : null,
+      })
       .select("*")
       .single()
     if (error) throw new Error(error.message)
@@ -171,7 +181,14 @@ export async function PATCH(request: NextRequest) {
   const auth = await requireAuth(true)
   if (auth.error) return auth.error
 
-  let body: { id?: unknown; name?: unknown; kind?: unknown; is_active?: unknown; note?: unknown }
+  let body: {
+    id?: unknown
+    name?: unknown
+    kind?: unknown
+    rule?: unknown
+    is_active?: unknown
+    note?: unknown
+  }
   try {
     body = (await request.json()) as typeof body
   } catch {
@@ -187,6 +204,11 @@ export async function PATCH(request: NextRequest) {
     const kind = VALID_KINDS.find((k) => k === body.kind)
     if (!kind) return NextResponse.json({ error: "区分の指定が不正です" }, { status: 400 })
     patch.kind = kind
+  }
+  if (body.rule !== undefined) {
+    const rule = VALID_RULES.find((r) => r === body.rule)
+    if (!rule) return NextResponse.json({ error: "支給率の方式の指定が不正です" }, { status: 400 })
+    patch.rule = rule
   }
   if (typeof body.is_active === "boolean") patch.is_active = body.is_active
   if (typeof body.note === "string") patch.note = body.note.trim() || null

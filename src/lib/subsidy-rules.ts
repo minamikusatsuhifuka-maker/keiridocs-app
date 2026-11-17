@@ -44,14 +44,38 @@ export const REPEAT_RATE = 0.5
 
 /* ---------- 区分 ---------- */
 
-/** 講座の区分（講座マスタ courses.kind） */
-export type CourseKind = "apex" | "ach_other" | "non_ach"
+/**
+ * 講座の分類（講座マスタ courses.kind）。表示と集計に使い、支給率は決めない。
+ * 支給率は CourseRule が決める（分類と支給率が1対1ではないため分けている）。
+ */
+export type CourseKind = "apex" | "ach_other" | "jpsa" | "exam" | "non_ach"
 
 export const COURSE_KIND_LABELS: Record<CourseKind, string> = {
   apex: "頂点への道",
   ach_other: "その他のアチーブメント講座",
+  jpsa: "JPSA",
+  exam: "検定・試験",
   non_ach: "アチーブメント以外のセミナー・研修",
 }
+
+/**
+ * 支給率の方式（講座マスタ courses.rule）。
+ *
+ * - full       常に全額（交通費＋宿泊費は合計30,000円/講座の上限あり）
+ * - atc        ATC方式。受講料は初回全額／再受講1〜6回目は半額／7回目以降は担当判断。
+ *              交通費・宿泊費も半額の回は半額。弁当代とアカデミー会費は常に全額。
+ * - undecided  未定。自動で確定させず、すべて担当の判断待ちにする。
+ */
+export type CourseRule = "full" | "atc" | "undecided"
+
+export const COURSE_RULE_LABELS: Record<CourseRule, string> = {
+  full: "常に全額",
+  atc: "ATC方式（初回全額・再受講1〜6回目は半額）",
+  undecided: "支給率 未定（担当の判断待ちにする）",
+}
+
+/** ATC方式で半額になる再受講の回数の上限。これを超えたら担当判断にする */
+export const ATC_HALF_MAX_RETAKE = 6
 
 /** 費用の内訳 */
 export type ExpenseItem =
@@ -59,6 +83,7 @@ export type ExpenseItem =
   | "transport" // 交通費（研修）
   | "lodging" // 宿泊費
   | "bento" // 弁当代
+  | "membership" // アカデミー会費（受講料とは別に申請し、実額を全額支給）
   | "books" // 書籍代
   | "medical" // 診療費
   | "exam" // 受験料
@@ -70,6 +95,7 @@ export const EXPENSE_ITEM_LABELS: Record<ExpenseItem, string> = {
   transport: "交通費",
   lodging: "宿泊費",
   bento: "弁当代",
+  membership: "アカデミー会費",
   books: "書籍代",
   medical: "診療費",
   exam: "受験料",
@@ -82,15 +108,39 @@ export function isTravelItem(item: ExpenseItem): boolean {
   return item === "transport" || item === "lodging"
 }
 
-/** 弁当代を選べる講座か（アチーブメント以外では選べない） */
+/** 弁当代を選べる講座か（アチーブメントに事前申込した弁当のみが対象） */
 export function allowsBento(kind: CourseKind): boolean {
   return kind === "apex" || kind === "ach_other"
 }
 
-/** 選べる内訳（講座の区分で出し分ける。選べない区分はそもそも表示しない） */
+/** アカデミー会費を選べる講座か（頂点への道のみ。受講料とは別に申請する） */
+export function allowsMembership(kind: CourseKind): boolean {
+  return kind === "apex"
+}
+
+/** 選べる内訳（講座の分類で出し分ける。選べない内訳はそもそも表示しない） */
 export function availableItems(kind: CourseKind): ExpenseItem[] {
-  const base: ExpenseItem[] = ["tuition", "transport", "lodging"]
-  return allowsBento(kind) ? [...base, "bento"] : base
+  const items: ExpenseItem[] = ["tuition", "transport", "lodging"]
+  if (allowsBento(kind)) items.push("bento")
+  if (allowsMembership(kind)) items.push("membership")
+  return items
+}
+
+/**
+ * ATC方式で、その回の支給率を決める。
+ *
+ * @param priorTuitionCount これまでの受講料申請の回数（0 なら初回）
+ * @returns rate=支給率／undecided=規程が未定のため担当判断にする
+ */
+export function atcRateForRetake(priorTuitionCount: number): {
+  rate: number
+  needsDecision: boolean
+} {
+  if (priorTuitionCount <= 0) return { rate: 1, needsDecision: false } // 初回は全額
+  if (priorTuitionCount <= ATC_HALF_MAX_RETAKE) {
+    return { rate: REPEAT_RATE, needsDecision: false } // 再受講1〜6回目は半額
+  }
+  return { rate: REPEAT_RATE, needsDecision: true } // 7回目以降は未定 → 担当判断
 }
 
 /* ---------- 支給額の計算 ---------- */
@@ -100,9 +150,16 @@ export interface SubsidyInput {
   amount: number
   /** 内訳 */
   item: ExpenseItem
-  /** 講座の区分（研修・セミナー以外は null） */
+  /** 講座の分類（研修・セミナー以外は null） */
   courseKind?: CourseKind | null
-  /** 頂点への道の2回目以降か（apex 以外では無視される） */
+  /** 講座の支給率の方式（研修・セミナー以外は null。既定は full 相当） */
+  courseRule?: CourseRule | null
+  /**
+   * ATC方式での、これまでの受講料申請の回数（0 なら初回）。
+   * courseRule="atc" のときだけ使う。
+   */
+  priorTuitionCount?: number
+  /** 旧式の指定（頂点への道の2回目以降か）。courseRule 未指定のときの後方互換 */
   isRepeat?: boolean
   /**
    * 同じ講座で既に上限枠を使った交通費＋宿泊費の**立替額**の合計。
@@ -132,6 +189,11 @@ export interface SubsidyResult {
   reason: string
   /** 承認時に提示する追加支給額の既定値（超過分に支給率を適用した額） */
   suggestedApproval: number
+  /**
+   * 規程が未定のため、自動では確定させず担当の判断を待つべきか。
+   * 講座の支給率が undecided の場合と、ATC方式の再受講7回目以降が該当する。
+   */
+  needsDecision: boolean
 }
 
 /**
@@ -143,10 +205,10 @@ export interface SubsidyResult {
  */
 export function computeSubsidy(input: SubsidyInput): SubsidyResult {
   const amount = Math.max(0, Math.floor(input.amount))
-  const rate = resolveRate(input)
+  const { rate, needsDecision } = resolveRate(input)
   const cap = resolveCap(input)
 
-  // 上限なし（受講料・弁当代・通常業務の交通費・その他・受験料）
+  // 上限なし（受講料・弁当代・アカデミー会費・通常業務の交通費・その他・受験料）
   if (cap === null) {
     return {
       subsidy: Math.floor(amount * rate),
@@ -155,6 +217,7 @@ export function computeSubsidy(input: SubsidyInput): SubsidyResult {
       rate,
       reason: rate === 1 ? "全額支給" : "半額支給",
       suggestedApproval: 0,
+      needsDecision,
     }
   }
 
@@ -173,21 +236,40 @@ export function computeSubsidy(input: SubsidyInput): SubsidyResult {
     cap,
     rate,
     reason: buildReason({ cap, remaining, alreadyPaid, excess, rate, item: input.item }),
-    // 超過分を承認する場合の既定値。2回目以降なら超過分も半額にするのが規程どおり
+    // 超過分を承認する場合の既定値。半額の回なら超過分も半額にするのが規程どおり
     suggestedApproval: Math.floor(excess * rate),
+    needsDecision,
   }
 }
 
 /**
- * 支給率（頂点への道の2回目以降だけ半額。他は全額）。
+ * 支給率を決める。
  *
  * 半額になるのは**受講料・交通費・宿泊費**の3つだけ。
- * 弁当代は「すべて全額支給」なので、2回目以降でも半額にしない。
+ * 弁当代とアカデミー会費は「実額を全額支給」なので、再受講でも半額にしない。
  */
-function resolveRate(input: SubsidyInput): number {
-  if (input.item === "bento") return 1
-  if (input.courseKind === "apex" && input.isRepeat) return REPEAT_RATE
-  return 1
+function resolveRate(input: SubsidyInput): { rate: number; needsDecision: boolean } {
+  // 支給率が未定の講座は、推測で支給せず担当の判断を待つ
+  if (input.courseRule === "undecided") {
+    return { rate: 1, needsDecision: true }
+  }
+
+  // 常に全額になる内訳
+  if (input.item === "bento" || input.item === "membership") {
+    return { rate: 1, needsDecision: false }
+  }
+
+  // ATC方式：初回は全額、再受講1〜6回目は半額、7回目以降は未定（担当判断）
+  if (input.courseRule === "atc") {
+    return atcRateForRetake(input.priorTuitionCount ?? 0)
+  }
+
+  // 旧式の指定（頂点への道の2回目以降）。courseRule へ移行するまでの後方互換
+  if (input.courseKind === "apex" && input.isRepeat) {
+    return { rate: REPEAT_RATE, needsDecision: false }
+  }
+
+  return { rate: 1, needsDecision: false }
 }
 
 /** 適用する上限額（上限なしは null） */
@@ -251,7 +333,12 @@ export function calcStoredSubsidy(row: {
   const excess = Math.max(0, Math.floor(row.excess_amount ?? 0))
   const covered = Math.max(0, amount - excess)
   // 弁当代は2回目以降でも全額（半額は受講料・交通費・宿泊費のみ）
-  const rate = row.expense_item === "bento" ? 1 : row.subsidy_category === "achievement_repeat" ? REPEAT_RATE : 1
+  const rate =
+    row.expense_item === "bento" || row.expense_item === "membership"
+      ? 1
+      : row.subsidy_category === "achievement_repeat"
+        ? REPEAT_RATE
+        : 1
   const approved = Math.max(0, Math.floor(row.approved_excess ?? 0))
   return Math.floor(covered * rate) + approved
 }
@@ -259,12 +346,13 @@ export function calcStoredSubsidy(row: {
 /* ---------- 保留の理由 ---------- */
 
 /** 確定していない理由。NULL（確定済み）以外は税理士提出・支給集計に含めない */
-export type HoldReason = "excess" | "course" | "attach"
+export type HoldReason = "excess" | "course" | "attach" | "undecided"
 
 export const HOLD_REASON_LABELS: Record<HoldReason, string> = {
   excess: "上限超過の承認待ち",
   course: "講座の割り当て待ち",
   attach: "合格通知の添付待ち",
+  undecided: "支給率が未定（担当の判断待ち）",
 }
 
 /** スタッフに見せる保留の説明 */
@@ -272,4 +360,5 @@ export const HOLD_REASON_STAFF_TEXT: Record<HoldReason, string> = {
   excess: "上限を超えた分は、担当が確認のうえご連絡します。",
   course: "講座の確認が必要なため、担当が確認のうえご連絡します。",
   attach: "合格通知または修了通知の写真を送っていただくと確定します。",
+  undecided: "支給額の確認が必要なため、担当が確認のうえご連絡します。",
 }
