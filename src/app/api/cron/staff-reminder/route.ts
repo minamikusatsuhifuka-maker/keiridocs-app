@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
 import { parseAiRawObject } from "@/lib/staff-receipt-split"
 import { isSuspended } from "@/lib/line-staff-profile"
+import { notifyAdmins } from "@/lib/line-admin-notify"
 import type { Database } from "@/types/database"
 
 /**
@@ -239,18 +240,17 @@ export async function GET(request: NextRequest) {
       ).catch(() => [] as { hold_reason: string | null }[])
 
       const total = holds.length + incomplete.length
-      const adminId = process.env.ADMIN_LINE_USER_ID
-      if (adminId) {
-        adminNotified = await push(
-          adminId,
-          (day === CLOSING_DAY ? "【本日が締め日です】\n" : "【締め日が近づいています】\n") +
-            `要対応：${total}件\n` +
-            `　確認待ちの申請：${holds.length}件\n` +
-            `　区分が未選択：${incomplete.length}件\n\n` +
-            "確定するまで税理士提出にも給与集計にも入りません。\n" +
-            "アプリの「スタッフ立替」の画面で確認・承認をお願いします。"
-        )
-      }
+      // ふだん確認するのは受付担当なので、院長だけでなく担当にも送る
+      const sentCount = await notifyAdmins(
+        supabase as never,
+        (day === CLOSING_DAY ? "【本日が締め日です】\n" : "【締め日が近づいています】\n") +
+          `要対応：${total}件\n` +
+          `　確認待ちの申請：${holds.length}件\n` +
+          `　区分が未選択：${incomplete.length}件\n\n` +
+          "確定するまで税理士提出にも給与集計にも入りません。\n" +
+          "アプリの「スタッフ立替」の画面で確認・承認をお願いします。"
+      )
+      adminNotified = sentCount > 0
     }
 
     return NextResponse.json({

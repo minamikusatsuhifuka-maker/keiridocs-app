@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/server"
 import { fileExists } from "@/lib/dropbox"
+import { notifyAdmins } from "@/lib/line-admin-notify"
 import type { Database } from "@/types/database"
 
 /**
@@ -141,22 +142,6 @@ async function checkDatabase(): Promise<CheckResult> {
   }
 }
 
-async function push(text: string): Promise<boolean> {
-  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN
-  const to = process.env.ADMIN_LINE_USER_ID
-  if (!token || !to) return false
-  try {
-    const res = await fetch("https://api.line.me/v2/bot/message/push", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ to, messages: [{ type: "text", text: text.slice(0, 4900) }] }),
-    })
-    return res.ok
-  } catch {
-    return false
-  }
-}
-
 export async function GET(request: NextRequest) {
   if (!(await checkAuth(request))) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
@@ -173,13 +158,16 @@ export async function GET(request: NextRequest) {
   // 異常があるときだけ知らせる（毎日「正常です」は読まれなくなるため）
   let notified = false
   if (failures.length > 0) {
-    notified = await push(
-      "⚠️【経費申請アプリの異常】\n" +
+    // 申請できない状態は担当も困るため、院長と受付担当の両方へ送る
+    notified =
+      (await notifyAdmins(
+        createServiceClient() as never,
+        "⚠️【経費申請アプリの異常】\n" +
         "次の確認で問題が見つかりました。\n\n" +
         failures.map((f) => `・${f.name}：${f.detail}`).join("\n") +
-        "\n\nこの状態だと、スタッフが申請できない、または領収書が保存されない\n" +
-        "可能性があります。設定のご確認をお願いします。"
-    )
+          "\n\nこの状態だと、スタッフが申請できない、または領収書が保存されない\n" +
+          "可能性があります。設定のご確認をお願いします。"
+      )) > 0
   }
 
   return NextResponse.json({

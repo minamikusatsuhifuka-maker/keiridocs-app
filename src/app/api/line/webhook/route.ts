@@ -41,7 +41,6 @@ import {
   isCommuteMethodUnanswered,
   isCommuterPassUnanswered,
   isLongAbsence,
-  isReceptionist,
   isSetupComplete,
   isSuspended,
   loadStaffLineState,
@@ -56,6 +55,7 @@ import {
   type StaffLineState,
 } from "@/lib/line-staff-profile"
 import { decidePassDeparture, passDeductionNote } from "@/lib/commuter-pass-deduction"
+import { notifyAdmins } from "@/lib/line-admin-notify"
 import {
   COURSE_NOT_LISTED,
   OTHER_ITEMS,
@@ -3127,8 +3127,8 @@ async function handleTransitText(
       const staffMembers = await fetchStaffMembers(supabase)
       const me = staffMembers ? resolveStaffForUser(staffMembers, source.userId) : null
       const name = me?.name ?? "お名前未登録の方"
-      const sent = await forwardToReceptionists(
-        supabase,
+      const sent = await notifyAdmins(
+        supabase as never,
         "【スタッフからの問い合わせ】\n" +
           `${name}さん\n\n` +
           `${body.slice(0, 1500)}\n\n` +
@@ -4160,16 +4160,13 @@ async function handleNameConfirmPostback(event: LineEvent, params: URLSearchPara
     console.log(`line_user_id登録: ${target.name} = ${source.userId}`)
     // 担当に知らせる。氏名を知っていれば他人でも先に登録できてしまうため、
     // 「身に覚えのない登録」にその場で気づけるようにする。
-    const adminId = process.env.ADMIN_LINE_USER_ID
-    if (adminId) {
-      await pushMessage(
-        adminId,
-        "【LINE登録のお知らせ】\n" +
-          `${target.name}さんがLINEの登録を完了しました。\n\n` +
-          "身に覚えのない登録の場合は、管理画面の「スタッフ」タブで\n" +
-          "そのスタッフの行を確認してください。"
-      ).catch(() => {})
-    }
+    await notifyAdmins(
+      supabase as never,
+      "【LINE登録のお知らせ】\n" +
+        `${target.name}さんがLINEの登録を完了しました。\n\n` +
+        "身に覚えのない登録の場合は、管理画面の「スタッフ」タブで\n" +
+        "そのスタッフの行を確認してください。"
+    ).catch(() => {})
   }
   // DB更新が反映されるまでの保険（30分）
   staffNameCache.set(source.userId, { staffId: target.id, staffName: target.name, expiresAt: Date.now() + CACHE_TTL_MS })
@@ -4597,38 +4594,6 @@ async function startContact(event: LineEvent, supabase: ServiceClient): Promise<
       "※仕事の手順の質問（例「受付の手順は？」）は、\n" +
       "　メニューを使わずそのまま送ると自動で回答します。"
   )
-}
-
-/**
- * 受付担当へ転送する。
- *
- * 院長（ADMIN_LINE_USER_ID）と、スタッフ一覧で「受付担当」にした方へ送る。
- * 1人も設定されていなくても院長には届く。
- *
- * @returns 送れた人数
- */
-async function forwardToReceptionists(supabase: ServiceClient, text: string): Promise<number> {
-  const targets = new Set<string>()
-  const adminId = process.env.ADMIN_LINE_USER_ID
-  if (adminId) targets.add(adminId)
-
-  try {
-    const { data } = await supabase
-      .from("staff_members")
-      .select("line_user_id, line_profile")
-      .not("line_user_id", "is", null)
-    for (const row of (data ?? []) as { line_user_id: string | null; line_profile?: unknown }[]) {
-      if (row.line_user_id && isReceptionist(row.line_profile)) targets.add(row.line_user_id)
-    }
-  } catch (e) {
-    console.warn("[contact] 受付担当の取得に失敗:", e)
-  }
-
-  let sent = 0
-  for (const id of targets) {
-    if (await pushMessage(id, text)) sent++
-  }
-  return sent
 }
 
 /* ---------- アカデミー会員（再受講は3年で6回） ---------- */

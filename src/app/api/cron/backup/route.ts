@@ -3,6 +3,7 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/server"
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
 import { uploadFileOverwrite, deleteFile } from "@/lib/dropbox"
+import { notifyOwnerOnly } from "@/lib/line-admin-notify"
 import type { Database } from "@/types/database"
 
 /**
@@ -66,21 +67,6 @@ async function checkAuth(request: NextRequest): Promise<boolean> {
     return !!user
   } catch {
     return false
-  }
-}
-
-async function push(text: string): Promise<void> {
-  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN
-  const to = process.env.ADMIN_LINE_USER_ID
-  if (!token || !to) return
-  try {
-    await fetch("https://api.line.me/v2/bot/message/push", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ to, messages: [{ type: "text", text: text.slice(0, 4900) }] }),
-    })
-  } catch {
-    // 通知できなくてもバックアップ自体の結果は返す
   }
 }
 
@@ -151,7 +137,8 @@ export async function GET(request: NextRequest) {
 
   const failures = results.filter((r) => !r.ok)
   if (failures.length > 0) {
-    await push(
+    // 保守の話で日々の運用には影響しないため、院長だけに知らせる
+    await notifyOwnerOnly(
       "⚠️【バックアップの失敗】\n" +
         `${today} のバックアップで ${failures.length}件 書き出せませんでした。\n\n` +
         failures.map((f) => `・${f.table}：${f.error}`).join("\n") +
