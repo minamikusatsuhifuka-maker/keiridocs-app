@@ -147,6 +147,7 @@ export async function GET() {
         pass: all.filter((i) => i.kind === "pass").length,
         term: all.filter((i) => i.kind === "term").length,
         detail: all.filter((i) => i.kind === "detail").length,
+        dup: all.filter((i) => i.kind === "dup").length,
         incomplete: all.filter((i) => i.kind === "incomplete").length,
       },
     })

@@ -50,6 +50,73 @@ export function createServiceClient(): ServiceClient {
   return createClient<Database>(url, serviceKey)
 }
 
+/** 支払先の比較用の正規化（空白・記号・全半角の違いを吸収する） */
+function normalizeStoreName(name: string | null | undefined): string {
+  return (name ?? "")
+    .normalize("NFKC")
+    .replace(/[\s　（）()「」『』・,、.。\-ー―–]/g, "")
+    .toLowerCase()
+}
+
+/**
+ * 同じ内容の申請が既に確定していないかを調べる（二重申請の検知）。
+ *
+ * 同じスタッフ・同じ日付・同じ金額・同じ支払先がそろったときだけ疑う。
+ * 金額だけ、日付だけで疑うと、同じ運賃の電車代など正当な申請まで
+ * 止めてしまい、担当の確認作業が増えて意味がなくなる。
+ *
+ * 支払先が両方とも読み取れていない場合は、日付と金額が一致した時点で疑う
+ * （読み取れていないものを「違う支払先」とは言えないため）。
+ */
+async function hasDuplicateStaffReceipt(
+  supabase: ServiceClient,
+  target: {
+    receiptId: string
+    staffMemberId: string
+    date: string | null
+    amount: number
+    storeName: string | null
+  }
+): Promise<boolean> {
+  // 日付が読み取れていないものは照合できない（誤検知を増やすだけなので調べない）
+  if (!target.date || !target.staffMemberId || !target.amount) return false
+
+  try {
+    const { data, error } = await supabase
+      .from("staff_receipts")
+      .select("id, store_name")
+      .eq("staff_member_id", target.staffMemberId)
+      .eq("date", target.date)
+      .eq("amount", target.amount)
+      .neq("id", target.receiptId)
+    if (error || !data || data.length === 0) return false
+
+    const myStore = normalizeStoreName(target.storeName)
+    const candidates = (data as { id: string; store_name: string | null }[]).filter((row) => {
+      const other = normalizeStoreName(row.store_name)
+      if (!myStore && !other) return true // どちらも未読み取り
+      return myStore === other
+    })
+    if (candidates.length === 0) return false
+
+    // 既に精算済み（支給の対象になっている）ものがあるかを確認する。
+    // 未精算のまま残っているだけなら二重支給にはならないので疑わない。
+    const { data: settled } = await supabase
+      .from("petty_cash_transactions")
+      .select("id")
+      .in(
+        "staff_receipt_id",
+        candidates.map((c) => c.id)
+      )
+      .limit(1)
+    return !!settled && settled.length > 0
+  } catch (e) {
+    // 照合できなかったときに止めてしまうと正当な申請まで滞るため、通す
+    console.warn("[staff-refund] 二重申請の照合に失敗:", e)
+    return false
+  }
+}
+
 /**
  * staff_receipts のレコードを精算方法に応じて petty_cash_transactions に確定登録する。
  *
@@ -190,6 +257,14 @@ export async function settleStaffReceipt(params: {
       pendingCourseName: params.phase2.pendingCourseName ?? null,
       awaitingAttachment: params.phase2.awaitingAttachment,
       commuterPassIncluded: params.phase2.commuterPassIncluded,
+      // 同じ領収書を2回送った場合に二重支給しないよう、確定前に照合する
+      duplicateSuspected: await hasDuplicateStaffReceipt(supabase, {
+        receiptId: params.staffReceiptId,
+        staffMemberId: r.staff_member_id as string,
+        date: (r.date as string | null) ?? null,
+        amount,
+        storeName: (r.store_name as string | null) ?? null,
+      }),
       // アカデミー会員の有効期間は領収書の日付で判定する（申請日ではない）
       judgeDate: (r.date as string | null) ?? null,
       submittedAt: new Date((r.created_at as string | null) ?? Date.now()),

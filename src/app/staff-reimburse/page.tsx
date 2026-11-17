@@ -119,7 +119,7 @@ interface Row {
  */
 interface PendingItem {
   id: string
-  kind: "excess" | "course" | "attach" | "pass" | "term" | "detail" | "incomplete"
+  kind: "excess" | "course" | "attach" | "pass" | "term" | "detail" | "dup" | "incomplete"
   /** 連絡（LINE）に使う staff_members.id */
   staffMemberId: string | null
   staffName: string
@@ -140,6 +140,7 @@ const PENDING_LABELS: Record<PendingItem["kind"], string> = {
   pass: "定期券区間",
   term: "会員期間外",
   detail: "内訳がその他",
+  dup: "二重申請の疑い",
   incomplete: "未完了",
 }
 
@@ -148,6 +149,7 @@ const PENDING_HELP: Record<PendingItem["kind"], string> = {
   excess: "上限を超えた分を承認するか決めてください。承認するとスタッフへ自動で通知されます。",
   course: "講座マスタに無い講座名で申請されています。/mkadmin の講座マスタで登録・割り当てしてください。",
   attach: "合格通知または修了通知の写真が届いていません。スタッフへ催促してください。",
+  dup: "同じスタッフ・同じ日付・同じ金額・同じ支払先の申請が既に確定しています。同じ領収書を2回送った可能性があります。別の支出であれば「このまま確定する」を、重複であれば「承認しない」を押してください。",
   detail: "「その他」で申請されています。スタッフが書いた内容（明細の摘要に入っています）を確認し、支給してよければ「このまま確定する」を押してください。金額を変える場合は下の明細で直してから確定してください。",
   term: "アカデミー会員の有効期間（開始日から3年）を過ぎているか、開始日が未登録です。スタッフの「設定」→「アカデミー会員の登録」で開始日を登録してもらうか、期間外の扱いを決めてから確定してください。",
   pass: "切符などで定期券区間が含まれている可能性があります。院が通勤手当を払っているため、その区間の運賃を差し引いて承認してください（差し引く額は「金額を指定して承認」で入力できます）。",
@@ -890,7 +892,7 @@ export default function StaffReimbursePage() {
                     </div>
 
                     {/* 定期券区間の確認。含まれていなければそのまま確定できる */}
-                    {(p.kind === "pass" || p.kind === "detail") && (
+                    {(p.kind === "pass" || p.kind === "detail" || p.kind === "dup") && (
                       <div className="flex flex-col gap-2 sm:w-64 sm:shrink-0">
                         <Button
                           size="sm"
@@ -901,7 +903,9 @@ export default function StaffReimbursePage() {
                                 `${p.staffName}さんの ${p.itemLabel} ${yen(p.amount)} を、この金額のまま確定します。\n\n` +
                                   (p.kind === "pass"
                                     ? "定期券区間が含まれていないことを確認してから押してください。"
-                                    : "内容を確認してから押してください。") +
+                                    : p.kind === "dup"
+                                      ? "同じ領収書の重複でないことを確認してから押してください。"
+                                      : "内容を確認してから押してください。") +
                                   "\n\nよろしいですか？"
                               )
                             ) {

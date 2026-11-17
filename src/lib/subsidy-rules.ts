@@ -425,6 +425,7 @@ export type HoldReason =
   | "pass"
   | "term"
   | "detail"
+  | "dup"
 
 export const HOLD_REASON_LABELS: Record<HoldReason, string> = {
   excess: "上限超過の承認待ち",
@@ -435,6 +436,7 @@ export const HOLD_REASON_LABELS: Record<HoldReason, string> = {
   pass: "定期券区間を含む可能性（担当の確認待ち）",
   term: "アカデミー会員の期間外・回数超過（担当の確認待ち）",
   detail: "内訳が「その他」（担当の確認待ち）",
+  dup: "同じ内容の申請が既にある（担当の確認待ち）",
 }
 
 /** スタッフに見せる保留の説明 */
@@ -447,4 +449,5 @@ export const HOLD_REASON_STAFF_TEXT: Record<HoldReason, string> = {
   pass: "定期券区間の分を差し引く必要があるため、担当が確認のうえ確定します。",
   term: "アカデミー会員の期間や回数の確認が必要なため、担当が確認のうえご連絡します。",
   detail: "内容の確認が必要なため、担当が確認のうえご連絡します。",
+  dup: "同じ内容の申請が既にあるため、担当が確認のうえご連絡します。",
 }

@@ -73,6 +73,13 @@ export interface AssessInput {
    */
   commuterPassIncluded?: boolean
   /**
+   * 同じ内容の申請が既にあるか（二重申請の疑い）。
+   *
+   * 同じスタッフ・同じ日付・同じ金額・同じ支払先の申請が既に確定している場合に true。
+   * 二重に支給してしまうと取り返せないため、自動では確定させない。
+   */
+  duplicateSuspected?: boolean
+  /**
    * 支給の判定に使う日付（YYYY-MM-DD）。領収書の日付（支払日）を渡すこと。
    *
    * アカデミー会員の有効期間（3年）の判定に使う。
@@ -185,7 +192,9 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
   let holdReason: HoldReason | null = null
   // 定期券区間が金額に含まれている可能性があるものは、院が払う通勤手当との
   // 二重払いになるため自動で確定させない（差し引く額は担当が判断する）。
-  if (input.commuterPassIncluded) holdReason = "pass"
+  // 二重払いは取り返せないため最優先で止める
+  if (input.duplicateSuspected) holdReason = "dup"
+  else if (input.commuterPassIncluded) holdReason = "pass"
   // 「その他」は規程に当てはめられないため、必ず担当が内容を見て判断する
   else if (needsDetailReview(item)) holdReason = "detail"
   else if (academyOutOfTerm) holdReason = "term"
