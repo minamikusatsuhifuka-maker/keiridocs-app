@@ -11,7 +11,8 @@
     "db:types": "supabase gen types typescript --project-id qwyfzsaebyiykafpxgsu > src/types/database.ts",
     "richmenu:render": "node scripts/richmenu/render.mjs",
     "richmenu:deploy": "tsx scripts/richmenu/deploy.ts",
-    "flex:preview": "tsx scripts/flex-preview.ts"
+    "flex:preview": "tsx scripts/flex-preview.ts",
+    "subsidy:verify": "tsx scripts/verify-subsidy-rules.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
