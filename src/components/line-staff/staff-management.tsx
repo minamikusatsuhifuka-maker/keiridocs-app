@@ -135,6 +135,8 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const nameConflicts = findNameConflicts(activeStaff)
   const setupSummary = {
     notDone: activeStaff.filter((m) => !setupStatus(m).done).length,
+    // 給与や手続きに使うお名前の未登録（担当が埋める項目。本人では登録できない）
+    noLegalName: activeStaff.filter((m) => !(m.legal_name ?? "").trim()).length,
     noStation: activeStaff.filter((m) => !m.home_station).length,
     methodUnanswered: activeStaff.filter((m) => !parseLineProfile(m.line_profile).commute_method).length,
     // 車・自転車・徒歩の方は定期券を聞かないので未回答に数えない
@@ -166,7 +168,11 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   /* ---------- 追加 ---------- */
   async function handleAdd() {
     if (!newName.trim()) {
-      toast.error("名前を入力してください")
+      toast.error("院内で使っているお名前を入力してください")
+      return
+    }
+    if (!newLegalName.trim()) {
+      toast.error("給与や手続きに使うお名前を入力してください（同じ場合も同じお名前を）")
       return
     }
     setIsAdding(true)
@@ -204,7 +210,11 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
 
   async function handleEdit() {
     if (!editingStaff || !editName.trim()) {
-      toast.error("名前を入力してください")
+      toast.error("院内で使っているお名前を入力してください")
+      return
+    }
+    if (!editLegalName.trim()) {
+      toast.error("給与や手続きに使うお名前を入力してください（同じ場合も同じお名前を）")
       return
     }
     setIsSaving(true)
@@ -398,6 +408,12 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
               そのため<strong>この一覧はフルネームで登録</strong>してください。
             </p>
             <p>LINE未登録のスタッフにはリマインダーが届きません。</p>
+            {setupSummary.noLegalName > 0 && (
+              <p className="mt-1 text-amber-700 dark:text-amber-400">
+                <strong>給与や手続きに使うお名前が未登録：{setupSummary.noLegalName}名</strong>
+                　各カードの「編集」から入力してください（院内と同じ場合も同じお名前を入力します）。
+              </p>
+            )}
             {staff.length > 0 && (
               <p className="mt-1">
                 LINE初回設定：未完了 {setupSummary.notDone}名 ／ 最寄り駅 未登録 {setupSummary.noStation}名 ／ 通勤手段 未回答{" "}
@@ -502,6 +518,12 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                         )}
 
                         {/* 直してほしいことだけを並べる（LINEの照合は完全一致のため） */}
+                        {/* 給与氏名が未登録の行は給与処理で取り違えるため、埋めてもらう */}
+                        {!(member.legal_name ?? "").trim() && (
+                          <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-400">
+                            給与や手続きに使うお名前が未登録です（「編集」から入力してください）
+                          </p>
+                        )}
                         {!member.name.trim().includes(" ") &&
                           !member.name.trim().includes("　") &&
                           member.name.trim().length <= 3 && (
@@ -720,16 +742,17 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
             </div>
             {/* 給与・行政上の氏名。入職時点で旧姓勤務が分かっている場合に入れる */}
             <div className="space-y-2">
-              <Label htmlFor="new-legal-name">② 給与や手続きに使うお名前（任意）</Label>
+              <Label htmlFor="new-legal-name">② 給与や手続きに使うお名前</Label>
               <Input
                 id="new-legal-name"
-                placeholder="同じ場合は空欄のまま"
+                placeholder="例: 北 ひふ子"
                 value={newLegalName}
                 onChange={(e) => setNewLegalName(e.target.value)}
               />
               <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                院内で使っているお名前と異なる場合のみ、フルネームでご入力ください。
-                あとから「編集」でも登録できます。
+                給与・社会保険・源泉徴収に使うお名前（戸籍のお名前）をフルネームで入力してください。
+                <strong>院内で使っているお名前と同じ場合も、同じお名前を入力してください。</strong>
+                空欄にできる作りだと「同じ」と「入れ忘れ」が区別できず、給与処理の取り違えにつながるためです。
               </p>
             </div>
             <div className="flex justify-end gap-2">
@@ -746,7 +769,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
               <Button
                 className="btn-dusk-primary"
                 onClick={handleAdd}
-                disabled={isAdding || !newName.trim()}
+                disabled={isAdding || !newName.trim() || !newLegalName.trim()}
               >
                 {isAdding && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 追加
@@ -785,18 +808,26 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
               LINEの氏名照合はどちらの氏名でも通るので、スタッフが取り違えても申請できる。
             */}
             <div className="space-y-2">
-              <Label htmlFor="edit-legal-name">② 給与や手続きに使うお名前（任意）</Label>
+              <Label htmlFor="edit-legal-name">② 給与や手続きに使うお名前</Label>
               <Input
                 id="edit-legal-name"
-                placeholder="同じ場合は空欄のまま"
+                placeholder="例: 北 ひふ子"
                 value={editLegalName}
                 onChange={(e) => setEditLegalName(e.target.value)}
               />
               <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                院内で使っているお名前と異なる場合のみ、フルネームでご入力ください。
-                同じ場合は空欄で大丈夫です。
+                給与・社会保険・源泉徴収に使うお名前（戸籍のお名前）をフルネームで入力してください。
+                <strong>院内で使っているお名前と同じ場合も、同じお名前を入力してください。</strong>
                 <br />
-                ご入力いただくと、LINEで<strong>どちらのお名前を送っても</strong>ご本人と判定します。
+                LINEでは<strong>どちらのお名前を送っても</strong>ご本人と判定します。
+                <br />
+                <button
+                  type="button"
+                  className="underline"
+                  onClick={() => setEditLegalName(editName)}
+                >
+                  院内のお名前と同じにする
+                </button>
               </p>
             </div>
             {/* 自宅最寄り駅（領収書なし交通費の電車運賃AI推定の出発駅。県は同名駅の特定用） */}
@@ -834,7 +865,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
               <Button
                 className="btn-dusk-primary"
                 onClick={handleEdit}
-                disabled={isSaving || !editName.trim()}
+                disabled={isSaving || !editName.trim() || !editLegalName.trim()}
               >
                 {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 保存

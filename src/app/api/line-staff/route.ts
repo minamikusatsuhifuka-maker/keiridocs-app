@@ -61,22 +61,29 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json() as { name?: string; legal_name?: string | null }
     const name = body.name?.trim()
-    // 給与・行政上の氏名（旧姓で勤務している場合のみ）。同じなら保存しない
+    // 給与・行政上の氏名。院内と同じ場合も入力してもらう（必須）。
+    // 任意にすると「空欄＝同じ」と「入力し忘れ」が区別できず、給与処理の取り違えにつながる。
     const legalName = body.legal_name?.trim() || null
 
     if (!name) {
-      return NextResponse.json({ error: "名前は必須です" }, { status: 400 })
+      return NextResponse.json({ error: "院内で使っているお名前は必須です" }, { status: 400 })
+    }
+    if (!legalName) {
+      return NextResponse.json(
+        { error: "給与や手続きに使うお名前は必須です（院内と同じ場合も同じお名前を入力してください）" },
+        { status: 400 }
+      )
     }
 
     const service = createServiceClient()
     let { data, error } = await service
       .from("staff_members")
-      .insert(legalName ? { name, legal_name: legalName } : { name })
+      .insert({ name, legal_name: legalName })
       .select("*")
       .single()
 
     // 046 未適用の環境では legal_name が無いので、氏名だけで登録し直す
-    if (error && legalName && /legal_name|PGRST204|42703/.test(`${error.message} ${error.code}`)) {
+    if (error && /legal_name|PGRST204|42703/.test(`${error.message} ${error.code}`)) {
       console.warn("legal_name 未適用のため氏名のみで登録します:", error.message)
       const retry = await service.from("staff_members").insert({ name }).select("*").single()
       data = retry.data
@@ -129,11 +136,17 @@ export async function PUT(request: NextRequest) {
       }
       updates.name = name
     }
-    // 給与・行政上の氏名。結婚などで戸籍の氏名が変わっても旧姓で勤務する場合に入れる。
-    // 仕事上の氏名（name）と同じなら保存しない（併記が増えて画面が読みにくくなる）。
+    // 給与・行政上の氏名。院内と同じ場合も入力してもらう（必須）。
+    // 任意にすると「空欄＝同じ」と「入力し忘れ」が区別できず、給与処理の取り違えにつながる。
     if (body.legal_name !== undefined) {
       const legal = body.legal_name?.trim() || ""
-      updates.legal_name = legal || null
+      if (!legal) {
+        return NextResponse.json(
+          { error: "給与や手続きに使うお名前は必須です（院内と同じ場合も同じお名前を入力してください）" },
+          { status: 400 }
+        )
+      }
+      updates.legal_name = legal
     }
     if (body.line_user_id !== undefined) {
       updates.line_user_id = body.line_user_id
