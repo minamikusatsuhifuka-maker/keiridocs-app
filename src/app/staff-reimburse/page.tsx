@@ -897,8 +897,9 @@ export default function StaffReimbursePage() {
                           </ul>
                           {p.kind === "excess" && (
                             <p className="mt-1.5 text-xs" style={{ color: "var(--muted-foreground)" }}>
-                              同じ講座を次の回として受講した分であれば、
-                              「スタッフ」タブの「交通費・宿泊費の枠」で枠を数え直してください。
+                              再受講の枠は、受講料が申請された時点で自動的に数え直します。
+                              受講料より先に交通費を申請されたためにここへ上がっている場合は、
+                              「スタッフ」タブの「交通費・宿泊費の枠」で数え直してから承認してください。
                             </p>
                           )}
                         </div>

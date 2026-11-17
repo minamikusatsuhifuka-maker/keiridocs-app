@@ -114,8 +114,10 @@ export interface AssessResult extends SubsidyResult {
   holdReason: HoldReason | null
   /** 上限枠のうち既に使った立替額 */
   capUsed: number
-  /** 枠を最後に数え直した日時（講座ごと）。数え直していなければ null */
+  /** 交通費・宿泊費の枠を数え始めた時点。全期間を数えているなら null */
   capResetAt: string | null
+  /** 枠を数え始めた理由（all=講座の全期間／tuition=直近の受講料以降／manual=担当の数え直し） */
+  capWindowOrigin: TravelWindowOrigin
   /** テストスタッフのため枠を数えていないか（テスト申請は枠を消費しない） */
   capSkippedForTest: boolean
 }
@@ -149,6 +151,13 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
   const staffState = await fetchStaffCapState(supabase, staffMemberId, input.courseId ?? null)
   const counted = staffState.isTest ? [] : await rejectCancelled(supabase, priors)
 
+  // 交通費・宿泊費の枠は「受講ごと」に数える（travelWindowStart）
+  const travelWindowStart = resolveTravelWindowStart(
+    counted,
+    input.courseId ?? null,
+    staffState.travelCapResetAt
+  )
+
   const capUsed = isTravelItem(item)
     ? sumCapUsed(
         counted
@@ -158,7 +167,7 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
               p.course_id === input.courseId &&
               isTravelItem(p.expense_item as ExpenseItem)
           )
-          .filter((p) => isAfterReset(p, staffState.travelCapResetAt))
+          .filter((p) => isAfterReset(p, travelWindowStart.at))
       )
     : item === "books" || item === "medical"
       ? sumCapUsed(
@@ -245,7 +254,8 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
     priorTuitionCount,
     holdReason,
     capUsed,
-    capResetAt: staffState.travelCapResetAt,
+    capResetAt: travelWindowStart.at,
+    capWindowOrigin: travelWindowStart.origin,
     capSkippedForTest: staffState.isTest,
   }
 }
@@ -284,6 +294,53 @@ function isAfterReset(row: PriorRow, resetAt: string | null): boolean {
   if (!resetAt) return true
   if (!row.created_at) return true // 日時が無いものは安全側（枠に数える）
   return row.created_at > resetAt
+}
+
+/** 交通費・宿泊費の枠を、いつ以降の申請で数えるか */
+export type TravelWindowOrigin = "all" | "tuition" | "manual"
+
+/**
+ * 交通費・宿泊費の枠（講座ごと30,000円）を数え始める時点を決める。
+ *
+ * ■ なぜ時点が必要か
+ * 枠は「講座ごと」だが、講座マスタは同じ講座名を再受講でも使い回すため、
+ * 講座の生涯累計で数えると1回目の受講で枠を使い切り、
+ * 2回目以降の交通費が全額「上限超過・支給額0円」になってしまう。
+ *
+ * ■ 自動で数え直す（tuition）
+ * その講座の**直近の受講料の申請より後**の分だけを数える。
+ * 受講料を申請した時点で次の受講が始まったと見なせるため、
+ * 担当が操作しなくても受講ごとに枠が戻る。
+ *
+ * 受講料より先に交通費を申請した場合は、まだ前の受講の枠で数えるため
+ * 上限超過として担当の確認に回る（過大支給にはならない）。
+ * そのまま支給してよければ、担当が「交通費・宿泊費の枠」で数え直す。
+ *
+ * ■ 手動の数え直し（manual）
+ * 担当の操作のほうが新しければそちらを使う（最後の操作を優先する）。
+ */
+export function resolveTravelWindowStart(
+  counted: PriorRow[],
+  courseId: string | null,
+  manualResetAt: string | null
+): { at: string | null; origin: TravelWindowOrigin } {
+  if (!courseId) return { at: manualResetAt, origin: manualResetAt ? "manual" : "all" }
+
+  // その講座の直近の受講料の申請
+  const latestTuition = counted
+    .filter((p) => p.course_id === courseId && p.expense_item === "tuition" && p.created_at)
+    .map((p) => p.created_at as string)
+    .sort()
+    .pop() ?? null
+
+  if (manualResetAt && latestTuition) {
+    return manualResetAt >= latestTuition
+      ? { at: manualResetAt, origin: "manual" }
+      : { at: latestTuition, origin: "tuition" }
+  }
+  if (manualResetAt) return { at: manualResetAt, origin: "manual" }
+  if (latestTuition) return { at: latestTuition, origin: "tuition" }
+  return { at: null, origin: "all" }
 }
 
 /**

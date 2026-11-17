@@ -441,15 +441,25 @@ export function calcBreakdownLines(
     rate: number
     capUsed: number
     holdReason?: HoldReason | null
+    /** 交通費・宿泊費の枠をどの時点から数えているか */
+    capWindowOrigin?: "all" | "tuition" | "manual"
   },
   amount: number,
   item: ExpenseItem
 ): string[] {
   const lines: string[] = []
-  
+
   if (assessed.cap !== null) {
     const unit = isTravelItem(item) ? "この講座の交通費＋宿泊費 合計" : "今月"
     lines.push(`上限：${unit} ${yen(assessed.cap)}`)
+    // 「すでに使った分」がどの範囲の合計なのかを明示する（受講ごとに数え直すため）
+    if (isTravelItem(item)) {
+      if (assessed.capWindowOrigin === "tuition") {
+        lines.push("数える範囲：今回の受講分（直近の受講料の申請より後）")
+      } else if (assessed.capWindowOrigin === "manual") {
+        lines.push("数える範囲：担当が数え直した時点より後")
+      }
+    }
     if (assessed.capUsed > 0) {
       lines.push(`すでに使った分：${yen(assessed.capUsed)}`)
       lines.push(`残りの枠：${yen(Math.max(0, assessed.cap - assessed.capUsed))}`)

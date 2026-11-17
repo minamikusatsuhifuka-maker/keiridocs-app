@@ -25,6 +25,7 @@ import {
   type ExpenseItem,
 } from "../src/lib/subsidy-rules"
 import { applyYear, deriveTransitTrips, hasUnknownYear } from "../src/lib/transit-history"
+import { resolveTravelWindowStart } from "../src/lib/subsidy-assess"
 
 let passed = 0
 const failures: string[] = []
@@ -398,6 +399,82 @@ check(
     calc({ ...half, amount: 1460, travelCapUsed: 30000 }),
     { 支給: 0, 超過: 1460, 承認既定値: 730 }
   )
+}
+
+/* ---------- 交通費・宿泊費の枠を数え始める時点（受講ごとに自動で数え直す） ---------- */
+{
+  const C = "course-1"
+  const row = (p: { item: string; at: string; course?: string }) => ({
+    id: p.at,
+    amount: 1000,
+    expense_item: p.item,
+    course_id: p.course ?? C,
+    excess_amount: 0,
+    staff_receipt_id: null,
+    created_at: p.at,
+  })
+
+  check("実績が無ければ全期間を数える", resolveTravelWindowStart([], C, null), {
+    at: null,
+    origin: "all",
+  })
+
+  check(
+    "初受講で交通費だけ申請済みなら、まだ全期間を数える",
+    resolveTravelWindowStart([row({ item: "transport", at: "2026-03-01T00:00:00Z" })], C, null),
+    { at: null, origin: "all" }
+  )
+
+  // 再受講：受講料を申請した時点から枠を数え直す
+  check(
+    "受講料の申請があれば、その時点より後だけを数える",
+    resolveTravelWindowStart(
+      [
+        row({ item: "tuition", at: "2026-01-10T00:00:00Z" }),
+        row({ item: "transport", at: "2026-01-20T00:00:00Z" }),
+        row({ item: "tuition", at: "2026-06-10T00:00:00Z" }),
+      ],
+      C,
+      null
+    ),
+    { at: "2026-06-10T00:00:00Z", origin: "tuition" }
+  )
+
+  check(
+    "別の講座の受講料は数え始めの時点に影響しない",
+    resolveTravelWindowStart(
+      [row({ item: "tuition", at: "2026-06-10T00:00:00Z", course: "course-2" })],
+      C,
+      null
+    ),
+    { at: null, origin: "all" }
+  )
+
+  // 担当の手動操作は、受講料より後であれば優先する（最後の操作を優先）
+  check(
+    "手動の数え直しが受講料より後なら手動を使う",
+    resolveTravelWindowStart(
+      [row({ item: "tuition", at: "2026-06-10T00:00:00Z" })],
+      C,
+      "2026-07-01T00:00:00Z"
+    ),
+    { at: "2026-07-01T00:00:00Z", origin: "manual" }
+  )
+
+  check(
+    "手動の数え直しが受講料より前なら受講料を使う",
+    resolveTravelWindowStart(
+      [row({ item: "tuition", at: "2026-06-10T00:00:00Z" })],
+      C,
+      "2026-02-01T00:00:00Z"
+    ),
+    { at: "2026-06-10T00:00:00Z", origin: "tuition" }
+  )
+
+  check("講座に紐づかない申請は枠の数え直しをしない", resolveTravelWindowStart([], null, null), {
+    at: null,
+    origin: "all",
+  })
 }
 
 /* ---------- 確認画面に出す計算内訳 ---------- */

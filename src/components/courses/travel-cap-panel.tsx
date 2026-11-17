@@ -128,9 +128,13 @@ export function TravelCapPanel() {
         <CardDescription>
           交通費＋宿泊費は<strong>講座ごとに合計 ¥{TRAVEL_CAP_PER_COURSE.toLocaleString("ja-JP")}</strong>までです。
           <br />
-          同じ講座を<strong>次の回として受講する</strong>とき、その方の枠をここで数え直します。
-          数え直さないと、1回目の受講で枠を使い切った方の交通費が
-          「上限超過・支給額0円」になります。
+          <strong>再受講のときは自動で数え直します。</strong>
+          その講座の受講料が申請された時点より後の分だけを枠に数えるため、
+          通常はこの画面を触る必要はありません。
+          <br />
+          手動で数え直すのは、<strong>受講料より先に交通費を申請された場合</strong>だけです。
+          その申請は前の受講の枠で数えるため「上限超過」として要対応に上がります。
+          支給してよければ、その方の枠をここで数え直してから承認してください。
           <br />
           <strong>確定済みの支給額は変わりません。</strong>
           押した日時より後の申請だけを枠に数えるようになります。
@@ -197,7 +201,7 @@ export function TravelCapPanel() {
                       </span>
                     ) : (
                       <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-                        最初の受講分として数えています
+                        受講料の申請をもとに自動で数えています
                       </span>
                     )}
                   </div>
