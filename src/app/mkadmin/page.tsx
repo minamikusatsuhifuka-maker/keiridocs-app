@@ -34,10 +34,15 @@ const SESSION_KEY = "mkadmin-auth"
 
 /**
  * タブ一覧の折り返し対応。
- * 既定では一覧の高さが h-9 に固定され、各タブの高さが「一覧全体の100%」になるため、
- * 折り返すと2段目以降が伸びて文字が重なる。h-auto で両方を解除する。
+ *
+ * TabsList の既定の高さ指定は
+ * `group-data-[orientation=horizontal]/tabs:h-9` という**修飾子付き**のため、
+ * 素の `h-auto` を足しても tailwind-merge では打ち消せず残ってしまう
+ * （高さ36pxのまま行が折り返し、2段目以降が下の内容に重なる）。
+ * 同じ修飾子を付けた h-auto で上書きする必要がある。
  */
-const TABS_LIST = "flex h-auto w-full flex-wrap items-start justify-start gap-x-4 gap-y-2 p-2"
+const TABS_LIST =
+  "flex h-auto w-full flex-wrap items-start justify-start gap-x-4 gap-y-2 p-2 group-data-[orientation=horizontal]/tabs:h-auto"
 
 /** 各タブ。高さを固定し、flex-1 の引き伸ばしを解除する（TabsTrigger 側の指定を上書き） */
 const TAB_ITEM = "flex h-8 flex-none items-center gap-1.5 px-2.5"
