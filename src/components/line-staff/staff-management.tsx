@@ -404,7 +404,40 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
 
   /* ---------- 退職 ON/OFFトグル（論理削除。記録は残す） ---------- */
   async function handleToggleRetired(member: StaffMember, next: boolean) {
-    if (next && !confirm(`「${member.name}」を退職にしますか？\n\n一覧から隠れ、LINEからの申請も受け付けなくなります。\n過去の申請記録と支給額はそのまま残ります。`)) return
+    if (next) {
+      // 退職にすると一覧から隠れて誰も見なくなるため、
+      // 未処理の申請が残っていないかを先に確認する（支給もれの防止）。
+      let warning = ""
+      try {
+        const res = await fetch(`/api/line-staff/unresolved?id=${member.id}`)
+        const json = (await res.json().catch(() => ({}))) as {
+          held?: number
+          incomplete?: number
+          total?: number
+        }
+        if (res.ok && (json.total ?? 0) > 0) {
+          warning =
+            `\n⚠️ ${member.name}さんには未処理の申請が ${json.total}件 残っています。\n` +
+            (json.held ? `　・確認待ちの申請：${json.held}件\n` : "") +
+            (json.incomplete ? `　・区分が未選択：${json.incomplete}件\n` : "") +
+            "\n退職にすると一覧から隠れるため、このままだと支給されないまま\n" +
+            "気づかれなくなる可能性があります。\n" +
+            "先に「スタッフ立替」の要対応を片づけることをおすすめします。\n`"
+        }
+      } catch {
+        // 確認できなくても退職の操作自体は続けられるようにする
+      }
+      if (
+        !confirm(
+          `「${member.name}」を退職にしますか？\n\n` +
+            "一覧から隠れ、LINEからの申請も受け付けなくなります。\n" +
+            "過去の申請記録と支給額はそのまま残ります。\n" +
+            warning
+        )
+      ) {
+        return
+      }
+    }
     setTogglingRetiredId(member.id)
     try {
       const res = await fetch("/api/line-staff", {
