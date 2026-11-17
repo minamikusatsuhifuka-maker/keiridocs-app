@@ -302,6 +302,21 @@ export default function StaffReimbursePage() {
     fetchData()
   }, [fetchData])
 
+  /**
+   * 締め日（毎月20日）までの残り日数。
+   * 20日を過ぎた分は翌月のお給与になるため、担当が一目で分かるようにする。
+   */
+  const closingInfo = (() => {
+    const now = new Date(Date.now() + 9 * 60 * 60 * 1000) // JST
+    const day = now.getUTCDate()
+    if (day === 20) return { label: "本日が締め日です", urgent: true }
+    if (day < 20) return { label: `締めまであと ${20 - day} 日`, urgent: 20 - day <= 3 }
+    // 21日以降は翌月20日まで
+    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 20))
+    const days = Math.ceil((end.getTime() - now.getTime()) / 86400000)
+    return { label: `次の締めまであと ${days} 日`, urgent: false }
+  })()
+
   // 要対応を取得する（期間フィルタとは独立。常に全件を見せて取りこぼしを防ぐ）
   const fetchPending = useCallback(async () => {
     try {
@@ -715,6 +730,56 @@ export default function StaffReimbursePage() {
           </CardContent>
         </Card>
       </div>
+
+      {/*
+        今月の状況。担当（受付）がこの画面だけを見れば済むようにする。
+        複数の画面を見に行く運用は確認もれにつながるため、
+        「締めまであと何日か」「残っている対応は何件か」をここに集める。
+      */}
+      <Card className={pending.length > 0 ? "border-amber-500/60" : undefined}>
+        <CardContent className="pt-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">今月の状況</p>
+              <p className="mt-0.5 text-xs" style={{ color: "var(--muted-foreground)" }}>
+                {closingInfo.label}
+                　（毎月20日締め。確定した分がその月のお給与に入ります）
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="text-center">
+                <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+                  要対応
+                </div>
+                <div
+                  className="text-2xl font-bold"
+                  style={{ color: pending.length > 0 ? "#dc2626" : undefined }}
+                >
+                  {pending.length}件
+                </div>
+              </div>
+              <div className="text-center">
+                <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+                  未確認
+                </div>
+                <div className="text-2xl font-bold">{data?.totals.unreviewedCount ?? 0}件</div>
+              </div>
+              <div className="text-center">
+                <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+                  確定済み
+                </div>
+                <div className="text-2xl font-bold">{Math.max(0, totals.count - pending.length)}件</div>
+              </div>
+            </div>
+          </div>
+          <p className="mt-3 text-xs leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
+            <strong>やること</strong>は2つだけです。
+            ① 下の「要対応」をゼロにする（承認・確認）
+            ② 明細の「確認」にチェックを入れる（内容を見た印）。
+            <strong>要対応が残っていると、その分はその月のお給与に入りません。</strong>
+          </p>
+        </CardContent>
+      </Card>
 
       {/* 要対応：上限超過の承認・講座の確認・添付待ち・未完了の申請を1か所に集める */}
       {pending.length > 0 && (
