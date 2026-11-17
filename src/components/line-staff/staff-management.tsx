@@ -38,6 +38,7 @@ import {
   commuterPassLabel,
   findNameConflicts,
   hasPendingNameChange,
+  hasPriorCourseRecord,
   hasSeparateLegalName,
   mayHaveCommuterPass,
   parseLineProfile,
@@ -425,12 +426,15 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
             「削除」は登録ミスの行を消すためのものです。申請があるスタッフは削除できません。
             <br />
             <strong>「初回ATCの表示」</strong>は、LINEの申請画面に「初回ATC＋アカデミー会員費」を出すかどうかです。
-            本人が「セミナー2回目以降」で申請すると自動で「非表示」に切り替わり、以降は初回を選べなくなります
-            （初回の全額支給を2回受けられないようにするためです）。
-            間違って切り替わったときだけ、ここで戻してください。会計の記録は変わりません。
+            初回の全額支給を2回受けられないようにするためのもので、次のどちらかで<strong>自動的に「非表示」</strong>になります。
             <br />
-            なお、アプリを使う前の受講回数は下の<strong>「既受講の登録」</strong>で講座ごとに登録します。
-            そちらが支給率（全額／半額）の判定に使われます。
+            ① 下の<strong>「既受講の登録」</strong>に受講回数（1回以上）を登録したとき
+            ② 本人がLINEで「セミナー2回目以降」を申請したとき
+            <br />
+            ①で非表示になっている方は「既受講の登録により非表示」と表示されます。
+            つまり<strong>既受講の登録をすれば、このスイッチは触らなくて済みます</strong>。
+            スイッチは記録がない方を手で非表示にするときだけ使ってください。会計の記録は変わりません。
+            既受講の登録は支給率（全額／半額）の判定にも使われます。
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -557,9 +561,17 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                               }}
                             >
                               {togglingId === member.id && <Loader2 className="h-3 w-3 animate-spin" />}
-                              {member.seminar_repeat_claimed_at ? "非表示（初回は済み）" : "表示（初回を選べる）"}
+                              {member.seminar_repeat_claimed_at || hasPriorCourseRecord(member.line_profile)
+                                ? "非表示（初回は済み）"
+                                : "表示（初回を選べる）"}
                             </span>
                           </div>
+                          {/* 既受講の登録があれば、このスイッチに関係なく非表示になる（記録1つで決める） */}
+                          {!member.seminar_repeat_claimed_at && hasPriorCourseRecord(member.line_profile) && (
+                            <span className="text-xs" style={{ color: "var(--dusk-primary)" }}>
+                              既受講の登録により非表示
+                            </span>
+                          )}
                           {member.seminar_repeat_claimed_at && (
                             <span className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
                               {formatClaimedAt(member.seminar_repeat_claimed_at)}

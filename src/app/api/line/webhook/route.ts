@@ -36,6 +36,7 @@ import {
   commuterPassLabel,
   familyName,
   hasPendingNameChange,
+  hasPriorCourseRecord,
   isCommuteMethodUnanswered,
   isCommuterPassUnanswered,
   isLongAbsence,
@@ -716,19 +717,25 @@ async function isSeminarRepeatClaimedByReceipt(
   supabase: ReturnType<typeof createServiceClient>,
   receiptId: string
 ): Promise<boolean> {
+  // 既受講の登録（line_profile.prior_courses）も判定に使う。
+  // 担当が登録した受講回数が1回以上なら、その人は初受講を終えているので
+  // 「初回ATC＋アカデミー会員費」は出さない（初回の全額支給を二重に受けないようにする）。
   const { data, error } = await supabase
     .from("staff_receipts")
-    .select("staff_members!inner(seminar_repeat_claimed_at)")
+    .select("staff_members!inner(seminar_repeat_claimed_at, line_profile)")
     .eq("id", receiptId)
     .single()
   if (error) {
-    console.warn("[LINE Bot] セミナー2回目以降判定スキップ（migration 032未実行?）:", error.message)
+    console.warn("[LINE Bot] 初回ATC表示判定スキップ（migration 032未実行?）:", error.message)
     return false
   }
-  const claimedAt = (
-    data as unknown as { staff_members: { seminar_repeat_claimed_at: string | null } } | null
-  )?.staff_members?.seminar_repeat_claimed_at
-  return !!claimedAt
+  const member = (
+    data as unknown as {
+      staff_members: { seminar_repeat_claimed_at: string | null; line_profile?: unknown }
+    } | null
+  )?.staff_members
+  if (member?.seminar_repeat_claimed_at) return true
+  return hasPriorCourseRecord(member?.line_profile)
 }
 
 /**

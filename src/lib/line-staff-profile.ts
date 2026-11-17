@@ -78,6 +78,17 @@ export interface PriorCourse {
   updated_by?: string
 }
 
+/**
+ * 既受講の登録が1件以上あるか（いずれかの講座で受講回数1回以上）。
+ *
+ * 担当が登録した受講回数をそのまま使い、LINEに「初回ATC＋アカデミー会員費」を
+ * 出すかどうかを判定する。別に手動スイッチを持たず記録1つで決めることで、
+ * 2か所の食い違いによる確認もれ・過大支給を防ぐ。
+ */
+export function hasPriorCourseRecord(raw: unknown): boolean {
+  return (parseLineProfile(raw).prior_courses ?? []).some((p) => (p?.count ?? 0) >= 1)
+}
+
 export interface LineProfile {
   /** 既受講の登録（講座ごと）。キーが無い＝1件も登録していない */
   prior_courses?: PriorCourse[]

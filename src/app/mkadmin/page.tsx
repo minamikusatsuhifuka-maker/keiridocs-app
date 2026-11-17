@@ -18,7 +18,6 @@ import { AutoClassifySettings } from "@/components/settings/auto-classify-settin
 import { DownloadSourceSettings } from "@/components/settings/download-source-settings"
 import { AccountantSettings } from "@/components/settings/accountant-settings"
 import { FloatingButtonSettings } from "@/components/settings/floating-button-settings"
-import { RegistrantList } from "@/components/settings/registrant-list"
 import { StaffManagement } from "@/components/line-staff/staff-management"
 import { StaffAdminGuide } from "@/components/line-staff/staff-admin-guide"
 import { CourseMaster } from "@/components/courses/course-master"
@@ -26,7 +25,7 @@ import { PriorCourseRegistration } from "@/components/courses/prior-course-regis
 import { PaymentMemo } from "@/components/mkadmin/payment-memo"
 import { StaffReimburseList } from "@/components/mkadmin/staff-reimburse-list"
 import { StaffManualEntry } from "@/components/mkadmin/staff-manual-entry"
-import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus, Users, Wallet, Loader2, Receipt, ArrowRight, ClipboardList, HandCoins, GraduationCap } from "lucide-react"
+import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, Users, Wallet, Loader2, Receipt, ArrowRight, ClipboardList, HandCoins, GraduationCap } from "lucide-react"
 
 // 管理画面（/mkadmin）認証用 sessionStorage キー
 const SESSION_KEY = "mkadmin-auth"
@@ -63,7 +62,6 @@ const TAB_GROUPS: {
       { value: "doc-types", label: "書類種別", icon: FileType },
       { value: "auto-classify", label: "自動仕分け", icon: SlidersHorizontal },
       { value: "folders", label: "フォルダ管理", icon: FolderOpen },
-      { value: "registrants", label: "登録者管理", icon: UserPlus },
       { value: "accountant", label: "税理士提出", icon: Briefcase },
       { value: "payment-memo", label: "支払いメモ", icon: Wallet },
     ],
@@ -235,10 +233,6 @@ export default function MkadminPage() {
 
         <TabsContent value="notify">
           <NotifyList />
-        </TabsContent>
-
-        <TabsContent value="registrants">
-          <RegistrantList />
         </TabsContent>
 
         <TabsContent value="doc-types">
