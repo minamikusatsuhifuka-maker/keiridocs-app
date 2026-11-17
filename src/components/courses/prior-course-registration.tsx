@@ -23,8 +23,13 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { AlertTriangle, Check, Loader2 } from "lucide-react"
-import { hasSeparateLegalName, parseLineProfile, payrollName } from "@/lib/line-staff-profile"
-import { COURSE_RULE_LABELS, type CourseRule } from "@/lib/subsidy-rules"
+import {
+  academyStartDate,
+  hasSeparateLegalName,
+  parseLineProfile,
+  payrollName,
+} from "@/lib/line-staff-profile"
+import { COURSE_RULE_LABELS, academyTermEnd, type CourseRule } from "@/lib/subsidy-rules"
 
 /**
  * 既受講の登録（アプリ導入前・旧LINEでの受講回数）。
@@ -204,6 +209,7 @@ export function PriorCourseRegistration() {
                 <TableRow>
                   <TableHead className="whitespace-nowrap">スタッフ</TableHead>
                   <TableHead className="whitespace-nowrap">受講済み回数</TableHead>
+                  <TableHead className="whitespace-nowrap">アカデミー会員</TableHead>
                   <TableHead className="whitespace-nowrap">次回の申請</TableHead>
                   <TableHead className="whitespace-nowrap text-right">操作</TableHead>
                 </TableRow>
@@ -254,6 +260,29 @@ export function PriorCourseRegistration() {
                             </span>
                           )}
                         </div>
+                      </TableCell>
+                      {/* アカデミー会員の期間（本人がLINEの「設定」から登録する）。
+                          未登録・期限切れの受講料申請は自動で支給せず要対応に上げる */}
+                      <TableCell className="whitespace-nowrap text-sm">
+                        {(() => {
+                          const start = academyStartDate(m.line_profile)
+                          if (!start) {
+                            return (
+                              <span className="text-amber-700 dark:text-amber-400">
+                                未登録
+                                <span className="ml-1 text-xs">（本人がLINEの「設定」から登録）</span>
+                              </span>
+                            )
+                          }
+                          const end = academyTermEnd(start)
+                          const expired = !!end && end < new Date().toISOString().slice(0, 10)
+                          return (
+                            <span className={expired ? "text-amber-700 dark:text-amber-400" : undefined}>
+                              {start} 〜 {end ?? "?"}
+                              {expired && <span className="ml-1 text-xs">（期限切れ）</span>}
+                            </span>
+                          )
+                        })()}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-sm">
                         {next ?? (

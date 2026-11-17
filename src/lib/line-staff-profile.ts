@@ -85,11 +85,33 @@ export interface PriorCourse {
  * 出すかどうかを判定する。別に手動スイッチを持たず記録1つで決めることで、
  * 2か所の食い違いによる確認もれ・過大支給を防ぐ。
  */
+/** アカデミー会員のサービス開始日（未登録なら null） */
+export function academyStartDate(raw: unknown): string | null {
+  const v = parseLineProfile(raw).academy?.start_date
+  return typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.trim()) ? v.trim() : null
+}
+
 export function hasPriorCourseRecord(raw: unknown): boolean {
   return (parseLineProfile(raw).prior_courses ?? []).some((p) => (p?.count ?? 0) >= 1)
 }
 
+/**
+ * アチーブメントアカデミー会員の情報。
+ *
+ * 再受講は「3年で6回」で、起算は会費を支払って会員になった日。
+ * 本人がLINEの「設定」から登録する（担当も管理画面から直せる）。
+ */
+export interface AcademyMembership {
+  /** サービス開始日（YYYY-MM-DD）。例: 2025-12-01 → 2028-11-30 まで */
+  start_date: string
+  updated_at: string
+  /** self=本人がLINEで登録／管理画面からはメールアドレス */
+  updated_by?: string
+}
+
 export interface LineProfile {
+  /** アカデミー会員のサービス開始日。キーが無い＝未登録 */
+  academy?: AcademyMembership
   /** 既受講の登録（講座ごと）。キーが無い＝1件も登録していない */
   prior_courses?: PriorCourse[]
   /** 通勤手段。キーが無い＝未回答 */

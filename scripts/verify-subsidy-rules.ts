@@ -15,7 +15,9 @@ import {
   allowsBento,
   allowsMembership,
   availableItems,
+  academyTermEnd,
   computeSubsidy,
+  isWithinAcademyTerm,
   type CourseKind,
   type CourseRule,
   type ExpenseItem,
@@ -342,6 +344,23 @@ check(
 /* ---------- 結果 ---------- */
 
 console.log("")
+
+/* ---------- アカデミー会員の有効期間（3年で6回） ---------- */
+{
+  const start = "2025-12-01"
+  check("2025年12月1日開始 → 期限は2028年11月30日", academyTermEnd(start), "2028-11-30")
+  check("開始日当日は期間内", isWithinAcademyTerm(start, "2025-12-01"), true)
+  check("期限当日は期間内", isWithinAcademyTerm(start, "2028-11-30"), true)
+  check("期限の翌日は期間外", isWithinAcademyTerm(start, "2028-12-01"), false)
+  check("開始日の前日は期間外", isWithinAcademyTerm(start, "2025-11-30"), false)
+  // 20日締めで申請が翌月になっても、領収書の日付が期間内なら期間内と判定する
+  check("期限直前の領収書は期間内（申請が翌月でも可）", isWithinAcademyTerm(start, "2028-11-25"), true)
+  check("日付が読めない場合は判定できない", isWithinAcademyTerm(start, null), null)
+  check("うるう日開始でも期限を計算できる", academyTermEnd("2024-02-29"), "2027-02-28")
+  check("未登録なら期限なし", academyTermEnd(null), null)
+}
+
+
 if (failures.length === 0) {
   console.log(`✅ 支給ルールの検証：${passed}件すべて規程どおりです`)
   process.exit(0)

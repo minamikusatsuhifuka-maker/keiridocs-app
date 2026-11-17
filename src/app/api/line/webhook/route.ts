@@ -31,6 +31,7 @@ import {
   type ResumeAction,
 } from "@/lib/line-transit"
 import {
+  academyStartDate,
   activeCommuterPass,
   commuteMethodLabel,
   commuterPassLabel,
@@ -68,6 +69,7 @@ import {
 } from "@/lib/line-phase2-flow"
 import {
   EXPENSE_ITEM_LABELS,
+  academyTermEnd,
   availableItems,
   calcStoredSubsidy,
   type ExpenseItem,
@@ -1069,6 +1071,8 @@ async function sendPhase2Confirm(
       pendingCourseName,
       awaitingAttachment,
       commuterPassIncluded,
+      // アカデミー会員の有効期間は領収書の日付で判定する（申請日ではない）
+      judgeDate: receipt.date,
       submittedAt: new Date(receipt.created_at),
     })
 
@@ -3048,6 +3052,34 @@ async function handleTransitText(
       )
       return
     }
+    case "academy_start": {
+      // アカデミー会員のサービス開始日。再受講「3年で6回」の起算日になる
+      const date = parseJpDate(inputText)
+      if (!date) {
+        await sendLineMessage(
+          replyToken,
+          source.userId,
+          "日付を読み取れませんでした。\n「2025-12-01」「2025年12月1日」のように送ってください。"
+        )
+        return
+      }
+      const end = academyTermEnd(date)
+      await updateLineProfile(supabase, staffId, {
+        academy: { start_date: date, updated_at: new Date().toISOString(), updated_by: "self" },
+      })
+      await clearTransitSession(supabase, source.userId)
+      await sendLineMessage(
+        replyToken,
+        source.userId,
+        "アカデミー会員の登録が完了しました。\n\n" +
+          `　サービス開始日：${jpDate(date)}\n` +
+          (end ? `　再受講の期限：${jpDate(end)}\n` : "") +
+          "\n受講料を申請すると、初回か再受講かを自動で判定します。\n" +
+          "期限を過ぎたあとの申請は、担当が確認してからの確定になります。\n\n" +
+          "間違えて登録した場合は、メニューの「設定」からやり直せます。"
+      )
+      return
+    }
     case "course_name": {
       // 一覧に無い講座の名称。担当が講座マスタへ登録するまで保留になる
       const receiptId = session.data.noteReceiptId
@@ -4277,6 +4309,8 @@ async function sendSettings(event: LineEvent, supabase: ServiceClient, staffId: 
       commuteData: "action=stg&k=cm",
       passData: "action=stg&k=cp",
       nameData: "action=stg&k=nm",
+      academy: academyLabel(state.profile),
+      academyData: "action=stg&k=ac",
       pendingNameChange: hasPendingNameChange(state.profile),
       // 車・自転車・徒歩の方には定期券の行とボタンを出さない（関係がなく迷うため）
       showPass: mayHaveCommuterPass(state.profile.commute_method ?? "other"),
@@ -4308,6 +4342,16 @@ async function handleSettingsPostback(event: LineEvent, params: URLSearchParams)
       await askCommuteMethod(event, supabase, staff.id, {}, state)
       return
     }
+    case "ac": {
+      // アカデミー会員のサービス開始日。本人に登録してもらう
+      const ok = await setTransitSession(supabase, source.userId, staff.id, "academy_start", {})
+      if (!ok) {
+        await sendLineMessage(replyToken, source.userId, "⚠️ 処理中にエラーが発生しました。もう一度お試しください。")
+        return
+      }
+      await sendLineMessage(replyToken, source.userId, ACADEMY_START_PROMPT)
+      return
+    }
     case "cp": {
       const state = await loadStaffLineState(supabase, staff.id)
       if (!state?.available) {
@@ -4329,6 +4373,34 @@ async function handleSettingsPostback(event: LineEvent, params: URLSearchParams)
       await sendSettings(event, supabase, staff.id)
   }
 }
+
+/* ---------- アカデミー会員（再受講は3年で6回） ---------- */
+
+/**
+ * アカデミー会員の表示（設定カード）。
+ * 例「2025年12月1日 ～ 2028年11月30日」。未登録なら「未登録」。
+ */
+function academyLabel(profile: unknown): string {
+  const start = academyStartDate(profile)
+  if (!start) return "未登録"
+  const end = academyTermEnd(start)
+  return end ? `${jpDate(start)} ～ ${jpDate(end)}` : jpDate(start)
+}
+
+/** YYYY-MM-DD を「2025年12月1日」にする */
+function jpDate(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
+  if (!m) return iso
+  return `${Number(m[1])}年${Number(m[2])}月${Number(m[3])}日`
+}
+
+const ACADEMY_START_PROMPT =
+  "アチーブメントアカデミーの\n【サービス開始日】を送ってください。\n\n" +
+  "（例）2025-12-01 ／ 2025年12月1日 ／ 2025/12/1\n\n" +
+  "会費を支払って会員になった日です。\n" +
+  "入会のご案内や会員証に書かれている日付をご確認ください。\n\n" +
+  "※再受講は開始日から3年間です。\n" +
+  "　例：2025年12月1日に開始 → 2028年11月30日まで"
 
 /* ---------- 申請履歴 ---------- */
 

@@ -43,6 +43,8 @@ const samples: Record<string, FlexMessage> = {
     commuteData: "b",
     passData: "c",
     nameData: "d",
+    academy: "2025年12月1日 ～ 2028年11月30日",
+    academyData: "e",
   }),
   // 車通勤の方は定期券の行とボタンが出ない
   "02b_settings_car": settingsCard({
@@ -54,6 +56,8 @@ const samples: Record<string, FlexMessage> = {
     commuteData: "b",
     passData: "c",
     nameData: "d",
+    academy: "未登録",
+    academyData: "e",
     showPass: false,
   }),
   "03_receipt_single": receiptReceivedCard({

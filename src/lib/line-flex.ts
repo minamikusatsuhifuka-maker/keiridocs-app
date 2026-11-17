@@ -384,6 +384,9 @@ export function settingsCard(params: {
   commuteData: string
   passData: string
   nameData: string
+  /** アカデミー会員のサービス開始日の表示（未登録は「未登録」） */
+  academy: string
+  academyData: string
   pendingNameChange?: boolean
   /** 通勤手段が電車・その他のときだけ定期券の行とボタンを出す */
   showPass?: boolean
@@ -396,6 +399,7 @@ export function settingsCard(params: {
   if (params.showPass !== false) {
     rows.push(infoRow("定期券", params.commuterPass))
   }
+  rows.push(infoRow("アカデミー会員", params.academy))
 
   const body: FlexComponent[] = [
     text("現在の登録", { size: "xs", weight: "bold", color: FLEX_COLORS.textSub }),
@@ -416,6 +420,7 @@ export function settingsCard(params: {
   if (params.showPass !== false) {
     actions.push(primaryButton(postback("定期券を変更する", params.passData)))
   }
+  actions.push(primaryButton(postback("アカデミー会員の登録", params.academyData)))
   actions.push(secondaryButton(postback("お名前の変更を申請する", params.nameData)))
   body.push(buttons(actions))
 

@@ -117,7 +117,7 @@ interface Row {
  */
 interface PendingItem {
   id: string
-  kind: "excess" | "course" | "attach" | "pass" | "incomplete"
+  kind: "excess" | "course" | "attach" | "pass" | "term" | "incomplete"
   staffName: string
   courseName: string
   itemLabel: string
@@ -134,6 +134,7 @@ const PENDING_LABELS: Record<PendingItem["kind"], string> = {
   course: "講座の確認",
   attach: "添付待ち",
   pass: "定期券区間",
+  term: "会員期間外",
   incomplete: "未完了",
 }
 
@@ -142,6 +143,7 @@ const PENDING_HELP: Record<PendingItem["kind"], string> = {
   excess: "上限を超えた分を承認するか決めてください。承認するとスタッフへ自動で通知されます。",
   course: "講座マスタに無い講座名で申請されています。/mkadmin の講座マスタで登録・割り当てしてください。",
   attach: "合格通知または修了通知の写真が届いていません。スタッフへ催促してください。",
+  term: "アカデミー会員の有効期間（開始日から3年）を過ぎているか、開始日が未登録です。スタッフの「設定」→「アカデミー会員の登録」で開始日を登録してもらうか、期間外の扱いを決めてから確定してください。",
   pass: "切符などで定期券区間が含まれている可能性があります。院が通勤手当を払っているため、その区間の運賃を差し引いて承認してください（差し引く額は「金額を指定して承認」で入力できます）。",
   incomplete:
     "領収書は届いていますが、費用区分が選ばれず支給の対象になっていません。本人は申請したつもりの可能性があります。",

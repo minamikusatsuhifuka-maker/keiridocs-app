@@ -190,6 +190,8 @@ export async function settleStaffReceipt(params: {
       pendingCourseName: params.phase2.pendingCourseName ?? null,
       awaitingAttachment: params.phase2.awaitingAttachment,
       commuterPassIncluded: params.phase2.commuterPassIncluded,
+      // アカデミー会員の有効期間は領収書の日付で判定する（申請日ではない）
+      judgeDate: (r.date as string | null) ?? null,
       submittedAt: new Date((r.created_at as string | null) ?? Date.now()),
       manualSubmissionMonthRaw: r.ai_raw,
     })

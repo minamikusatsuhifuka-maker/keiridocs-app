@@ -79,6 +79,53 @@ export const COURSE_RULE_LABELS: Record<CourseRule, string> = {
 /** ATC方式で半額になる再受講の回数の上限。これを超えたら担当判断にする */
 export const ATC_HALF_MAX_RETAKE = 6
 
+/**
+ * アカデミー会員の有効期間（年）。
+ *
+ * 再受講は「3年で6回」。会費を支払って会員になった日から3年で一旦終了する。
+ * 期限を過ぎたあとの扱いは未定のため、自動では支給せず担当の確認待ちにする。
+ */
+export const ACADEMY_TERM_YEARS = 3
+
+/**
+ * アカデミー会員の有効期限（開始日の3年後の前日）。
+ *
+ * 例: 2025-12-01 開始 → 2028-11-30 まで有効。
+ * 日付は JST の「YYYY-MM-DD」で扱う（時刻は持たない）。
+ *
+ * @returns 有効期限（YYYY-MM-DD）。開始日が不正なら null
+ */
+export function academyTermEnd(startDate: string | null | undefined): string | null {
+  if (!startDate) return null
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(startDate.trim())
+  if (!m) return null
+  const [, y, mo, d] = m
+  // 3年後の同じ日の「前日」。UTCで計算して日付のずれを防ぐ
+  const end = new Date(Date.UTC(Number(y) + ACADEMY_TERM_YEARS, Number(mo) - 1, Number(d)))
+  end.setUTCDate(end.getUTCDate() - 1)
+  return end.toISOString().slice(0, 10)
+}
+
+/**
+ * その日付がアカデミー会員の有効期間内か。
+ *
+ * 判定には**領収書の日付（支払日）**を使うこと。
+ * 20日締めの都合で申請が翌月になることがあり、申請日で判定すると
+ * 期限内に受講したものまで期限切れになってしまう。
+ *
+ * @returns true=期間内／false=期間外／null=判定できない（開始日が未登録など）
+ */
+export function isWithinAcademyTerm(
+  startDate: string | null | undefined,
+  judgeDate: string | null | undefined
+): boolean | null {
+  const end = academyTermEnd(startDate)
+  if (!end || !startDate) return null
+  const d = (judgeDate ?? "").trim().slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null
+  return d >= startDate.trim().slice(0, 10) && d <= end
+}
+
 /** 費用の内訳 */
 export type ExpenseItem =
   | "tuition" // 受講料
@@ -353,7 +400,14 @@ export function calcStoredSubsidy(row: {
 /* ---------- 保留の理由 ---------- */
 
 /** 確定していない理由。NULL（確定済み）以外は税理士提出・支給集計に含めない */
-export type HoldReason = "excess" | "course" | "attach" | "undecided" | "history" | "pass"
+export type HoldReason =
+  | "excess"
+  | "course"
+  | "attach"
+  | "undecided"
+  | "history"
+  | "pass"
+  | "term"
 
 export const HOLD_REASON_LABELS: Record<HoldReason, string> = {
   excess: "上限超過の承認待ち",
@@ -362,6 +416,7 @@ export const HOLD_REASON_LABELS: Record<HoldReason, string> = {
   undecided: "支給率が未定（担当の判断待ち）",
   history: "既受講回数が未登録（担当の登録待ち）",
   pass: "定期券区間を含む可能性（担当の確認待ち）",
+  term: "アカデミー会員の期間外・回数超過（担当の確認待ち）",
 }
 
 /** スタッフに見せる保留の説明 */
@@ -372,4 +427,5 @@ export const HOLD_REASON_STAFF_TEXT: Record<HoldReason, string> = {
   undecided: "支給額の確認が必要なため、担当が確認のうえご連絡します。",
   history: "受講回数の確認が必要なため、担当が確認のうえご連絡します。",
   pass: "定期券区間の分を差し引く必要があるため、担当が確認のうえ確定します。",
+  term: "アカデミー会員の期間や回数の確認が必要なため、担当が確認のうえご連絡します。",
 }

@@ -22,7 +22,7 @@
  */
 
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
-import { parseLineProfile } from "@/lib/line-staff-profile"
+import { academyStartDate, parseLineProfile } from "@/lib/line-staff-profile"
 import { formatYearMonth, resolveStaffSubmissionMonth } from "@/lib/submission-month"
 import {
   computeSubsidy,
@@ -32,6 +32,7 @@ import {
   type ExpenseItem,
   type HoldReason,
   type SubsidyResult,
+  isWithinAcademyTerm,
 } from "@/lib/subsidy-rules"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { Database } from "@/types/database"
@@ -70,6 +71,15 @@ export interface AssessInput {
    * 切符を買った場合や本人が分からない場合に true にし、担当の確認待ちにする。
    */
   commuterPassIncluded?: boolean
+  /**
+   * 支給の判定に使う日付（YYYY-MM-DD）。領収書の日付（支払日）を渡すこと。
+   *
+   * アカデミー会員の有効期間（3年）の判定に使う。
+   * 20日締めの都合で申請が翌月になることがあるため、申請日で判定すると
+   * 期限内に受講したものまで期限切れと判断されてしまう。
+   * 読み取れていない場合は null（判定できないので担当の確認待ちになる）。
+   */
+  judgeDate?: string | null
   /** 提出日（20日締めの月割りに使う。既定は今） */
   submittedAt?: Date
   /** 提出月の手動指定（staff_receipts.ai_raw.submission_month） */
@@ -163,10 +173,19 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
   //    優先順：添付待ち → 講座の割り当て → 既受講回数が未登録 → 支給率が未定 → 上限超過
   //    既受講回数が未登録のまま確定させると、既受講者に全額を支給してしまうため保留する。
   //    入力漏れでも過大支給にならないよう、登録が無い＝保留とする（0回の登録とは区別する）。
+  // アカデミー会員の有効期間（3年で6回）の判定。
+  // 再受講の権利が切れたあとの扱いは未定のため、自動で支給せず担当の確認待ちにする。
+  // 判定は領収書の日付で行う（申請が翌月になっても期限内なら通常どおり処理する）。
+  const academyOutOfTerm =
+    input.courseRule === "atc" && item === "tuition" && priorTuitionCount > 0
+      ? await isAcademyOutOfTerm(supabase, staffMemberId, input.judgeDate)
+      : false
+
   let holdReason: HoldReason | null = null
   // 定期券区間が金額に含まれている可能性があるものは、院が払う通勤手当との
   // 二重払いになるため自動で確定させない（差し引く額は担当が判断する）。
   if (input.commuterPassIncluded) holdReason = "pass"
+  else if (academyOutOfTerm) holdReason = "term"
   else if (input.awaitingAttachment) holdReason = "attach"
   else if (input.pendingCourseName && !input.courseId) holdReason = "course"
   else if (!registered.registered && item === "tuition") holdReason = "history"
@@ -180,6 +199,36 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
     priorTuitionCount,
     holdReason,
     capUsed,
+  }
+}
+
+/**
+ * アカデミー会員の有効期間の外か（＝自動で支給してよくないか）。
+ *
+ * - 開始日が未登録     → true（担当が確認して登録してから確定する）
+ * - 判定日が読めない   → true（期限内か分からないまま支給しない）
+ * - 期限を過ぎている   → true
+ * - 期間内            → false
+ */
+async function isAcademyOutOfTerm(
+  supabase: ServiceClient,
+  staffMemberId: string,
+  judgeDate: string | null | undefined
+): Promise<boolean> {
+  try {
+    const { data, error } = await supabase
+      .from("staff_members")
+      .select("line_profile")
+      .eq("id", staffMemberId)
+      .maybeSingle()
+    if (error || !data) return true
+    const start = academyStartDate((data as { line_profile?: unknown }).line_profile)
+    if (!start) return true
+    const within = isWithinAcademyTerm(start, judgeDate)
+    return within !== true
+  } catch {
+    // 判定できないときに支給してしまうと取り返せないため、保留側に倒す
+    return true
   }
 }
 
