@@ -38,13 +38,19 @@ import {
   commuterPassLabel,
   findNameConflicts,
   hasPendingNameChange,
+  hasSeparateLegalName,
   mayHaveCommuterPass,
+  normalizePersonName,
   parseLineProfile,
+  payrollName,
+  staffNameVariants,
 } from "@/lib/line-staff-profile"
 
 interface StaffMember {
   id: string
   name: string
+  /** 046_staff_legal_name.sql（給与・行政上の氏名。旧姓で勤務している場合のみ入る） */
+  legal_name?: string | null
   line_user_id: string | null
   created_at: string
   seminar_repeat_claimed_at?: string | null
@@ -105,6 +111,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const [editDialogOpen, setEditDialogOpen] = useState(false)
   const [editingStaff, setEditingStaff] = useState<StaffMember | null>(null)
   const [editName, setEditName] = useState("")
+  const [editLegalName, setEditLegalName] = useState("")
   const [editHomeStation, setEditHomeStation] = useState("")
   const [editHomeStationPref, setEditHomeStationPref] = useState("")
   const [isSaving, setIsSaving] = useState(false)
@@ -131,13 +138,15 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   // 書類登録スタッフとの表記のずれ。
   // 2つのマスタで氏名の表記が違うと、書類とスタッフ立替で同じ人が別名で並んでしまう。
   // 比較は正規化するため、スペースや全角半角の違いは「ずれ」としない。
+  // 給与・行政上の氏名（旧姓で勤務している方）は、どちらで登録されていてもずれとしない。
   const nameGaps = useMemo(() => {
-    const norm = (v: string) => v.replace(/[\s\u3000]/g, "").normalize("NFKC")
-    const lineNames = new Set(activeStaff.map((m) => norm(m.name)))
-    const docNames = new Set(documentStaffNames.map(norm))
+    const lineNames = new Set(activeStaff.flatMap((m) => staffNameVariants(m)))
+    const docNames = new Set(documentStaffNames.map(normalizePersonName))
     return {
-      onlyInDocument: documentStaffNames.filter((n) => !lineNames.has(norm(n))),
-      onlyInLine: activeStaff.filter((m) => !docNames.has(norm(m.name))).map((m) => m.name),
+      onlyInDocument: documentStaffNames.filter((n) => !lineNames.has(normalizePersonName(n))),
+      onlyInLine: activeStaff
+        .filter((m) => !staffNameVariants(m).some((v) => docNames.has(v)))
+        .map((m) => m.name),
     }
   }, [activeStaff, documentStaffNames])
 
@@ -206,6 +215,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   function openEditDialog(member: StaffMember) {
     setEditingStaff(member)
     setEditName(member.name)
+    setEditLegalName(member.legal_name ?? "")
     setEditHomeStation(member.home_station ?? "")
     setEditHomeStationPref(member.home_station_pref ?? "")
     setEditDialogOpen(true)
@@ -224,6 +234,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
         body: JSON.stringify({
           id: editingStaff.id,
           name: editName.trim(),
+          legal_name: editLegalName.trim() || null,
           home_station: editHomeStation.trim() || null,
           home_station_pref: editHomeStationPref.trim() || null,
         }),
@@ -492,6 +503,12 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                       <TableCell className="font-medium">
                         <div className="flex flex-col gap-0.5">
                           <span>{member.name}</span>
+                          {/* 旧姓で勤務している方は、給与・行政上の氏名を併記する */}
+                          {hasSeparateLegalName(member) && (
+                            <span className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                              給与・行政上：{payrollName(member)}
+                            </span>
+                          )}
                           {nameConflicts.get(member.id) && (
                             <span className="inline-flex items-center gap-1 text-xs text-amber-600">
                               <AlertTriangle className="h-3 w-3" />
@@ -707,15 +724,40 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
           </DialogHeader>
           <div className="space-y-4 pt-2">
             <div className="space-y-2">
-              <Label htmlFor="edit-name">名前</Label>
+              <Label htmlFor="edit-name">名前（仕事上の氏名）</Label>
               <Input
                 id="edit-name"
+                placeholder="例: 南 ひふ子"
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !isSaving) handleEdit()
                 }}
               />
+              <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                LINEの表示・書類登録スタッフ・画面表示に使う氏名です。フルネームで入れてください。
+              </p>
+            </div>
+            {/*
+              給与・行政上の氏名。
+              結婚などで戸籍の氏名が変わっても旧姓のまま勤務することがあり、
+              給与・社会保険・源泉徴収は戸籍の氏名で処理する必要がある。
+              LINEの氏名照合はどちらの氏名でも通るので、スタッフが取り違えても申請できる。
+            */}
+            <div className="space-y-2">
+              <Label htmlFor="edit-legal-name">給与・行政上の氏名（任意）</Label>
+              <Input
+                id="edit-legal-name"
+                placeholder="仕事上の氏名と同じなら空欄のまま"
+                value={editLegalName}
+                onChange={(e) => setEditLegalName(e.target.value)}
+              />
+              <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                結婚などで戸籍の氏名が変わり、職場では旧姓で勤務している場合に入れます。
+                給与・社会保険・源泉徴収の氏名です。
+                <br />
+                登録すると、スタッフがLINEで<strong>どちらの氏名を送っても</strong>ご本人と判定します。
+              </p>
             </div>
             {/* 自宅最寄り駅（領収書なし交通費の電車運賃AI推定の出発駅。県は同名駅の特定用） */}
             <div className="space-y-2">

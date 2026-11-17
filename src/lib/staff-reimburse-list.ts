@@ -25,6 +25,7 @@ import { getSplitGroupInfo, parseAiRawObject } from "@/lib/staff-receipt-split"
 import { resolveStaffSubmissionMonth, formatYearMonth } from "@/lib/submission-month"
 import { extractIssueDate } from "@/lib/staff-reimburse"
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
+import { payrollName } from "@/lib/line-staff-profile"
 
 /** 登録経路 */
 export type ReimburseSource = "line" | "admin_approve" | "manual" | "petty_manual"
@@ -44,6 +45,12 @@ export interface StaffReimburseRow {
   receiptId: string | null
   staffMemberId: string | null
   staffName: string
+  /**
+   * 給与・行政上の氏名（staff_members.legal_name）。
+   * 旧姓のまま勤務している方は仕事上の氏名と違うため、給与処理のために併記する。
+   * 未登録なら staffName と同じ。
+   */
+  staffPayrollName: string
   /** 申請日（YYYY-MM-DD・JST） */
   applicationDate: string
   /** 提出日（YYYY-MM-DD・JST。20日締めの月割り判定に使う日付） */
@@ -261,20 +268,38 @@ export async function buildStaffReimburseList(params: {
   }
 
   // 3. スタッフ名・テストスタッフ判定
-  const staffRaw = await fetchAllRows<{ id: string; name: string; is_test: boolean | null }>((from, to) =>
+  type StaffNameRow = { id: string; name: string; legal_name?: string | null; is_test: boolean | null }
+  // 046 未適用の環境では legal_name が無いので、列なしで取り直す（給与氏名は仕事上の氏名と同じ扱い）
+  let staffSelect = "id, name, legal_name, is_test"
+  const staffRaw = await fetchAllRows<StaffNameRow>((from, to) =>
     supabase
       .from("staff_members")
-      .select("id, name, is_test")
+      .select(staffSelect)
       .order("id", { ascending: true })
       .range(from, to) as unknown as PromiseLike<{
-        data: { id: string; name: string; is_test: boolean | null }[] | null
+        data: StaffNameRow[] | null
         error: { message: string } | null
       }>
-  )
+  ).catch(async (e: unknown) => {
+    if (!/legal_name/.test(e instanceof Error ? e.message : String(e))) throw e
+    staffSelect = "id, name, is_test"
+    return fetchAllRows<StaffNameRow>((from, to) =>
+      supabase
+        .from("staff_members")
+        .select(staffSelect)
+        .order("id", { ascending: true })
+        .range(from, to) as unknown as PromiseLike<{
+          data: StaffNameRow[] | null
+          error: { message: string } | null
+        }>
+    )
+  })
   const staffNameMap = new Map<string, string>()
+  const staffPayrollNameMap = new Map<string, string>()
   const testStaffIds = new Set<string>()
   for (const s of staffRaw) {
     staffNameMap.set(s.id, s.name)
+    staffPayrollNameMap.set(s.id, payrollName(s))
     if (s.is_test) testStaffIds.add(s.id)
   }
 
@@ -309,6 +334,8 @@ export async function buildStaffReimburseList(params: {
       receiptId: t.staff_receipt_id,
       staffMemberId: t.staff_member_id,
       staffName: (t.staff_member_id && staffNameMap.get(t.staff_member_id)) || "不明なスタッフ",
+      staffPayrollName:
+        (t.staff_member_id && staffPayrollNameMap.get(t.staff_member_id)) || "不明なスタッフ",
       applicationDate,
       submitDate,
       paymentDate,
@@ -499,6 +526,10 @@ export function buildStaffReimburseListCsv(
   while (i < sorted.length) {
     const key = sorted[i].staffMemberId ?? "__unknown__"
     const staffName = sorted[i].staffName
+    // 旧姓で勤務している方は、給与処理のために行政上の氏名を小計行に併記する
+    const payroll = sorted[i].staffPayrollName
+    const subtotalLabel =
+      payroll && payroll !== staffName ? `${staffName}（給与・行政上：${payroll}）` : staffName
     let amount = 0
     let subsidy = 0
     while (i < sorted.length && (sorted[i].staffMemberId ?? "__unknown__") === key) {
@@ -507,7 +538,7 @@ export function buildStaffReimburseListCsv(
       subsidy += sorted[i].subsidy
       i++
     }
-    lines.push([`${staffName} 小計`, "", "", "", "", "", String(amount), "", String(subsidy), "", "", ""])
+    lines.push([`${subtotalLabel} 小計`, "", "", "", "", "", String(amount), "", String(subsidy), "", "", ""])
   }
 
   lines.push([

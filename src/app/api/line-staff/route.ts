@@ -101,6 +101,7 @@ export async function PUT(request: NextRequest) {
     const body = await request.json() as {
       id?: string
       name?: string
+      legal_name?: string | null
       line_user_id?: string | null
       home_station?: string | null
       home_station_pref?: string | null
@@ -117,6 +118,12 @@ export async function PUT(request: NextRequest) {
         return NextResponse.json({ error: "名前は必須です" }, { status: 400 })
       }
       updates.name = name
+    }
+    // 給与・行政上の氏名。結婚などで戸籍の氏名が変わっても旧姓で勤務する場合に入れる。
+    // 仕事上の氏名（name）と同じなら保存しない（併記が増えて画面が読みにくくなる）。
+    if (body.legal_name !== undefined) {
+      const legal = body.legal_name?.trim() || ""
+      updates.legal_name = legal || null
     }
     if (body.line_user_id !== undefined) {
       updates.line_user_id = body.line_user_id
@@ -168,10 +175,15 @@ export async function PUT(request: NextRequest) {
       const isMissingColumn =
         error.code === "PGRST204" ||
         error.code === "42703" ||
-        /home_station/.test(error.message || "")
+        /home_station|legal_name/.test(error.message || "")
       if (isMissingColumn) {
+        const missingLegalName = /legal_name/.test(error.message || "")
         return NextResponse.json(
-          { error: "自宅最寄り駅カラムが未適用です。migration 033_staff_home_station.sql を実行してください。" },
+          {
+            error: missingLegalName
+              ? "給与・行政上の氏名カラムが未適用です。migration 046_staff_legal_name.sql を実行してください。"
+              : "自宅最寄り駅カラムが未適用です。migration 033_staff_home_station.sql を実行してください。",
+          },
           { status: 400 }
         )
       }

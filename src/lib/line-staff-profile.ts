@@ -268,9 +268,38 @@ export function isLongAbsence(profile: LineProfile, now = new Date()): boolean {
 
 /* ---------- 氏名照合（同姓対策） ---------- */
 
-/** 氏名比較用の正規化（半角/全角スペース・中黒を除去） */
+/** 氏名比較用の正規化（半角/全角スペース・中黒を除去し、半角カナ等をNFKCで統一） */
 export function normalizePersonName(name: string): string {
-  return name.replace(/[\s　・･]/g, "").trim()
+  return name.normalize("NFKC").replace(/[\s　・･]/g, "").trim()
+}
+
+/**
+ * スタッフ1名の照合対象となる氏名すべて。
+ *
+ * 結婚などで戸籍（行政上）の氏名が変わっても、職場では旧姓のまま働くことがある。
+ * 給与・社会保険・源泉徴収は戸籍の氏名で処理するため両方を登録し、
+ * **どちらの氏名で申請してもご本人と判定できる**ようにする。
+ *
+ * - name       … 仕事上の氏名（LINE・書類登録スタッフ・画面表示に使う）
+ * - legal_name … 給与・行政上の氏名（未入力なら name と同じとみなす）
+ */
+export function staffNameVariants(member: { name: string; legal_name?: string | null }): string[] {
+  const list = [member.name, member.legal_name ?? ""]
+    .map((v) => normalizePersonName(v || ""))
+    .filter((v) => v.length > 0)
+  return Array.from(new Set(list))
+}
+
+/** 給与・行政上の氏名（未登録なら仕事上の氏名） */
+export function payrollName(member: { name: string; legal_name?: string | null }): string {
+  const legal = (member.legal_name ?? "").trim()
+  return legal || member.name
+}
+
+/** 仕事上の氏名と行政上の氏名が違うか（画面に併記するかの判定） */
+export function hasSeparateLegalName(member: { name: string; legal_name?: string | null }): boolean {
+  const legal = (member.legal_name ?? "").trim()
+  return legal.length > 0 && normalizePersonName(legal) !== normalizePersonName(member.name)
 }
 
 /** 呼びかけ用の姓（「南 ひふ子」→「南」。空白が無ければ全体） */
@@ -314,16 +343,19 @@ export function matchStaffCandidates<T extends { id: string; name: string }>(sta
  * **姓と名の間のスペースの有無や全角・半角の違いは問わない**
  * （「南ひふ子」「南 ひふ子」「南　ひふ子」はすべて同じ扱い）。
  *
+ * 仕事上の氏名と行政上の氏名（旧姓のまま勤務している場合）の
+ * **どちらを送っても一致**する（staffNameVariants を参照）。
+ *
  * 同姓同名が2名いる場合はここでは区別できないので、呼び出し側で担当への確認を案内する。
  * /mkadmin 側には同姓同名の警告を出しており、担当が区別できる氏名に直せる。
  */
-export function matchStaffByFullName<T extends { id: string; name: string }>(
+export function matchStaffByFullName<T extends { id: string; name: string; legal_name?: string | null }>(
   staff: T[],
   input: string
 ): T[] {
   const q = normalizePersonName(input.replace(/(さん|様)$/, ""))
   if (!q) return []
-  return staff.filter((s) => normalizePersonName(s.name) === q)
+  return staff.filter((s) => staffNameVariants(s).includes(q))
 }
 
 /** 同姓・同名のスタッフがいるかの判定（/mkadmin の警告用） */

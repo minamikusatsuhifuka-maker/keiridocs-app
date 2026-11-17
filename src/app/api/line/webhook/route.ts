@@ -454,39 +454,52 @@ export async function POST(request: NextRequest) {
 }
 
 /** LINEの振り分けで使うスタッフ行（staff_members の必要最小限） */
-type StaffRow = { id: string; name: string; line_user_id?: string | null }
+type StaffRow = {
+  id: string
+  name: string
+  /** 給与・行政上の氏名（旧姓のまま勤務している場合に入る。氏名照合はどちらでも通す） */
+  legal_name?: string | null
+  line_user_id?: string | null
+}
 
 /**
  * スタッフ一覧を取得する（取得できなければ null）。
  *
  * 退職者（retired_at が非NULL）は除外する。退職後に申請されると支給が発生してしまうため。
  * 過去の申請記録は staff_members に残るので、ここで除外しても履歴は壊れない。
- * 043 未適用の環境では retired_at が無いので、列なしで取り直して従来どおり全件返す。
+ *
+ * マイグレーション未適用の環境でも動くように、列を減らしながら順に試す。
+ * - 046 未適用: legal_name が無い → 仕事上の氏名だけで照合する
+ * - 043 未適用: retired_at が無い → 従来どおり全件返す
  */
 async function fetchStaffMembers(
   supabase: ReturnType<typeof createServiceClient>
 ): Promise<StaffRow[] | null> {
-  const { data, error } = await supabase
-    .from("staff_members")
-    .select("id, name, line_user_id")
-    .is("retired_at", null)
-  if (!error && data) return data as StaffRow[]
+  const attempts: { select: string; excludeRetired: boolean }[] = [
+    { select: "id, name, legal_name, line_user_id", excludeRetired: true },
+    { select: "id, name, line_user_id", excludeRetired: true },
+    { select: "id, name, line_user_id", excludeRetired: false },
+  ]
 
-  const isMissingColumn =
-    error?.code === "PGRST204" || error?.code === "42703" || /retired_at/.test(error?.message || "")
-  if (!isMissingColumn) {
-    console.error("staff_members取得エラー:", error)
-    return null
+  let lastError: unknown = null
+  for (const attempt of attempts) {
+    const query = supabase.from("staff_members").select(attempt.select)
+    const { data, error } = attempt.excludeRetired
+      ? await query.is("retired_at", null)
+      : await query
+    if (!error && data) return data as unknown as StaffRow[]
+
+    lastError = error
+    const isMissingColumn =
+      error?.code === "PGRST204" ||
+      error?.code === "42703" ||
+      /legal_name|retired_at/.test(error?.message || "")
+    // 列不足以外のエラー（接続・権限など）は再試行しても同じなので即座に諦める
+    if (!isMissingColumn) break
   }
 
-  const { data: fallback, error: fallbackError } = await supabase
-    .from("staff_members")
-    .select("id, name, line_user_id")
-  if (fallbackError || !fallback) {
-    console.error("staff_members取得エラー:", fallbackError)
-    return null
-  }
-  return fallback as StaffRow[]
+  console.error("staff_members取得エラー:", lastError)
+  return null
 }
 
 /** イベント振り分け */
