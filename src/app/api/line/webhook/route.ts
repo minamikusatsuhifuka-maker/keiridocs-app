@@ -5,6 +5,7 @@ import {
   analyzeDocument,
   normalizeAmount,
   STAFF_RECEIPT_ANALYSIS_EXTRA_HINT,
+  TRANSIT_HISTORY_ANALYSIS_EXTRA_HINT,
   type OcrResult,
 } from "@/lib/gemini"
 import { settleStaffReceipt } from "@/lib/staff-refund-core"
@@ -590,6 +591,35 @@ async function handlePostback(event: LineEvent): Promise<void> {
         "メニューを閉じました。\n「申請」と送るといつでも表示できます。"
       )
       return
+    // ICカードの利用履歴から選ぶ／読み取れなかったときの進み方
+    case "ictrip":
+      await handleIcTripPostback(event, params)
+      return
+    case "icnone":
+      await handleIcNonePostback(event, params)
+      return
+    case "rfretry":
+      await handleRetryPhotoPostback(event, params)
+      return
+    case "rfmanual":
+      await handleManualInputPostback(event, params)
+      return
+    case "mdate": {
+      // 手入力の「今日」ボタン
+      const supabase = createServiceClient()
+      const session = await getTransitSession(supabase, event.source.userId)
+      const receiptId = params.get("rid")
+      const amount = session?.data.manualAmount
+      if (!receiptId || !amount) {
+        await sendTransitExpired(event.replyToken, event.source.userId)
+        return
+      }
+      await applyManualReceiptInput(event, supabase, receiptId, amount, toJstDateString(new Date()))
+      return
+    }
+    case "rfhelp":
+      await handleAskAdminPostback(event, params)
+      return
     // 交通費のうち領収書が出ないもの（金額と用途を入力してもらう）
     case "noreceipt": {
       const supabase = createServiceClient()
@@ -803,7 +833,10 @@ async function sendTransitGuide(
     await sendLineMessage(replyToken, source.userId, NOT_REGISTERED_TEXT)
     return
   }
-  void supabase
+  // 次に届く画像を「IC利用履歴」として読み取るための印。
+  // 領収書と履歴では読み方が違う（履歴は1枚に何件もの移動が並ぶ）ため、
+  // どちらとして読むかを入口で決めておく。
+  await setTransitSession(supabase, source.userId, staff.id, "await_ic_photo", {})
   await sendLineQuickReply(replyToken, source.userId, TRANSIT_GUIDE_TEXT, [
     {
       type: "postback",
@@ -812,6 +845,368 @@ async function sendTransitGuide(
       displayText: "領収書がないので入力します",
     },
   ])
+}
+
+/* ---------- 交通系ICカードの利用履歴 ---------- */
+
+/** 利用履歴から読み取った移動1件 */
+interface TransitTrip {
+  /** 利用日（YYYY-MM-DD） */
+  date: string
+  /** 区間（例「南草津 → 京都」）または事業者名 */
+  route: string
+  /** 運賃（円） */
+  fare: number
+}
+
+/** チャージ・残高・物販を取り除く語（合計に混ぜると支給額が過大になる） */
+const NON_TRIP_WORDS = /チャージ|入金|積増|オートチャージ|残高|繰越|物販|現金併用|販売|購入|定期/
+
+/**
+ * AI解析の payments から「移動」だけを取り出す。
+ *
+ * プロンプト側でもチャージ等を除外しているが、読み違いが残ることがあるため
+ * ここでも language で弾く。二重に守る（過大支給は取り返せないため）。
+ */
+function deriveTransitTrips(ocr: { payments?: unknown }): TransitTrip[] {
+  const rows = Array.isArray(ocr.payments) ? ocr.payments : []
+  const trips: TransitTrip[] = []
+  for (const r of rows as Record<string, unknown>[]) {
+    const fare = typeof r.amount === "number" ? r.amount : Number(r.amount)
+    if (!Number.isFinite(fare) || fare <= 0) continue
+    const route = String(r.vendor_name ?? "").trim()
+    const note = String(r.description ?? "").trim()
+    if (!route) continue
+    if (NON_TRIP_WORDS.test(route) || NON_TRIP_WORDS.test(note)) continue
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(r.issue_date ?? ""))
+      ? String(r.issue_date)
+      : toJstDateString(new Date())
+    trips.push({ date, route: route.slice(0, 40), fare: Math.round(fare) })
+  }
+  // 新しい日付が上に来るようにする（直近の移動を申請することが多いため）
+  return trips.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)).slice(0, 20)
+}
+
+/**
+ * 読み取った移動の一覧を出し、申請する1件を選んでもらう。
+ *
+ * 読み取った行は領収書（staff_receipts）の ai_raw に残し、
+ * 選ばれた1件の日付・区間・金額をその領収書に書き込んでから確認へ進む。
+ * 複数申請したいときは、同じ写真をもう一度送らずに済むよう案内する。
+ */
+async function sendTransitTripPicker(
+  event: LineEvent,
+  receiptId: string,
+  trips: TransitTrip[]
+): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+
+  // 選択肢の元データを残す（選んだあとに日付・区間・金額を確定させるため）
+  const { data } = await supabase.from("staff_receipts").select("ai_raw").eq("id", receiptId).maybeSingle()
+  const current = parseAiRawObject((data as { ai_raw?: unknown } | null)?.ai_raw) ?? {}
+  await supabase
+    .from("staff_receipts")
+    .update({
+      ai_raw: JSON.parse(JSON.stringify({ ...current, transit_trips: trips })),
+    })
+    .eq("id", receiptId)
+
+  // クイックリプライは13個まで。1つは「一覧に無い」に使う
+  const shown = trips.slice(0, 12)
+  const items: PostbackAction[] = shown.map((t, i) => {
+    const label = `${t.date.slice(5).replace("-", "/")} ${t.route} ¥${formatAmount(t.fare)}`
+    return {
+      type: "postback",
+      label: label.slice(0, 20),
+      data: `action=ictrip&rid=${receiptId}&i=${i}`,
+      displayText: label,
+    }
+  })
+  items.push({
+    type: "postback",
+    label: "この中にない",
+    data: `action=icnone&rid=${receiptId}`,
+    displayText: "この中にありません",
+  })
+
+  const list = shown
+    .map((t, i) => `${i + 1}. ${t.date} ${t.route} ¥${formatAmount(t.fare)}`)
+    .join("\n")
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    "🚃 利用履歴を読み取りました。\n" +
+      "─────────────\n" +
+      `${list}\n\n` +
+      "申請する移動を1つ選んでください。\n" +
+      "※チャージ・残高・お買い物は除いています。\n" +
+      "※複数申請する場合は、1件ずつ選んでいただきます。\n" +
+      "　1件目が終わったら「交通費を申請」からもう一度お選びください。",
+    items
+  )
+}
+
+/** 選ばれた移動を領収書に書き込み、通常の申請（確認まで）へ進む */
+async function handleIcTripPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  const index = Number(params.get("i"))
+  if (!receiptId || !Number.isInteger(index)) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
+    return
+  }
+
+  const supabase = createServiceClient()
+  const { data } = await supabase
+    .from("staff_receipts")
+    .select("ai_raw")
+    .eq("id", receiptId)
+    .maybeSingle()
+  const raw = parseAiRawObject((data as { ai_raw?: unknown } | null)?.ai_raw) ?? {}
+  const trips = Array.isArray(raw.transit_trips) ? (raw.transit_trips as TransitTrip[]) : []
+  const trip = trips[index]
+  if (!trip) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 選んだ移動を確認できませんでした。もう一度お試しください。")
+    return
+  }
+
+  // 選んだ1件を、この領収書の内容として確定させる
+  await supabase
+    .from("staff_receipts")
+    .update({
+      date: trip.date,
+      amount: trip.fare,
+      store_name: trip.route,
+      ai_raw: JSON.parse(JSON.stringify({ ...raw, selected_trip: trip })),
+    })
+    .eq("id", receiptId)
+
+  // 以降は通常の交通費と同じ（定期券区間の確認 → 確認カード → OK）
+  await handlePhase2ItemPostback(
+    event,
+    new URLSearchParams({ rid: receiptId, i: "commute" })
+  )
+}
+
+/** 「この中にない」→ 自分で入力してもらう */
+async function handleIcNonePostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const receiptId = params.get("rid")
+  if (!receiptId) {
+    await sendLineMessage(event.replyToken, event.source.userId, "⚠️ 処理できませんでした。")
+    return
+  }
+  await startManualAmount(event, receiptId)
+}
+
+/**
+ * 手入力された金額と日付を領収書に反映し、通常の区分選択へ進む。
+ *
+ * 写真はすでに保存されているので、記録としては領収書ありの申請と同じ扱いになる。
+ * 本人が入力した値であることを ai_raw に残し、担当が後から確認できるようにする。
+ */
+async function applyManualReceiptInput(
+  event: LineEvent,
+  supabase: ServiceClient,
+  receiptId: string,
+  amount: number,
+  date: string
+): Promise<void> {
+  const { replyToken, source } = event
+  const { data } = await supabase.from("staff_receipts").select("ai_raw").eq("id", receiptId).maybeSingle()
+  const raw = parseAiRawObject((data as { ai_raw?: unknown } | null)?.ai_raw) ?? {}
+  await supabase
+    .from("staff_receipts")
+    .update({
+      amount,
+      date,
+      ai_raw: JSON.parse(
+        JSON.stringify({ ...raw, manual_input_at: new Date().toISOString(), manual_input_by: "self" })
+      ),
+    })
+    .eq("id", receiptId)
+  await clearTransitSession(supabase, source.userId)
+
+  await sendTier1(
+    replyToken,
+    source.userId,
+    receiptId,
+    `入力を受け付けました。\n　金額：¥${formatAmount(amount)}\n　利用日：${date}\n`
+  )
+}
+
+/* ---------- 読み取れなかったときの進み方 ---------- */
+
+/**
+ * 読み取りに失敗したときの選択肢。
+ *
+ * 以前は「担当が手動で登録します」とだけ返していたため、
+ * 本人はその場で何もできず、担当の手入力も減らなかった。
+ */
+async function sendReadFailureChoices(
+  event: LineEvent,
+  receiptId: string,
+  isTransit: boolean
+): Promise<void> {
+  const { replyToken, source } = event
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    "⚠️ 一部の項目を読み取れませんでした。\n" +
+      "─────────────\n" +
+      (isTransit
+        ? "利用履歴から移動を読み取れませんでした。\n"
+        : "金額または日付を読み取れませんでした。\n") +
+      "写真はDropboxに保存しています。\n\n" +
+      "どうされますか？\n\n" +
+      "・写真を送り直す … 明るい場所で撮り直して送ります\n" +
+      "・自分で入力する … 金額と日付をご自身で入力します\n" +
+      "・担当に相談する … 担当にこの申請を引き継ぎます",
+    [
+      {
+        type: "postback",
+        label: "写真を送り直す",
+        data: `action=rfretry&rid=${receiptId}`,
+        displayText: "写真を送り直します",
+      },
+      {
+        type: "postback",
+        label: "自分で入力する",
+        data: `action=rfmanual&rid=${receiptId}`,
+        displayText: "自分で入力します",
+      },
+      {
+        type: "postback",
+        label: "担当に相談する",
+        data: `action=rfhelp&rid=${receiptId}`,
+        displayText: "担当に相談します",
+      },
+    ]
+  )
+}
+
+/**
+ * 「写真を送り直す」→ 読み取れなかった記録を消してから撮り直しを案内する。
+ *
+ * 消さずに送り直すと、同じ画像が「登録済み」として弾かれる、
+ * あるいは同じ申請が2件できてしまう。
+ */
+async function handleRetryPhotoPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  if (!receiptId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。")
+    return
+  }
+  const supabase = createServiceClient()
+  // 精算が作られていないもの（＝まだ申請になっていないもの）だけ消す
+  const { data: settled } = await supabase
+    .from("petty_cash_transactions")
+    .select("id")
+    .eq("staff_receipt_id", receiptId)
+    .limit(1)
+  if (settled && settled.length > 0) {
+    await sendLineMessage(replyToken, source.userId, "この申請はすでに登録済みのため、送り直しできません。")
+    return
+  }
+  await supabase.from("staff_receipts").delete().eq("id", receiptId)
+
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    "先ほどの写真の記録を取り消しました。\n" +
+      "同じ写真でも送り直せます（二重に登録されません）。\n\n" +
+      "【うまく読み取るコツ】\n" +
+      "・明るい場所で、影が入らないように\n" +
+      "・金額と日付が切れないように全体を入れる\n" +
+      "・ICカードの履歴は、画面を拡大して文字をはっきりと\n" +
+      "・ピントが合ってから撮る\n\n" +
+      "準備ができたら、写真をこのトークに送ってください。"
+  )
+}
+
+/** 「自分で入力する」→ 金額の入力から始める */
+async function handleManualInputPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const receiptId = params.get("rid")
+  if (!receiptId) {
+    await sendLineMessage(event.replyToken, event.source.userId, "⚠️ 処理できませんでした。")
+    return
+  }
+  await startManualAmount(event, receiptId)
+}
+
+/** 金額の手入力を始める */
+async function startManualAmount(event: LineEvent, receiptId: string): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const { data: row } = await supabase
+    .from("staff_receipts")
+    .select("staff_member_id")
+    .eq("id", receiptId)
+    .maybeSingle()
+  const staffMemberId = (row as { staff_member_id?: string | null } | null)?.staff_member_id
+  if (!staffMemberId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 対象の領収書が見つかりませんでした。")
+    return
+  }
+  const ok = await setTransitSession(supabase, source.userId, staffMemberId, "manual_amount", {
+    manualReceiptId: receiptId,
+  })
+  if (!ok) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理中にエラーが発生しました。もう一度お試しください。")
+    return
+  }
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    "【金額】を数字で送ってください。\n例：1200\n\nこのあと【利用日】をお聞きします。"
+  )
+}
+
+/** 「担当に相談する」→ 担当へ引き継ぐ（要対応にすぐ出るよう印を付ける） */
+async function handleAskAdminPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  if (!receiptId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。")
+    return
+  }
+  const supabase = createServiceClient()
+  const { data } = await supabase
+    .from("staff_receipts")
+    .select("ai_raw, staff_member_id, dropbox_path")
+    .eq("id", receiptId)
+    .maybeSingle()
+  const row = data as { ai_raw?: unknown; staff_member_id?: string | null; dropbox_path?: string | null } | null
+  const raw = parseAiRawObject(row?.ai_raw) ?? {}
+
+  // 60分の猶予を待たず、すぐ要対応に出るようにする
+  await supabase
+    .from("staff_receipts")
+    .update({
+      ai_raw: JSON.parse(JSON.stringify({ ...raw, help_requested_at: new Date().toISOString() })),
+    })
+    .eq("id", receiptId)
+
+  const staffMembers = await fetchStaffMembers(supabase)
+  const me = staffMembers ? resolveStaffForUser(staffMembers, source.userId) : null
+  await notifyAdmins(
+    supabase as never,
+    "【読み取れない申請の相談】\n" +
+      `${me?.name ?? "お名前未登録の方"}さんから相談がありました。\n\n` +
+      "領収書の金額・日付が読み取れていません。\n" +
+      "アプリの「スタッフ立替」→「要対応」に出ています。\n" +
+      "画像を見て「立替手動登録」から登録してください。"
+  )
+
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    "担当にお伝えしました。\n" +
+      "写真は保存されていますので、担当が内容を確認して登録します。\n\n" +
+      "確定したら「申請履歴」で確認できます。\n" +
+      "お急ぎの場合は直接お声がけください。"
+  )
 }
 
 /* ---------- フェーズ2の申請フロー（講座・内訳・確認） ---------- */
@@ -3221,6 +3616,59 @@ async function handleTransitText(
           "分からない場合は「なし」と送ってください。",
         [transitCancelItem()]
       )
+      return
+    }
+    case "manual_amount": {
+      // 読み取れなかった領収書の金額を本人に入力してもらう
+      const amt = normalizeAmount(inputText)
+      if (amt == null || amt <= 0) {
+        await sendLineMessage(replyToken, source.userId, "金額は数字で送ってください。例：1200")
+        return
+      }
+      const receiptId = session.data.manualReceiptId
+      if (!receiptId) {
+        await sendTransitExpired(replyToken, source.userId)
+        return
+      }
+      await setTransitSession(supabase, source.userId, staffId, "manual_date", {
+        ...session.data,
+        manualAmount: amt,
+      })
+      await sendLineQuickReply(
+        replyToken,
+        source.userId,
+        `金額：¥${formatAmount(amt)}\n\n次に【利用日】を送ってください。\n` +
+          "（例）2026-11-18 ／ 11月18日 ／ 今日",
+        [
+          {
+            type: "postback",
+            label: "今日",
+            data: `action=mdate&rid=${receiptId}&d=today`,
+            displayText: "今日",
+          },
+        ]
+      )
+      return
+    }
+    case "manual_date": {
+      const date = /^(今日|きょう)$/.test(inputText.trim())
+        ? toJstDateString(new Date())
+        : parseJpDate(inputText)
+      if (!date) {
+        await sendLineMessage(
+          replyToken,
+          source.userId,
+          "日付を読み取れませんでした。\n「2026-11-18」「11月18日」「今日」のように送ってください。"
+        )
+        return
+      }
+      const receiptId = session.data.manualReceiptId
+      const amount = session.data.manualAmount
+      if (!receiptId || !amount) {
+        await sendTransitExpired(replyToken, source.userId)
+        return
+      }
+      await applyManualReceiptInput(event, supabase, receiptId, amount, date)
       return
     }
     case "contact": {
@@ -5713,13 +6161,21 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     console.log("[LINE Bot] Gemini AI解析開始")
     const base64Data = imageBuffer.toString("base64")
     const mimeType = "image/jpeg" // LINEの画像はJPEG
+    // 「交通費を申請」から入った直後は、ICカードの利用履歴として読み取る。
+    // 履歴は1枚に何件もの移動が並ぶため、領収書と同じ読み方では合計が狂う。
+    const { session: photoSession } = await loadTransitSession(supabase, source.userId)
+    const isTransitHistory = photoSession?.step === "await_ic_photo"
     const ocrResult = await analyzeDocument(base64Data, mimeType, {
-      extraHint: STAFF_RECEIPT_ANALYSIS_EXTRA_HINT,
+      extraHint: isTransitHistory
+        ? TRANSIT_HISTORY_ANALYSIS_EXTRA_HINT
+        : STAFF_RECEIPT_ANALYSIS_EXTRA_HINT,
     })
+    if (isTransitHistory) await clearTransitSession(supabase, source.userId)
     console.log(`[LINE Bot] Gemini AI解析完了: vendor=${ocrResult.vendor_name}, amount=${ocrResult.amount}, payments=${ocrResult.payments.length}`)
 
     // 5.2 1ファイルに複数の領収証が含まれる場合の分割候補（2件以上・全件金額ありのときのみ）
-    const splitCandidates = deriveReceiptCandidates(ocrResult)
+    //     ICカードの利用履歴は「全件を登録」ではなく本人に選んでもらうため、ここでは分割しない。
+    const splitCandidates = isTransitHistory ? [] : deriveReceiptCandidates(ocrResult)
 
     // 5.5 内容（店名+金額+日付）で重複チェック（同一スタッフ内。別画像での再申請をブロック）
     // 分割候補があれば各件を、なければ書類全体を1回照合する（分割兄弟同士はDB未登録なので互いにブロックしない）
@@ -5826,19 +6282,27 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     const receiptId = inserted.id
 
     // 8. まず区分を質問する（2段階フロー1段階目）。精算方法は区分選択後に自動判定する
-    const storeName = ocrResult.vendor_name || "不明"
     const amount = ocrResult.amount
-    const amountStr = formatAmount(amount)
-    const dateStr = ocrResult.issue_date || "日付不明"
 
-    // 金額が読み取れない場合はボタンを出さず、手動精算を案内（誤精算防止）
+    // ICカードの利用履歴は、読み取れた移動を一覧で出して本人に選んでもらう。
+    // 全件まとめて登録すると、私用の移動や定期券区間まで申請されてしまう。
+    if (isTransitHistory) {
+      const trips = deriveTransitTrips(ocrResult)
+      if (trips.length > 0) {
+        await sendTransitTripPicker(event, receiptId, trips)
+        console.log(`[LINE Bot] IC履歴 ${trips.length}件を提示`)
+        return
+      }
+      // 1件も読み取れなかった → 読み取り失敗と同じ案内にする
+      await sendReadFailureChoices(event, receiptId, true)
+      return
+    }
+
+    // 金額が読み取れない場合はボタンを出さず、進み方を選んでもらう（誤精算防止）。
+    // 以前は「担当が手動で登録します」とだけ返していたため、本人は何もできなかった。
     if (!amount || amount <= 0) {
-      await sendLineMessage(
-        replyToken,
-        source.userId,
-        `✅ 解析しました\n${storeName} ¥${amountStr}（${dateStr}）\nDropboxに保存しました。\n⚠️ 金額が読み取れなかったため、担当が手動で登録します。`
-      )
-      console.log("[LINE Bot] 処理完了（金額未読のためボタンなし）")
+      await sendReadFailureChoices(event, receiptId, false)
+      console.log("[LINE Bot] 読み取り失敗 → 選択肢を提示")
       return
     }
 

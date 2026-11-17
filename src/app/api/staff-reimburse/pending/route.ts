@@ -52,7 +52,7 @@ interface HoldTxRow {
 export interface PendingItem {
   /** petty_cash_transactions.id（excess/course/attach）または staff_receipts.id（incomplete） */
   id: string
-  kind: HoldReason | "incomplete"
+  kind: HoldReason | "incomplete" | "help"
   /** 連絡（LINE）に使う staff_members.id */
   staffMemberId: string | null
   staffName: string
@@ -147,6 +147,7 @@ export async function GET() {
         pass: all.filter((i) => i.kind === "pass").length,
         term: all.filter((i) => i.kind === "term").length,
         detail: all.filter((i) => i.kind === "detail").length,
+        help: all.filter((i) => i.kind === "help").length,
         dup: all.filter((i) => i.kind === "dup").length,
         incomplete: all.filter((i) => i.kind === "incomplete").length,
       },
@@ -232,7 +233,8 @@ async function fetchIncomplete(
     supabase
       .from("staff_receipts")
       .select("id, staff_member_id, store_name, amount, created_at, ai_raw")
-      .lt("created_at", cutoff)
+      // 猶予（60分）内でも、本人が「担当に相談する」を押したものは拾う
+      .or(`created_at.lt.${cutoff},ai_raw->>help_requested_at.not.is.null`)
       .order("id", { ascending: true })
       .range(from, to) as unknown as PromiseLike<{
         data: {
@@ -254,7 +256,9 @@ async function fetchIncomplete(
     .filter((r) => !parseAiRawObject(r.ai_raw)?.pending_dismissed_at)
     .map((r) => ({
       id: r.id,
-      kind: "incomplete" as const,
+      kind: (parseAiRawObject(r.ai_raw)?.help_requested_at ? "help" : "incomplete") as
+        | "help"
+        | "incomplete",
       staffMemberId: r.staff_member_id,
       staffName: (r.staff_member_id && staffName.get(r.staff_member_id)) || "不明なスタッフ",
       courseName: "",

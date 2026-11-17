@@ -40,6 +40,12 @@ export type TransitStep =
   | "academy_start"
   // 問い合わせ: 担当へ伝える内容の入力待ち
   | "contact"
+  // 交通費: ICカード履歴の写真待ち（次に届いた画像を履歴として読み取る）
+  | "await_ic_photo"
+  // 読み取れなかった領収書: 金額の手入力待ち
+  | "manual_amount"
+  // 読み取れなかった領収書: 日付の手入力待ち
+  | "manual_date"
   // 自宅最寄り駅 自己登録フロー（同じセッションテーブルを流用）
   | "home_input" // 駅名の入力待ち
   | "home_confirm" // 一意判定の確認待ち（OK/修正）
@@ -94,6 +100,11 @@ export interface TransitData {
   noteDetailKey?: string
   /** 入力後に確認画面へ戻すときの講座ID（講座の「その他」で使う） */
   noteCourseId?: string
+  /* --- 読み取れなかった領収書の手入力 --- */
+  /** 手入力の対象の staff_receipts.id */
+  manualReceiptId?: string
+  /** 手入力された金額（日付の入力へ引き継ぐ） */
+  manualAmount?: number
   // 共通
   useDate?: string // 利用日 YYYY-MM-DD
   amount?: number // 確定額（確認後）

@@ -119,7 +119,7 @@ interface Row {
  */
 interface PendingItem {
   id: string
-  kind: "excess" | "course" | "attach" | "pass" | "term" | "detail" | "dup" | "incomplete"
+  kind: "excess" | "course" | "attach" | "pass" | "term" | "detail" | "dup" | "help" | "incomplete"
   /** 連絡（LINE）に使う staff_members.id */
   staffMemberId: string | null
   staffName: string
@@ -141,6 +141,7 @@ const PENDING_LABELS: Record<PendingItem["kind"], string> = {
   term: "会員期間外",
   detail: "内訳がその他",
   dup: "二重申請の疑い",
+  help: "本人から相談",
   incomplete: "未完了",
 }
 
@@ -153,6 +154,7 @@ const PENDING_HELP: Record<PendingItem["kind"], string> = {
   detail: "「その他」で申請されています。スタッフが書いた内容（明細の摘要に入っています）を確認し、支給してよければ「このまま確定する」を押してください。金額を変える場合は下の明細で直してから確定してください。",
   term: "アカデミー会員の有効期間（開始日から3年）を過ぎているか、開始日が未登録です。スタッフの「設定」→「アカデミー会員の登録」で開始日を登録してもらうか、期間外の扱いを決めてから確定してください。",
   pass: "切符などで定期券区間が含まれている可能性があります。院が通勤手当を払っているため、その区間の運賃を差し引いて承認してください（差し引く額は「金額を指定して承認」で入力できます）。",
+  help: "スタッフが「担当に相談する」を押しました。領収書の金額や日付が読み取れていません。画像を確認し、「立替手動登録」から金額・日付・区分を入れて登録してください。登録が済んだらこの行の「対応済みにして隠す」を押してください。",
   incomplete:
     "領収書は届いていますが、費用区分が選ばれず支給の対象になっていません。本人は申請したつもりの可能性があります。",
 }
@@ -928,7 +930,7 @@ export default function StaffReimbursePage() {
                     )}
 
                     {/* 未完了は承認・却下が無いため、対応済みにして画面から外せるようにする */}
-                    {p.kind === "incomplete" && (
+                    {(p.kind === "incomplete" || p.kind === "help") && (
                       <div className="flex flex-col gap-2 sm:w-64 sm:shrink-0">
                         <Button
                           variant="outline"
