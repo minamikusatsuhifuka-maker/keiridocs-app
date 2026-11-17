@@ -116,10 +116,42 @@ check(
   { 支給: 5000, 超過: 0, 承認既定値: 0 }
 )
 
+/* ---------- 頂点への道：他の3コース（常に半額） ---------- */
+
+check(
+  "ダイナミックコース 受講料 ¥100,000 → 半額 ¥50,000（初回でも半額）",
+  calcWithDecision({ amount: 100000, item: "tuition", courseKind: "apex", courseRule: "half" }),
+  { 支給: 50000, 担当判断: false }
+)
+
+check(
+  "ダイナミックアドバンスコース 受講料 ¥10,000 → 半額 ¥5,000",
+  calc({ amount: 10000, item: "tuition", courseKind: "apex", courseRule: "half" }),
+  { 支給: 5000, 超過: 0, 承認既定値: 0 }
+)
+
+check(
+  "ピークパフォーマンスコース 交通費¥20,000＋宿泊費¥20,000 → 30,000で頭打ち→半額15,000",
+  calc({ amount: 20000, item: "lodging", courseKind: "apex", courseRule: "half", travelCapUsed: 20000 }),
+  { 支給: 5000, 超過: 10000, 承認既定値: 5000 }
+)
+
+check(
+  "常に半額の講座でも弁当代は全額",
+  calc({ amount: 1200, item: "bento", courseKind: "apex", courseRule: "half" }),
+  { 支給: 1200, 超過: 0, 承認既定値: 0 }
+)
+
+check(
+  "常に半額の講座でもアカデミー会費は全額",
+  calc({ amount: 55000, item: "membership", courseKind: "apex", courseRule: "half" }),
+  { 支給: 55000, 超過: 0, 承認既定値: 0 }
+)
+
 /* ---------- 支給率が未定の講座 ---------- */
 
 check(
-  "支給率 未定の講座は自動で確定させず担当判断（ダイナミックコース等）",
+  "支給率 未定の講座は自動で確定させず担当判断",
   calcWithDecision({ amount: 100000, item: "tuition", courseKind: "apex", courseRule: "undecided" }),
   { 支給: 100000, 担当判断: true }
 )

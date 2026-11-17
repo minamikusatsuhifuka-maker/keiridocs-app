@@ -20,7 +20,7 @@ import type { Database } from "@/types/database"
  */
 
 const VALID_KINDS: CourseKind[] = ["apex", "ach_other", "jpsa", "exam", "non_ach"]
-const VALID_RULES: CourseRule[] = ["full", "atc", "undecided"]
+const VALID_RULES: CourseRule[] = ["full", "half", "atc", "undecided"]
 
 function createServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL

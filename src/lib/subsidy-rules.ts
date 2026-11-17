@@ -62,14 +62,16 @@ export const COURSE_KIND_LABELS: Record<CourseKind, string> = {
  * 支給率の方式（講座マスタ courses.rule）。
  *
  * - full       常に全額（交通費＋宿泊費は合計30,000円/講座の上限あり）
+ * - half       常に半額（ダイナミックコース／ダイナミックアドバンスコース／ピークパフォーマンスコース）
  * - atc        ATC方式。受講料は初回全額／再受講1〜6回目は半額／7回目以降は担当判断。
  *              交通費・宿泊費も半額の回は半額。弁当代とアカデミー会費は常に全額。
  * - undecided  未定。自動で確定させず、すべて担当の判断待ちにする。
  */
-export type CourseRule = "full" | "atc" | "undecided"
+export type CourseRule = "full" | "half" | "atc" | "undecided"
 
 export const COURSE_RULE_LABELS: Record<CourseRule, string> = {
   full: "常に全額",
+  half: "常に半額",
   atc: "ATC方式（初回全額・再受講1〜6回目は半額）",
   undecided: "支給率 未定（担当の判断待ちにする）",
 }
@@ -257,6 +259,11 @@ function resolveRate(input: SubsidyInput): { rate: number; needsDecision: boolea
   // 常に全額になる内訳
   if (input.item === "bento" || input.item === "membership") {
     return { rate: 1, needsDecision: false }
+  }
+
+  // 常に半額（ダイナミックコース／ダイナミックアドバンスコース／ピークパフォーマンスコース）
+  if (input.courseRule === "half") {
+    return { rate: REPEAT_RATE, needsDecision: false }
   }
 
   // ATC方式：初回は全額、再受講1〜6回目は半額、7回目以降は未定（担当判断）

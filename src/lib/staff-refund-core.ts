@@ -187,9 +187,9 @@ export async function settleStaffReceipt(params: {
       excess_amount: assessed.excess > 0 ? assessed.excess : null,
       hold_reason: assessed.holdReason,
       // 支給率は subsidy_category で表す（一覧・CSVが保存値から支給額を組み立てるため）。
-      // 頂点への道の2回目以降だけ半額。弁当代は calcStoredSubsidy 側で全額に戻す
-      subsidy_category:
-        params.phase2.courseKind === "apex" && assessed.isRepeat ? "achievement_repeat" : "other",
+      // 方式（ATC方式・常に半額）に関わらず、実際に適用した支給率で判断する。
+      // 弁当代とアカデミー会費は calcStoredSubsidy 側で全額に戻る
+      subsidy_category: assessed.rate < 1 ? "achievement_repeat" : "other",
     }
   }
 

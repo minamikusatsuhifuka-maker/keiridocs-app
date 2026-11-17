@@ -21,6 +21,8 @@
 --
 -- ■ rule の意味
 --   full       … 常に全額（交通費＋宿泊費は合計30,000円/講座の上限あり）
+--   half       … 常に半額。受講料・交通費・宿泊費が半額（弁当代とアカデミー会費は全額）。
+--                 ダイナミックコース／ダイナミックアドバンスコース／ピークパフォーマンスコースがこれ。
 --   atc        … ATC方式。受講料は初回全額／再受講1〜6回目は半額／7回目以降は担当判断。
 --                 再受講の回は「そのスタッフの atc 方式の受講料申請の回数」で数える。
 --                 交通費・宿泊費も半額の回は半額（上限30,000円を当ててから半額）。
@@ -46,11 +48,11 @@ ALTER TABLE courses
 ALTER TABLE courses DROP CONSTRAINT IF EXISTS courses_rule_check;
 ALTER TABLE courses
   ADD CONSTRAINT courses_rule_check
-  CHECK (rule IN ('full', 'atc', 'undecided'));
+  CHECK (rule IN ('full', 'atc', 'half', 'undecided'));
 
 COMMENT ON COLUMN courses.kind IS
   '分類（表示・集計用）。apex=頂点への道／ach_other=その他のアチーブメント講座／jpsa=JPSA／exam=検定・試験／non_ach=アチーブメント以外';
 COMMENT ON COLUMN courses.rule IS
-  '支給率の方式。full=常に全額／atc=ATC方式（初回全額・再受講1〜6回目半額・7回目以降は担当判断）／undecided=未定（すべて担当の判断待ちにする）';
+  '支給率の方式。full=常に全額／half=常に半額／atc=ATC方式（初回全額・再受講1〜6回目半額・7回目以降は担当判断）／undecided=未定（すべて担当の判断待ちにする）';
 
 NOTIFY pgrst, 'reload schema';
