@@ -22,6 +22,7 @@ import {
   Wallet,
   RotateCcw,
   HandCoins,
+  Settings,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -47,7 +48,10 @@ const navItems = [
   { href: "/refund", label: "返金管理", icon: RotateCcw },
   { href: "/business-cards", label: "名刺管理", icon: IdCard },
   { href: "/mail", label: "メール確認", icon: Mail },
-  // 「設定」「LINEスタッフ管理」は /mkadmin（管理画面）に集約したためサイドバーから除外
+  // 旧「設定」「LINEスタッフ管理」は /mkadmin（管理画面）に集約。
+  // URLを直接入力しないとたどり着けなかったため、ここから開けるようにしている。
+  // /mkadmin 自体がパスワードで保護されているので、表示は全員に出してよい。
+  { href: "/mkadmin", label: "管理画面", icon: Settings },
 ]
 
 // admin専用ナビ項目

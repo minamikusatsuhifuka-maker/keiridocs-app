@@ -26,7 +26,8 @@ const navItems = [
   { href: "/accountant", label: "税理士", icon: Briefcase },
   { href: "/staff-receipts", label: "領収書", icon: Receipt },
   { href: "/mail", label: "メール", icon: Mail },
-  { href: "/settings", label: "設定", icon: Settings },
+  // 旧「設定」は /mkadmin（管理画面）に集約済み
+  { href: "/mkadmin", label: "管理", icon: Settings },
 ]
 
 // パスがアクティブかどうかを判定
