@@ -52,6 +52,27 @@ import {
 } from "@/lib/line-staff-profile"
 import { decidePassDeparture, passDeductionNote } from "@/lib/commuter-pass-deduction"
 import {
+  COURSE_NOT_LISTED,
+  OTHER_ITEMS,
+  PHASE2_GROUPS,
+  coursePrompt,
+  courseNamePrompt,
+  examAttachPrompt,
+  groupPrompt,
+  holdNotice,
+  itemPrompt,
+  rateLabel,
+  sortCoursesByGuess,
+  type CourseChoice,
+} from "@/lib/line-phase2-flow"
+import {
+  EXPENSE_ITEM_LABELS,
+  availableItems,
+  calcStoredSubsidy,
+  type ExpenseItem,
+} from "@/lib/subsidy-rules"
+import { assessSubsidy } from "@/lib/subsidy-assess"
+import {
   applicationConfirmCard,
   flexSizeBytes,
   FLEX_SIZE_LIMIT_BYTES,
@@ -533,11 +554,17 @@ async function handleEvent(event: LineEvent): Promise<void> {
 }
 
 /**
- * postbackデータを振り分ける。新フロー（給与一本化・2階層区分・確認/修正）:
- *  - action=t1&rid=...&g=ach|other      … 第1階層選択 → 第2階層（サブ選択）を返す
- *  - action=t2&rid=...&d=<detailKey>    … 第2階層選択 → 確認画面（OK/修正）を返す
- *  - action=ok&rid=...&d=<detailKey>    … 確定 → 給与支給で精算登録
- *  - action=fix&rid=...                 … 修正 → 第1階層に戻る（写真再送不要）
+ * postbackデータを振り分ける。
+ *
+ * 申請フロー（フェーズ2。講座ごとの上限と支給率を適用する）:
+ *  - action=p2g&rid=...&g=course|other   … 何の費用か → 講座または内訳の選択へ
+ *  - action=p2c&rid=...&c=<courseId>     … 講座の選択（__none__ は名称を手入力）
+ *  - action=p2i&rid=...&c=...&i=<item>   … 内訳の選択 → 確認画面（OK/修正）
+ *  - action=p2ok&rid=...&c=...&i=<item>  … 確定 → 給与支給で精算登録
+ *  - action=fix&rid=...                  … 修正 → 最初に戻る（写真再送不要）
+ *
+ * 旧フロー（t1/t2/ok）は、差し替え前に送った確認カードが押された場合のためだけに残している。
+ * 新しい申請は sendTier1 から p2g に入るため通らない。
  */
 async function handlePostback(event: LineEvent): Promise<void> {
   const { postback } = event
@@ -558,6 +585,20 @@ async function handlePostback(event: LineEvent): Promise<void> {
         "メニューを閉じました。\n「申請」と送るといつでも表示できます。"
       )
       return
+    // フェーズ2の申請フロー（講座・内訳・確認）
+    case "p2g": // 第1階層（講座・研修／それ以外）
+      await handlePhase2GroupPostback(event, params)
+      return
+    case "p2c": // 講座の選択
+      await handlePhase2CoursePostback(event, params)
+      return
+    case "p2i": // 内訳の選択
+      await handlePhase2ItemPostback(event, params)
+      return
+    case "p2ok": // 確認OK → 確定
+      await handlePhase2ConfirmPostback(event, params)
+      return
+    // 旧フロー（確認カードを送った直後の押し込みが残っている場合のみ通る）
     case "t1":
       await handleTier1Postback(event, params)
       return
@@ -691,20 +732,467 @@ async function sendTier1(
   receiptId: string,
   header: string
 ): Promise<void> {
-  await sendLineQuickReply(replyToken, userId, `${header}\nこの立替の区分を選んでください。`, [
-    {
-      type: "postback",
-      label: EXPENSE_GROUP_LABELS.ach,
-      data: `action=t1&rid=${receiptId}&g=ach`,
-      displayText: EXPENSE_GROUP_LABELS.ach,
-    },
-    {
-      type: "postback",
-      label: EXPENSE_GROUP_LABELS.other,
-      data: `action=t1&rid=${receiptId}&g=other`,
-      displayText: EXPENSE_GROUP_LABELS.other,
-    },
-  ])
+  await sendLineQuickReply(
+    replyToken,
+    userId,
+    groupPrompt(header),
+    PHASE2_GROUPS.map((g) => ({
+      type: "postback" as const,
+      label: g.label,
+      data: `action=p2g&rid=${receiptId}&g=${g.key}`,
+      displayText: g.label,
+    }))
+  )
+}
+
+/* ---------- フェーズ2の申請フロー（講座・内訳・確認） ---------- */
+
+/** 講座マスタ（選択肢に出すものだけ）。044/045 未適用なら空を返す */
+async function fetchCourseChoices(
+  supabase: ReturnType<typeof createServiceClient>
+): Promise<CourseChoice[]> {
+  try {
+    const { data, error } = await supabase
+      .from("courses")
+      .select("id, name, kind, rule")
+      .eq("is_active", true)
+      .order("name", { ascending: true })
+    if (error || !data) return []
+    return (data as unknown as CourseChoice[]).filter((c) => c.id && c.name)
+  } catch {
+    return []
+  }
+}
+
+/** 1件の講座を取得（確認画面・確定で分類と支給率が必要） */
+async function fetchCourseById(
+  supabase: ReturnType<typeof createServiceClient>,
+  courseId: string
+): Promise<CourseChoice | null> {
+  try {
+    const { data, error } = await supabase
+      .from("courses")
+      .select("id, name, kind, rule")
+      .eq("id", courseId)
+      .maybeSingle()
+    if (error || !data) return null
+    return data as unknown as CourseChoice
+  } catch {
+    return null
+  }
+}
+
+/** AIが読み取った講座名の候補（領収書の摘要・店名から。無ければ null） */
+function guessedCourseName(aiRaw: unknown, storeName: string | null): string | null {
+  const obj = parseAiRawObject(aiRaw)
+  for (const key of ["course_name", "courseName", "description", "summary"]) {
+    const v = obj?.[key]
+    if (typeof v === "string" && v.trim()) return v.trim().slice(0, 40)
+  }
+  return storeName?.trim() ? storeName.trim().slice(0, 40) : null
+}
+
+/** 第1階層（講座・研修／それ以外）の選択 */
+async function handlePhase2GroupPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  const group = params.get("g")
+  if (!receiptId || (group !== "course" && group !== "other")) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
+    return
+  }
+
+  const supabase = createServiceClient()
+
+  // それ以外: 内訳をそのまま選んでもらう
+  if (group === "other") {
+    await sendLineQuickReply(
+      replyToken,
+      source.userId,
+      "何の費用ですか？\n\n" + OTHER_ITEMS.map((o) => `・${o.label} … ${o.help}`).join("\n"),
+      OTHER_ITEMS.map((o) => ({
+        type: "postback" as const,
+        label: o.label,
+        data: `action=p2i&rid=${receiptId}&i=${o.item}`,
+        displayText: o.label,
+      }))
+    )
+    return
+  }
+
+  // 講座・研修: 講座マスタから選んでもらう
+  const courses = await fetchCourseChoices(supabase)
+  if (courses.length === 0) {
+    // 講座マスタが空のままでも申請を止めない（担当が後で割り当てる）
+    await askCourseName(event, receiptId)
+    return
+  }
+
+  const fetched = await fetchReceiptWithSiblings(supabase, receiptId)
+  const guessed = fetched ? guessedCourseName(fetched.receipt.ai_raw, fetched.receipt.store_name) : null
+  const sorted = sortCoursesByGuess(courses, guessed)
+
+  // クイックリプライは13個まで。最後の1つは「一覧に無い」に使う
+  const items: PostbackAction[] = sorted.slice(0, 12).map((c) => ({
+    type: "postback",
+    label: c.name,
+    data: `action=p2c&rid=${receiptId}&c=${c.id}`,
+    displayText: c.name,
+  }))
+  items.push({
+    type: "postback",
+    label: "一覧に無い講座",
+    data: `action=p2c&rid=${receiptId}&c=${COURSE_NOT_LISTED}`,
+    displayText: "一覧に無い講座",
+  })
+
+  await sendLineQuickReply(replyToken, source.userId, coursePrompt(guessed), items)
+}
+
+/** 講座の選択 → 内訳の選択へ */
+async function handlePhase2CoursePostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  const courseId = params.get("c")
+  if (!receiptId || !courseId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
+    return
+  }
+
+  // 一覧に無い講座: 名称を入力してもらい、担当が講座マスタへ登録する
+  if (courseId === COURSE_NOT_LISTED) {
+    await askCourseName(event, receiptId)
+    return
+  }
+
+  const supabase = createServiceClient()
+  const course = await fetchCourseById(supabase, courseId)
+  if (!course) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 講座を確認できませんでした。もう一度お試しください。")
+    return
+  }
+
+  const items = availableItems(course.kind)
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    itemPrompt(course.name, course.kind),
+    items.map((i) => ({
+      type: "postback" as const,
+      label: EXPENSE_ITEM_LABELS[i],
+      data: `action=p2i&rid=${receiptId}&c=${courseId}&i=${i}`,
+      displayText: EXPENSE_ITEM_LABELS[i],
+    }))
+  )
+}
+
+/** 一覧に無い講座の名称を入力してもらう */
+async function askCourseName(event: LineEvent, receiptId: string): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const { data: row } = await supabase
+    .from("staff_receipts")
+    .select("staff_member_id")
+    .eq("id", receiptId)
+    .maybeSingle()
+  const staffMemberId = (row as { staff_member_id?: string | null } | null)?.staff_member_id
+  if (!staffMemberId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 対象の領収書が見つかりませんでした。")
+    return
+  }
+  const ok = await setTransitSession(supabase, source.userId, staffMemberId, "course_name", {
+    noteReceiptId: receiptId,
+  })
+  if (!ok) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理中にエラーが発生しました。もう一度お試しください。")
+    return
+  }
+  await sendLineMessage(replyToken, source.userId, courseNamePrompt())
+}
+
+/** 内訳の選択 → 確認画面へ（検定・試験は添付の確認を挟む） */
+async function handlePhase2ItemPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  const item = params.get("i") as ExpenseItem | null
+  const courseId = params.get("c")
+  if (!receiptId || !item || !(item in EXPENSE_ITEM_LABELS)) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
+    return
+  }
+
+  // その他: 何を立て替えたのか1行入力してもらう（買い物の立替があるため）
+  if (item === "other" && params.get("note") !== "1") {
+    await askOtherDetailNote(event, receiptId, "other")
+    return
+  }
+
+  // 検定・試験: 合格通知・修了通知の写真があるかを確認する
+  if (item === "exam" && params.get("at") === null) {
+    await sendLineQuickReply(replyToken, source.userId, examAttachPrompt(), [
+      {
+        type: "postback",
+        label: "送りました",
+        data: `action=p2i&rid=${receiptId}&i=exam&at=1`,
+        displayText: "通知の写真を送りました",
+      },
+      {
+        type: "postback",
+        label: "まだ送っていません",
+        data: `action=p2i&rid=${receiptId}&i=exam&at=0`,
+        displayText: "通知の写真はまだです",
+      },
+    ])
+    return
+  }
+
+  await sendPhase2Confirm(event, receiptId, item, courseId, params.get("at") === "0")
+}
+
+/** 確認カードを送る（支給額・上限・保留の理由をここで見せる） */
+async function sendPhase2Confirm(
+  event: LineEvent,
+  receiptId: string,
+  item: ExpenseItem,
+  courseId: string | null,
+  awaitingAttachment: boolean
+): Promise<void> {
+  const { replyToken, source } = event
+  try {
+    const supabase = createServiceClient()
+    const fetched = await fetchReceiptWithSiblings(supabase, receiptId)
+    if (!fetched) {
+      await sendLineMessage(replyToken, source.userId, "⚠️ 対象の領収書が見つかりませんでした。")
+      return
+    }
+    const { receipt, siblings } = fetched
+    const amount = siblings.length >= 2
+      ? siblings.reduce((sum, sb) => sum + (sb.amount ?? 0), 0)
+      : receipt.amount
+
+    // 金額が読み取れない場合は確認に進めず担当へ回す（誤精算防止）
+    if (!amount || amount <= 0) {
+      await sendLineMessage(
+        replyToken,
+        source.userId,
+        "⚠️ 金額が読み取れていないため申請できません。担当にご相談ください。"
+      )
+      return
+    }
+
+    const course = courseId ? await fetchCourseById(supabase, courseId) : null
+    const pendingCourseName = course ? null : readPendingCourseName(receipt.ai_raw)
+
+    // 支給額の判定は subsidy-assess に任せる（確定時と同じ計算）
+    const assessed = await assessSubsidy({
+      supabase,
+      staffMemberId: receipt.staff_member_id,
+      amount,
+      item,
+      courseId: course?.id ?? null,
+      courseKind: course?.kind ?? null,
+      courseRule: course?.rule ?? null,
+      pendingCourseName,
+      awaitingAttachment,
+      submittedAt: new Date(receipt.created_at),
+    })
+
+    const applicationDate = toJstDateString(new Date(receipt.created_at))
+    const month = resolveStaffSubmissionMonth(receipt.ai_raw, applicationDate).month
+    const targetMonth = month ? `${labelYearMonth(month)}分` : "不明"
+
+    const okData =
+      `action=p2ok&rid=${receiptId}&i=${item}` +
+      (course ? `&c=${course.id}` : "") +
+      (awaitingAttachment ? "&at=0" : "")
+    const fixData = `action=fix&rid=${receiptId}`
+
+    const card = applicationConfirmCard({
+      applicant: receipt.staffName,
+      course: course?.name ?? pendingCourseName ?? undefined,
+      category: EXPENSE_ITEM_LABELS[item],
+      purpose: readExpensePurpose(receipt.ai_raw) || undefined,
+      breakdown:
+        siblings.length >= 2
+          ? siblings.map((sb, i) => ({
+              label: `${i + 1}件目`,
+              amount: sb.amount,
+              sub: `${(sb.store_name || "不明").slice(0, 20)}（${sb.date || "日付不明"}）`,
+            }))
+          : [{ label: "支払先", amount, sub: (receipt.store_name || "不明").slice(0, 30) }],
+      receiptTotal: amount,
+      subsidy: assessed.subsidy,
+      subsidyRateLabel: rateLabel(assessed.rate, item),
+      targetMonth,
+      overLimit: assessed.excess > 0 ? { category: EXPENSE_ITEM_LABELS[item], exceeded: assessed.excess } : undefined,
+      okData,
+      fixData,
+    })
+
+    const holdLine = assessed.holdReason ? `\n${holdNotice(assessed.holdReason)}` : ""
+    const fallback =
+      "この内容で申請します。\n" +
+      `申請者：${receipt.staffName}\n` +
+      (course ? `講座：${course.name}\n` : pendingCourseName ? `講座：${pendingCourseName}\n` : "") +
+      `区分：${EXPENSE_ITEM_LABELS[item]}\n` +
+      `領収書の金額：¥${formatAmount(amount)}\n` +
+      `支給額：¥${formatAmount(assessed.subsidy)}（${rateLabel(assessed.rate, item)}）\n` +
+      `対象月：${targetMonth}${holdLine}`
+    await sendFlexCard(replyToken, source.userId, card, fallback)
+  } catch (error) {
+    console.error("[LINE Bot] 確認画面生成エラー:", error)
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理中にエラーが発生しました。担当にご相談ください。")
+  }
+}
+
+/** 一覧に無い講座として入力された講座名（ai_raw に保存している） */
+function readPendingCourseName(aiRaw: unknown): string | null {
+  const v = parseAiRawObject(aiRaw)?.pending_course_name
+  return typeof v === "string" && v.trim() ? v.trim() : null
+}
+
+/** 入力された講座名を領収書に保存する（担当が講座マスタへ割り当てるまでの受け皿） */
+async function savePendingCourseName(
+  supabase: ReturnType<typeof createServiceClient>,
+  receiptId: string,
+  name: string
+): Promise<void> {
+  const { data } = await supabase.from("staff_receipts").select("ai_raw").eq("id", receiptId).maybeSingle()
+  const current = parseAiRawObject((data as { ai_raw?: unknown } | null)?.ai_raw) ?? {}
+  await supabase
+    .from("staff_receipts")
+    .update({ ai_raw: JSON.parse(JSON.stringify({ ...current, pending_course_name: name })) })
+    .eq("id", receiptId)
+}
+
+/** 「OK」→ 精算を確定する（フェーズ2の区分を渡し、上限と支給率を適用する） */
+async function handlePhase2ConfirmPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  const item = params.get("i") as ExpenseItem | null
+  const courseId = params.get("c")
+  const awaitingAttachment = params.get("at") === "0"
+  if (!receiptId || !item || !(item in EXPENSE_ITEM_LABELS)) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
+    return
+  }
+
+  const supabase = createServiceClient()
+  try {
+    const fetched = await fetchReceiptWithSiblings(supabase, receiptId)
+    const course = courseId ? await fetchCourseById(supabase, courseId) : null
+    const pendingCourseName = course
+      ? null
+      : fetched
+        ? readPendingCourseName(fetched.receipt.ai_raw)
+        : null
+
+    const phase2 = {
+      item,
+      courseId: course?.id ?? null,
+      courseKind: course?.kind ?? null,
+      courseRule: course?.rule ?? null,
+      pendingCourseName,
+      awaitingAttachment,
+    }
+
+    // 分割（1ファイル複数領収証）は全件を同じ区分で確定する
+    const targets = fetched && fetched.siblings.length >= 2 ? fetched.siblings.map((sb) => sb.id) : [receiptId]
+    let settledAmount = 0
+    let settledSubsidy = 0
+    let already = 0
+    for (const id of targets) {
+      const result = await settleStaffReceipt({
+        staffReceiptId: id,
+        settlementMethod: "payroll", // LINEからは常に給与支給に一本化
+        expenseDetail: EXPENSE_ITEM_LABELS[item],
+        client: supabase,
+        phase2,
+      })
+      if (result.status === "already") {
+        already++
+        continue
+      }
+      if (result.status === "not_found") {
+        await sendLineMessage(replyToken, source.userId, "⚠️ 対象の領収書が見つかりませんでした。")
+        return
+      }
+      if (result.status === "no_amount") {
+        await sendLineMessage(
+          replyToken,
+          source.userId,
+          "⚠️ 金額が読み取れていないため精算できません。担当にご相談ください。"
+        )
+        return
+      }
+      settledAmount += result.amount ?? 0
+    }
+
+    // 支給額は確定した明細から読む（確認画面と同じ計算結果になる）
+    settledSubsidy = await sumSettledSubsidy(supabase, targets)
+
+    if (already > 0 && settledAmount === 0) {
+      await sendLineMessage(replyToken, source.userId, "ℹ️ この領収書はすでに登録済みです。")
+      return
+    }
+
+    // 保留の理由は確定後の明細から読む（確認画面と同じ判定結果になる）
+    const holdReason = await readHoldReason(supabase, receiptId)
+    const subject =
+      `${EXPENSE_ITEM_LABELS[item]} ¥${formatAmount(settledAmount)}（支給 ¥${formatAmount(settledSubsidy)}）を\n` +
+      (holdReason ? `${holdNotice(holdReason)}\n` : "")
+
+    await sendLineMessages(replyToken, source.userId, [
+      registeredMessage(
+        submissionMonthLabel(
+          fetched?.receipt.ai_raw ?? null,
+          fetched?.receipt.created_at ?? new Date().toISOString()
+        ),
+        subject
+      ),
+    ])
+  } catch (error) {
+    console.error("[LINE Bot] 精算確定エラー:", error)
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理中にエラーが発生しました。担当にご相談ください。")
+  }
+}
+
+/** 確定した明細の支給額の合計（保存済みの区分・超過額から計算する） */
+async function sumSettledSubsidy(
+  supabase: ReturnType<typeof createServiceClient>,
+  staffReceiptIds: string[]
+): Promise<number> {
+  try {
+    const { data, error } = await supabase
+      .from("petty_cash_transactions")
+      .select("amount, subsidy_category, expense_item, excess_amount, approved_excess")
+      .in("staff_receipt_id", staffReceiptIds)
+    if (error || !data) return 0
+    return (data as unknown as Parameters<typeof calcStoredSubsidy>[0][]).reduce(
+      (sum, row) => sum + calcStoredSubsidy(row),
+      0
+    )
+  } catch {
+    return 0
+  }
+}
+
+/** 確定した明細の保留理由（無ければ null） */
+async function readHoldReason(
+  supabase: ReturnType<typeof createServiceClient>,
+  receiptId: string
+): Promise<string | null> {
+  try {
+    const { data, error } = await supabase
+      .from("petty_cash_transactions")
+      .select("hold_reason")
+      .eq("staff_receipt_id", receiptId)
+      .maybeSingle()
+    if (error || !data) return null
+    return (data as { hold_reason?: string | null }).hold_reason ?? null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -2470,6 +2958,34 @@ async function handleTransitText(
       )
       return
     }
+    case "course_name": {
+      // 一覧に無い講座の名称。担当が講座マスタへ登録するまで保留になる
+      const receiptId = session.data.noteReceiptId
+      if (!receiptId) {
+        await sendTransitExpired(replyToken, source.userId)
+        return
+      }
+      const name = inputText.trim().slice(0, 60)
+      if (!name) {
+        await sendLineMessage(replyToken, source.userId, courseNamePrompt())
+        return
+      }
+      await savePendingCourseName(supabase, receiptId, name)
+      await clearTransitSession(supabase, source.userId)
+      // 講座の分類が決まっていないので、内訳は共通のものだけ出す
+      await sendLineQuickReply(
+        replyToken,
+        source.userId,
+        `「${name}」として申請します。\n何の費用ですか？`,
+        (["tuition", "transport", "lodging"] as ExpenseItem[]).map((i) => ({
+          type: "postback" as const,
+          label: EXPENSE_ITEM_LABELS[i],
+          data: `action=p2i&rid=${receiptId}&i=${i}`,
+          displayText: EXPENSE_ITEM_LABELS[i],
+        }))
+      )
+      return
+    }
     case "detail_note": {
       // 「その他」の立替の内容。担当・会計士さんが見るので空のままにはしない
       const receiptId = session.data.noteReceiptId
@@ -2481,11 +2997,8 @@ async function handleTransitText(
       const purpose = /^(なし|無し|スキップ|skip)$/i.test(inputText) ? "" : inputText.trim().slice(0, 60)
       await saveExpensePurpose(supabase, receiptId, purpose)
       await clearTransitSession(supabase, source.userId)
-      // 内容の入力は済んだので note=1 を付けて確認画面へ進む（再度聞かない）
-      await handleTier2Postback(
-        event,
-        new URLSearchParams({ rid: receiptId, d: detailKey, note: "1" })
-      )
+      // 内容の入力は済んだので、そのまま確認画面へ進む（再度聞かない）
+      await sendPhase2Confirm(event, receiptId, (detailKey || "other") as ExpenseItem, null, false)
       return
     }
     case "other_purpose": {

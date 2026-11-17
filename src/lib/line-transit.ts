@@ -34,6 +34,8 @@ export type TransitStep =
   | "other_confirm" // 確認待ち（OK）
   // 「その他」の立替（買い物など）: 何に使ったかの入力待ち
   | "detail_note"
+  // 一覧に無い講座: 講座名の入力待ち
+  | "course_name"
   // 自宅最寄り駅 自己登録フロー（同じセッションテーブルを流用）
   | "home_input" // 駅名の入力待ち
   | "home_confirm" // 一意判定の確認待ち（OK/修正）
