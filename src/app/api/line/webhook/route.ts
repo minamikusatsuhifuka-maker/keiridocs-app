@@ -42,12 +42,14 @@ import {
   isCommuterPassUnanswered,
   isLongAbsence,
   isSetupComplete,
+  isSuspended,
   loadStaffLineState,
   matchStaffByFullName,
   mayHaveCommuterPass,
   normalizePersonName,
   parseLineProfile,
   stripStationSuffix,
+  suspendReason,
   updateLineProfile,
   type CommuteMethod,
   type StaffLineState,
@@ -662,6 +664,24 @@ async function handlePostback(event: LineEvent): Promise<void> {
       return
     case "trfix":
       await handleTransitFixPostback(event)
+      return
+    // 「その他」の内容が長かったときの確認
+    case "dnok": {
+      const rid = params.get("rid")
+      const it = params.get("i") as ExpenseItem | null
+      if (!rid || !it) {
+        await sendLineMessage(event.replyToken, event.source.userId, "⚠️ 処理できませんでした。")
+        return
+      }
+      await sendPhase2Confirm(event, rid, it, params.get("c"), false, false)
+      return
+    }
+    case "dnre":
+      await sendLineMessage(
+        event.replyToken,
+        event.source.userId,
+        `何の費用ですか？\n\n${DETAIL_NOTE_MAX_LENGTH}文字以内でお願いします。`
+      )
       return
     // アカデミー会員のサービス開始日（確認してから保存する）
     case "acok":
@@ -3144,14 +3164,35 @@ async function handleTransitText(
         await sendLineMessage(replyToken, source.userId, "何の費用か、短くご入力ください。")
         return
       }
+      // LINEのトーク入力はアプリ側で文字数を制限できないため、
+      // 超えた分はここで切り、その内容でよいかを確認してもらう。
       if (purpose.length > DETAIL_NOTE_MAX_LENGTH) {
-        await sendLineMessage(
+        const trimmed = purpose.slice(0, DETAIL_NOTE_MAX_LENGTH)
+        await sendLineQuickReply(
           replyToken,
           source.userId,
-          `${DETAIL_NOTE_MAX_LENGTH}文字以内でお願いします。\n` +
-            `（いまは${purpose.length}文字です）\n\n` +
-            "詳しい事情は「問い合わせ」から担当にお伝えください。"
+          `${DETAIL_NOTE_MAX_LENGTH}文字を超えているため、ここまでで登録します。\n\n` +
+            `「${trimmed}」\n\n` +
+            "この内容でよろしいですか？\n" +
+            "詳しい事情は「問い合わせ」から担当にお伝えいただけます。",
+          [
+            {
+              type: "postback",
+              label: "この内容でよい",
+              data: `action=dnok&rid=${receiptId}&i=${detailKey || "other"}` +
+                (session.data.noteCourseId ? `&c=${session.data.noteCourseId}` : ""),
+              displayText: "この内容で登録します",
+            },
+            {
+              type: "postback",
+              label: "書き直す",
+              data: "action=dnre",
+              displayText: "書き直します",
+            },
+          ]
         )
+        // 切り詰めた内容を保存しておき、「この内容でよい」で確定できるようにする
+        await saveExpensePurpose(supabase, receiptId, trimmed)
         return
       }
       await saveExpensePurpose(supabase, receiptId, purpose)
@@ -4103,6 +4144,22 @@ async function beginApplication(
 ): Promise<ApplicationGate> {
   const state = await loadStaffLineState(supabase, staffId)
   if (!state || !state.available) return { proceed: true, greeting: "" }
+
+  // 一時休止中（産休・育休・休職など）は申請を受け付けない。
+  // 退職と違い在籍したままなので、再開すればそのまま使える。
+  if (isSuspended(state.profile)) {
+    const reason = suspendReason(state.profile)
+    await sendLineMessage(
+      event.replyToken,
+      event.source.userId,
+      "現在、経費申請のご利用を停止しています。\n" +
+        (reason ? `（${reason}）\n` : "") +
+        "\n再開のご希望は、メニューの「問い合わせ」から担当にご連絡ください。\n" +
+        "これまでの申請記録は残っていますので、再開後はそのままお使いいただけます。"
+    )
+    return { proceed: false, greeting: "" }
+  }
+
   if (!isSetupComplete(state)) {
     await continueSetup(
       event,

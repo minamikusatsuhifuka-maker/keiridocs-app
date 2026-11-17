@@ -85,6 +85,16 @@ export interface PriorCourse {
  * 出すかどうかを判定する。別に手動スイッチを持たず記録1つで決めることで、
  * 2か所の食い違いによる確認もれ・過大支給を防ぐ。
  */
+/** 一時休止中か（産休・育休・休職など。退職とは別） */
+export function isSuspended(raw: unknown): boolean {
+  return !!parseLineProfile(raw).suspended?.at
+}
+
+/** 休止の理由（未設定なら空文字） */
+export function suspendReason(raw: unknown): string {
+  return parseLineProfile(raw).suspended?.reason?.trim() ?? ""
+}
+
 /** アカデミー会員のサービス開始日（未登録なら null） */
 export function academyStartDate(raw: unknown): string | null {
   const v = parseLineProfile(raw).academy?.start_date
@@ -109,7 +119,22 @@ export interface AcademyMembership {
   updated_by?: string
 }
 
+/**
+ * 一時休止（産休・育休・休職など）。
+ *
+ * 退職と違い、在籍したまま申請だけを止める。再開すれば元どおり使える。
+ * 過去の申請・LINEの紐づけ・設定はすべて残る。
+ */
+export interface SuspendedState {
+  at: string
+  /** 休止の理由（例「産休」）。画面に出すだけで判定には使わない */
+  reason?: string
+  by?: string
+}
+
 export interface LineProfile {
+  /** 一時休止。キーが無い＝利用中 */
+  suspended?: SuspendedState
   /** アカデミー会員のサービス開始日。キーが無い＝未登録 */
   academy?: AcademyMembership
   /** 既受講の登録（講座ごと）。キーが無い＝1件も登録していない */

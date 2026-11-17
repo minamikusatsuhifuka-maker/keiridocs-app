@@ -36,9 +36,11 @@ import {
   hasPendingNameChange,
   hasPriorCourseRecord,
   hasSeparateLegalName,
+  isSuspended,
   mayHaveCommuterPass,
   parseLineProfile,
   payrollName,
+  suspendReason,
 } from "@/lib/line-staff-profile"
 
 interface StaffMember {
@@ -115,6 +117,8 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const [editLegalSame, setEditLegalSame] = useState(true)
   // 未登録の給与氏名をまとめて登録する処理中
   const [isBulkLegalName, setIsBulkLegalName] = useState(false)
+  // 一時休止・再開の処理中のID
+  const [togglingSuspendId, setTogglingSuspendId] = useState<string | null>(null)
   const [editHomeStation, setEditHomeStation] = useState("")
   const [editHomeStationPref, setEditHomeStationPref] = useState("")
   const [isSaving, setIsSaving] = useState(false)
@@ -139,14 +143,16 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   // 同姓・同名の警告（LINEの氏名登録で候補提示が必要になる組み合わせ）
   // 退職者は氏名照合の対象外なので、在籍者だけで判定する
   const nameConflicts = findNameConflicts(activeStaff)
+  // 休止中（産休など）の方は申請できないため、設定の督促対象から外す
+  const usingStaff = activeStaff.filter((m) => !isSuspended(m.line_profile))
   const setupSummary = {
-    notDone: activeStaff.filter((m) => !setupStatus(m).done).length,
+    notDone: usingStaff.filter((m) => !setupStatus(m).done).length,
     // 給与や手続きに使うお名前の未登録（担当が埋める項目。本人では登録できない）
     noLegalName: activeStaff.filter((m) => !(m.legal_name ?? "").trim()).length,
-    noStation: activeStaff.filter((m) => !m.home_station).length,
-    methodUnanswered: activeStaff.filter((m) => !parseLineProfile(m.line_profile).commute_method).length,
+    noStation: usingStaff.filter((m) => !m.home_station).length,
+    methodUnanswered: usingStaff.filter((m) => !parseLineProfile(m.line_profile).commute_method).length,
     // 車・自転車・徒歩の方は定期券を聞かないので未回答に数えない
-    passUnanswered: activeStaff.filter((m) => {
+    passUnanswered: usingStaff.filter((m) => {
       const p = parseLineProfile(m.line_profile)
       return mayHaveCommuterPass(p.commute_method ?? "other") && !p.commuter_pass
     }).length,
@@ -243,6 +249,52 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
       toast.error("登録に失敗しました")
     } finally {
       setIsBulkLegalName(false)
+    }
+  }
+
+  /**
+   * 一時休止・再開（産休・育休・休職など）。
+   *
+   * 退職と違い在籍したままで、LINEからの申請だけを止める。
+   * 過去の申請・LINEの紐づけ・設定はすべて残るので、再開すればそのまま使える。
+   */
+  async function handleToggleSuspend(member: StaffMember) {
+    const suspended = isSuspended(member.line_profile)
+    let reason = ""
+    if (!suspended) {
+      const input = prompt(
+        `${member.name}さんの経費申請を一時休止します。\n\n` +
+          "理由を入れてください（例：産休、育休、休職）。\n" +
+          "空欄のままでも休止できます。",
+        ""
+      )
+      if (input === null) return // キャンセル
+      reason = input.trim()
+    } else if (
+      !confirm(`${member.name}さんの経費申請を再開します。\n\nよろしいですか？`)
+    ) {
+      return
+    }
+
+    setTogglingSuspendId(member.id)
+    try {
+      const res = await fetch("/api/line-staff", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: member.id,
+          suspended: !suspended,
+          suspendReason: reason || null,
+        }),
+      })
+      const json = (await res.json().catch(() => ({}))) as { error?: string }
+      if (!res.ok) throw new Error(json.error || "更新に失敗しました")
+      toast.success(suspended ? `${member.name}さんの利用を再開しました` : `${member.name}さんを休止しました`)
+      fetchStaff()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "更新に失敗しました")
+    } finally {
+      setTogglingSuspendId(null)
     }
   }
 
@@ -501,6 +553,10 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
             <strong>退職</strong>は各行の「在籍」スイッチをOFFにしてください。
             退職にすると一覧から隠れ、LINEからの申請も受け付けませんが、過去の申請記録は残ります。
             <br />
+            <strong>産休・育休・休職</strong>など一時的に使わないときは「一時休止」を押してください。
+            在籍したまま申請だけを止めます。戻られたら「利用を再開」で元どおり使えます
+            （記録・LINEの紐づけ・設定はすべて残ります）。
+            <br />
             テスト・初回ATC・削除は「詳細」を開くと出てきます。
             <br />
             <strong>「初回ATCの表示」</strong>は、LINEの申請画面に「初回ATC＋アカデミー会員費」を出すかどうかです。
@@ -556,6 +612,13 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                           {member.retired_at && (
                             <Badge variant="outline" style={{ color: "var(--dusk-text-muted)" }}>
                               退職
+                            </Badge>
+                          )}
+                          {/* 産休・育休・休職など。在籍したまま申請だけを止めている状態 */}
+                          {!member.retired_at && isSuspended(member.line_profile) && (
+                            <Badge variant="outline" className="border-sky-500 text-sky-700 dark:text-sky-300">
+                              休止中
+                              {suspendReason(member.line_profile) && `（${suspendReason(member.line_profile)}）`}
                             </Badge>
                           )}
                           {/* 改姓して院内では旧姓のまま、という状態をひと目で分かるようにする */}
@@ -626,6 +689,20 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                             {member.retired_at ? "退職" : "在籍"}
                           </span>
                         </div>
+                        {/* 産休などで一時的に止める。退職と違い、再開すればそのまま使える */}
+                        {!member.retired_at && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={togglingSuspendId === member.id}
+                            onClick={() => handleToggleSuspend(member)}
+                          >
+                            {togglingSuspendId === member.id && (
+                              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                            )}
+                            {isSuspended(member.line_profile) ? "利用を再開" : "一時休止"}
+                          </Button>
+                        )}
                         <Button variant="outline" size="sm" onClick={() => openEditDialog(member)}>
                           <Pencil className="h-4 w-4" />
                           編集

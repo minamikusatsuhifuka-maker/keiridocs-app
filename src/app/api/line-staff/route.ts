@@ -244,12 +244,50 @@ export async function PATCH(request: NextRequest) {
       priorCourse?: { courseId?: string; count?: number | null }
       /** アカデミー会員のサービス開始日（YYYY-MM-DD。null で登録を取り消す） */
       academyStart?: string | null
+      /** 一時休止（産休・育休・休職など）。true で停止、false で再開 */
+      suspended?: boolean
+      /** 休止の理由（画面に出すだけ。判定には使わない） */
+      suspendReason?: string | null
     }
     if (!body.id) {
       return NextResponse.json({ error: "IDは必須です" }, { status: 400 })
     }
 
     const service = createServiceClient()
+
+    // 一時休止（産休・育休・休職など）。
+    // 退職と違い在籍したまま申請だけを止める。再開すればそのまま使える。
+    if (typeof body.suspended === "boolean") {
+      const { data: member, error: readError } = await service
+        .from("staff_members")
+        .select("line_profile")
+        .eq("id", body.id)
+        .single()
+      if (readError || !member) {
+        return NextResponse.json({ error: "スタッフが見つかりません" }, { status: 404 })
+      }
+      const profile = parseLineProfile(member.line_profile)
+      if (body.suspended) {
+        profile.suspended = {
+          at: new Date().toISOString(),
+          reason: body.suspendReason?.trim() || undefined,
+          by: user.email ?? "担当",
+        }
+      } else {
+        delete profile.suspended
+      }
+      const { data, error } = await service
+        .from("staff_members")
+        .update({ line_profile: JSON.parse(JSON.stringify(profile)) })
+        .eq("id", body.id)
+        .select("*")
+        .single()
+      if (error) {
+        console.error("休止状態の更新エラー:", error.message)
+        return NextResponse.json({ error: "更新に失敗しました" }, { status: 500 })
+      }
+      return NextResponse.json({ data })
+    }
 
     // アカデミー会員のサービス開始日。
     // 本人はLINEで1回登録するだけで、あとから変更できない（期限切れの申請を
