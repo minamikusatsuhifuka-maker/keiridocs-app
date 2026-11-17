@@ -115,8 +115,10 @@ import {
 import {
   findImageHashDuplicate,
   findContentDuplicate,
+  contentKey,
   type ExistingDuplicate,
 } from "@/lib/staff-receipt-dedup"
+import { fetchAllRows } from "@/lib/supabase/fetch-all"
 import type { Database } from "@/types/database"
 import type { Json } from "@/types/database"
 import crypto from "crypto"
@@ -457,11 +459,54 @@ function buildDuplicateWarning(dup: ExistingDuplicate): string {
     "─────────────\n" +
     "二重申請の可能性があるため、登録を中止しました。\n\n" +
     "【出し直したい場合】\n" +
-    "メニューの「申請履歴」を開き、この申請の\n" +
-    "「この申請を取り消す」を押してください。\n" +
+    "下の「この申請を取り消す」を押してください。\n" +
     "取り消したあとは、同じ写真をそのまま送り直せます。\n\n" +
     "ご不明な場合は「問い合わせ」から担当にご連絡ください。"
   )
+}
+
+/**
+ * 重複と判定したときの返信（取り消しボタン付き）。
+ *
+ * 以前は「申請履歴から取り消してください」と案内するだけだったが、
+ * 履歴は直近の数件しか出ないため、対象が履歴に出てこないと
+ * 案内どおりに取り消せず詰んでしまう。
+ * 重複した**その申請**を直接取り消せるようにする。
+ */
+async function sendDuplicateWarning(
+  event: LineEvent,
+  dup: ExistingDuplicate,
+  isMine: boolean
+): Promise<void> {
+  const { replyToken, source } = event
+
+  // 画像の照合は全スタッフを対象にするため、他の人の申請と一致することがある。
+  // その場合は内容を見せず、取り消しも本人以外にはさせない。
+  if (!isMine) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ この画像は、すでに別の方の申請として登録されています。\n" +
+        "二重申請の可能性があるため、登録を中止しました。\n\n" +
+        "お心当たりがない場合は「問い合わせ」から担当にご連絡ください。"
+    )
+    return
+  }
+
+  await sendLineQuickReply(replyToken, source.userId, buildDuplicateWarning(dup), [
+    {
+      type: "postback",
+      label: "この申請を取り消す",
+      data: `action=cxl&rid=${dup.id}`,
+      displayText: "この申請を取り消します",
+    },
+    {
+      type: "postback",
+      label: "申請履歴を見る",
+      data: "action=hist",
+      displayText: "申請履歴を見ます",
+    },
+  ])
 }
 
 /* ---------- Webhookハンドラ ---------- */
@@ -612,6 +657,9 @@ async function handlePostback(event: LineEvent): Promise<void> {
       return
     case "cxlno":
       await sendLineMessage(event.replyToken, event.source.userId, "取り消しをやめました。")
+      return
+    case "hist": // 申請履歴（さらに表示・取り消した申請）
+      await handleHistoryPostback(event, params)
       return
     case "ictog": // 1件の選択を切り替える
       await handleIcTogglePostback(event, params)
@@ -898,6 +946,58 @@ async function sendTransitGuide(
  * 金額や区分の修正も「取り消して出し直す」で行う
  * （部分的に書き換えるより、記録が素直で担当も追いやすい）。
  */
+/**
+ * その申請が、操作している本人のものか。
+ *
+ * 取り消しの対象IDは申請履歴だけでなく重複の案内からも渡る。
+ * 重複の画像照合は**全スタッフ**を対象にするため、他の人の申請のIDが
+ * 本人に渡りうる。IDを受け取ったら必ずここで本人か確認する。
+ */
+async function isMyReceipt(
+  supabase: ServiceClient,
+  lineUserId: string,
+  staffMemberId: string | null
+): Promise<boolean> {
+  if (!staffMemberId) return false
+  const staffMembers = await fetchStaffMembers(supabase)
+  const me = staffMembers ? resolveStaffForUser(staffMembers, lineUserId) : null
+  return !!me && me.id === staffMemberId
+}
+
+/**
+ * 本人が取り消せる申請か（まだ会計士さんに提出していない当月分だけ）。
+ *
+ * 提出済みの月を本人が消すと、提出した資料と食い違ってしまう。
+ * 取り消しのIDは申請履歴以外（重複の案内など）からも渡るため、
+ * 画面側のボタンの出し分けに頼らず、ここで判定する。
+ */
+async function isCancellableMonth(
+  supabase: ServiceClient,
+  receiptId: string
+): Promise<boolean> {
+  const { data } = await supabase
+    .from("staff_receipts")
+    .select("created_at, ai_raw")
+    .eq("id", receiptId)
+    .maybeSingle()
+  const row = data as { created_at: string; ai_raw?: unknown } | null
+  if (!row) return false
+  const createdJst = toJstDateString(new Date(row.created_at))
+  const itemMonth = resolveStaffSubmissionMonth(row.ai_raw, createdJst).month
+  const currentMonth = resolveStaffSubmissionMonth(null, toJstDateString(new Date())).month
+  return (
+    !!itemMonth &&
+    !!currentMonth &&
+    itemMonth.year === currentMonth.year &&
+    itemMonth.month === currentMonth.month
+  )
+}
+
+/** 当月分でないため本人は取り消せない、という案内 */
+const CANCEL_PAST_MONTH_TEXT =
+  "⚠️ この申請は、すでに提出した月の分のため取り消せません。\n" +
+  "「問い合わせ」から担当にご連絡ください。"
+
 async function handleCancelPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
   const { replyToken, source } = event
   const receiptId = params.get("rid")
@@ -919,6 +1019,19 @@ async function handleCancelPostback(event: LineEvent, params: URLSearchParams): 
   } | null
   if (!row) {
     await sendLineMessage(replyToken, source.userId, "⚠️ 対象の申請が見つかりませんでした。")
+    return
+  }
+  // 自分の申請だけを取り消せるようにする（IDは重複の案内などからも渡るため必ず確認する）
+  if (!(await isMyReceipt(supabase, source.userId, row.staff_member_id))) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ この申請はご自身のものではないため、取り消せません。\n「問い合わせ」から担当にご連絡ください。"
+    )
+    return
+  }
+  if (!(await isCancellableMonth(supabase, receiptId))) {
+    await sendLineMessage(replyToken, source.userId, CANCEL_PAST_MONTH_TEXT)
     return
   }
 
@@ -972,7 +1085,7 @@ async function handleCancelConfirmPostback(event: LineEvent, params: URLSearchPa
   try {
     const { data } = await supabase
       .from("staff_receipts")
-      .select("ai_raw, store_name, amount, date")
+      .select("ai_raw, store_name, amount, date, staff_member_id")
       .eq("id", receiptId)
       .maybeSingle()
     const row = data as {
@@ -980,9 +1093,23 @@ async function handleCancelConfirmPostback(event: LineEvent, params: URLSearchPa
       store_name: string | null
       amount: number | null
       date: string | null
+      staff_member_id: string | null
     } | null
     if (!row) {
       await sendLineMessage(replyToken, source.userId, "⚠️ 対象の申請が見つかりませんでした。")
+      return
+    }
+    // 確定側でも本人か確認する（確認画面を経ずにIDが送られても通らないようにする）
+    if (!(await isMyReceipt(supabase, source.userId, row.staff_member_id))) {
+      await sendLineMessage(
+        replyToken,
+        source.userId,
+        "⚠️ この申請はご自身のものではないため、取り消せません。\n「問い合わせ」から担当にご連絡ください。"
+      )
+      return
+    }
+    if (!(await isCancellableMonth(supabase, receiptId))) {
+      await sendLineMessage(replyToken, source.userId, CANCEL_PAST_MONTH_TEXT)
       return
     }
     const raw = parseAiRawObject(row.ai_raw) ?? {}
@@ -1008,6 +1135,10 @@ async function handleCancelConfirmPostback(event: LineEvent, params: URLSearchPa
         ),
       })
       .eq("id", receiptId)
+
+    // IC利用履歴の一括申請で作った分は、元の画像側の「申請済み」の印も外す。
+    // 外さないと、同じ画像から選び直そうとしても申請済み扱いのまま選べない。
+    await releaseTransitTrip(supabase, receiptId, raw)
 
     const staffMembers = await fetchStaffMembers(supabase)
     const me = staffMembers ? resolveStaffForUser(staffMembers, source.userId) : null
@@ -1037,6 +1168,186 @@ async function handleCancelConfirmPostback(event: LineEvent, params: URLSearchPa
   }
 }
 
+/**
+ * すでに申請済みの移動を見つける。
+ *
+ * 1枚の利用履歴を2回に分けて申請することがあるため、同じ画像を送り直したときに
+ * **全体を止めず、登録済みの明細だけを除いて**残りを選べるようにする。
+ *
+ * 判定は日付＋区間＋運賃の一致。次のものは「申請済み」に数えない。
+ *  - 取り消した申請（ai_raw.cancelled_at）
+ *  - 精算（petty_cash_transactions）がまだ無い記録
+ *    … 読み取り直後の作業中のレコードは、店名・金額が移動1件目と同じ値に
+ *      なることがある。これを数えると初回の選択で1件目が選べなくなる
+ *  - いま操作している記録そのもの（excludeReceiptId）
+ *
+ * 元の画像側の「申請済み」の印（transit_submitted）だけに頼ると、
+ * 別の画像から申請した分や印が消えた分を取りこぼすため、記録側で確かめる。
+ *
+ * @returns 申請済みの移動の番号（trips の添字）
+ */
+async function findRegisteredTrips(
+  supabase: ServiceClient,
+  staffMemberId: string,
+  trips: TransitTrip[],
+  excludeReceiptId?: string
+): Promise<Set<number>> {
+  const registered = new Set<number>()
+  const dates = Array.from(new Set(trips.map((t) => t.date).filter(Boolean)))
+  if (dates.length === 0) return registered
+
+  try {
+    type Row = { id: string; store_name: string | null; amount: number | null; date: string | null }
+    const rows = await fetchAllRows<Row>((from, to) =>
+      supabase
+        .from("staff_receipts")
+        .select("id, store_name, amount, date")
+        .eq("staff_member_id", staffMemberId)
+        .in("date", dates)
+        .filter("ai_raw->>cancelled_at", "is", null)
+        .order("id", { ascending: true })
+        .range(from, to) as unknown as PromiseLike<{
+          data: Row[] | null
+          error: { message: string } | null
+        }>
+    )
+
+    const candidates = rows.filter((r) => r.id !== excludeReceiptId)
+    if (candidates.length === 0) return registered
+
+    // 精算済み（支給の対象になっている）記録だけを「申請済み」とみなす
+    const { data: txs } = await supabase
+      .from("petty_cash_transactions")
+      .select("staff_receipt_id")
+      .in(
+        "staff_receipt_id",
+        candidates.map((r) => r.id)
+      )
+    const settledIds = new Set(
+      ((txs ?? []) as { staff_receipt_id: string | null }[])
+        .map((t) => t.staff_receipt_id)
+        .filter((v): v is string => !!v)
+    )
+
+    const keys = new Set(
+      candidates
+        .filter((r) => settledIds.has(r.id))
+        .map((r) => contentKey(r.store_name, r.amount, r.date))
+    )
+    trips.forEach((t, i) => {
+      if (keys.has(contentKey(t.route, t.fare, t.date))) registered.add(i)
+    })
+  } catch (error) {
+    // 判定できないときは「登録済みなし」として進める（申請を止めないため。
+    // 二重登録は確定時の重複判定と transit_submitted で止まる）
+    console.error("[LINE Bot] 申請済みの移動を判定できませんでした:", error)
+  }
+  return registered
+}
+
+/**
+ * 同じ画像をもう一度送ったときに、前回の読み取り結果に戻す。
+ *
+ * IC利用履歴は「研修の往復だけ先に申請し、あとで通常業務の分を申請する」
+ * という使い方があるため、同じ画像の再送を重複として止めてしまうと
+ * 残りの明細を申請する手段がなくなる。
+ *
+ * @returns 前回の読み取り結果に戻したか（false なら通常の重複判定に進む）
+ */
+async function resumeTransitFromSameImage(
+  event: LineEvent,
+  supabase: ServiceClient,
+  staffMemberId: string,
+  imageHash: string
+): Promise<boolean> {
+  const { data } = await supabase
+    .from("staff_receipts")
+    .select("id, ai_raw")
+    .eq("staff_member_id", staffMemberId)
+    .eq("image_hash", imageHash)
+    .filter("ai_raw->>cancelled_at", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+  const row = (data ?? [])[0] as { id: string; ai_raw: unknown } | undefined
+  if (!row) return false
+
+  const raw = parseAiRawObject(row.ai_raw) ?? {}
+  const trips = Array.isArray(raw.transit_trips) ? (raw.transit_trips as TransitTrip[]) : []
+  if (trips.length === 0) return false
+
+  await sendTransitTripPicker(
+    event,
+    row.id,
+    trips,
+    "この画像は前にも送っていただいています。\n前回の読み取り結果から、まだ申請していない移動を選べます。\n\n"
+  )
+  return true
+}
+
+/**
+ * 取り消した移動を、元の画像の「申請済み」から外す。
+ *
+ * IC利用履歴の一括申請は、選んだ移動ごとに申請（staff_receipts）を作り、
+ * 元の画像側に申請済みの番号（ai_raw.transit_submitted）を記録する。
+ * 取り消したときにこの番号を外さないと、同じ画像から選び直そうとしても
+ * 「すでに申請済みです」のまま選べなくなる。
+ *
+ * 1件目は元のレコードを使い回すため、取り消した行が
+ *   - 元の画像そのもの（transit_trips を持つ）
+ *   - そこから作られた行（from_receipt_id を持つ）
+ * のどちらでも外せるようにする。
+ *
+ * 番号は保存していない時期の行もあるため、日付・区間・運賃の一致で探す。
+ */
+async function releaseTransitTrip(
+  supabase: ServiceClient,
+  receiptId: string,
+  raw: Record<string, unknown>
+): Promise<void> {
+  try {
+    const parentId =
+      typeof raw.from_receipt_id === "string" && raw.from_receipt_id ? raw.from_receipt_id : receiptId
+    const { raw: parentRaw, trips } = await loadTripState(supabase, parentId)
+    const submitted = Array.isArray(parentRaw.transit_submitted)
+      ? (parentRaw.transit_submitted as number[])
+      : []
+    if (trips.length === 0 || submitted.length === 0) return
+
+    // 取り消した行が表す移動を特定する（保存した番号 → 無ければ内容の一致）
+    let index = typeof raw.trip_index === "number" ? raw.trip_index : -1
+    if (index < 0) {
+      const trip = (raw.selected_trip ?? null) as TransitTrip | null
+      if (trip) {
+        index = trips.findIndex(
+          (t) => t.date === trip.date && t.route === trip.route && t.fare === trip.fare
+        )
+      }
+    }
+    if (index < 0) {
+      // 元のレコードは date / amount / store_name を移動の内容で上書きしている
+      const { data } = await supabase
+        .from("staff_receipts")
+        .select("date, amount, store_name")
+        .eq("id", receiptId)
+        .maybeSingle()
+      const r = data as { date: string | null; amount: number | null; store_name: string | null } | null
+      if (r) {
+        index = trips.findIndex(
+          (t) => t.date === r.date && t.fare === r.amount && t.route === r.store_name
+        )
+      }
+    }
+    if (index < 0) return
+
+    const next = submitted.filter((i) => i !== index)
+    if (next.length === submitted.length) return
+    await saveTripState(supabase, parentId, { extra: { transit_submitted: next } })
+  } catch (error) {
+    // 申請の取り消し自体は済んでいるため、ここで失敗しても止めない
+    console.error("[LINE Bot] 申請済みの印を外せませんでした:", error)
+  }
+}
+
 /* ---------- 交通系ICカードの利用履歴 ---------- */
 
 /**
@@ -1055,18 +1366,65 @@ async function sendTransitTripPicker(
   const { replyToken, source } = event
   const supabase = createServiceClient()
   const state = await loadTripState(supabase, receiptId)
-  // 初回は全件を選んだ状態にする（通勤・私用を外すほうが件数が少ないため）
-  const selected = state.selected ?? trips.map((_, i) => i)
+
+  // すでに申請した移動は選べないようにする（全体を止めず、残りだけ選べるようにするため）
+  const { data: ownerRow } = await supabase
+    .from("staff_receipts")
+    .select("staff_member_id")
+    .eq("id", receiptId)
+    .maybeSingle()
+  const staffMemberId = (ownerRow as { staff_member_id?: string | null } | null)?.staff_member_id ?? null
+  const submitted = Array.isArray(state.raw.transit_submitted)
+    ? (state.raw.transit_submitted as number[])
+    : []
+  const registered = staffMemberId
+    ? await findRegisteredTrips(supabase, staffMemberId, trips, receiptId)
+    : new Set<number>()
+  for (const i of submitted) registered.add(i)
+
+  const selectable = trips.map((_, i) => i).filter((i) => !registered.has(i))
+
+  // 初回は選べる全件を選んだ状態にする（通勤・私用を外すほうが件数が少ないため）。
+  // 前回の選択が申請済みで埋まっている場合も、選べる全件に戻す（0件のまま進めなくなるのを防ぐ）
+  const kept = (state.selected ?? selectable).filter((i) => !registered.has(i))
+  const selected = kept.length > 0 ? kept : selectable
   await saveTripState(supabase, receiptId, { trips, selected })
+
+  if (selectable.length === 0) {
+    await sendLineQuickReply(
+      replyToken,
+      source.userId,
+      lead +
+        "🚃 この利用履歴の移動は、すべて申請済みです。\n" +
+        "─────────────\n" +
+        trips
+          .map((t, i) => `✔ ${i + 1}. ${t.date} ${t.route} ¥${formatAmount(t.fare)}`)
+          .join("\n") +
+        "\n─────────────\n" +
+        "内容は「申請履歴」で確認できます。\n" +
+        "出し直したい場合は、申請履歴から取り消してください。",
+      [
+        {
+          type: "postback",
+          label: "申請履歴を見る",
+          data: "action=hist",
+          displayText: "申請履歴を見ます",
+        },
+      ]
+    )
+    return
+  }
 
   const total = selected.reduce((sum, i) => sum + (trips[i]?.fare ?? 0), 0)
   const lines = trips.map((t, i) => {
-    const mark = selected.includes(i) ? "✅" : "⬜"
-    return `${mark} ${i + 1}. ${t.date} ${t.route} ¥${formatAmount(t.fare)}`
+    const mark = registered.has(i) ? "✔" : selected.includes(i) ? "✅" : "⬜"
+    const suffix = registered.has(i) ? "（申請済み）" : ""
+    return `${mark} ${i + 1}. ${t.date} ${t.route} ¥${formatAmount(t.fare)}${suffix}`
   })
 
-  // クイックリプライは13個まで。番号で選び、全選択・解除・次へを置く
-  const items: PostbackAction[] = trips.slice(0, 10).map((t, i) => ({
+  // クイックリプライは13個まで。番号で選び、全選択・解除・次へを置く。
+  // 申請済みの移動はボタンを出さない（押せても二重登録になるため）
+  const items: PostbackAction[] = selectable.slice(0, 10).map((i) => ({
     type: "postback",
     label: `${selected.includes(i) ? "外す" : "選ぶ"}${i + 1}`,
     data: `action=ictog&rid=${receiptId}&i=${i}`,
@@ -1099,6 +1457,9 @@ async function sendTransitTripPicker(
       "─────────────\n" +
       `${lines.join("\n")}\n\n` +
       `選択中：${selected.length}件　合計 ¥${formatAmount(total)}\n\n` +
+      (registered.size > 0
+        ? `※ ✔ の ${registered.size}件 はすでに申請済みのため選べません。\n`
+        : "") +
       "申請するものを選んでください。番号のボタンで付け外しできます。\n" +
       "私用の移動は外してください。\n" +
       "※チャージ・残高・お買い物は最初から除いています。\n" +
@@ -1444,9 +1805,22 @@ async function handleIcConfirmPostback(event: LineEvent, params: URLSearchParams
     return
   }
 
+  // 申請済みの印（transit_submitted）だけでなく、記録側でも申請済みを確かめる。
+  // 同じ画像を送り直した場合など、印が無いまま登録済みのことがある。
+  const { data: ownerRow } = await supabase
+    .from("staff_receipts")
+    .select("staff_member_id")
+    .eq("id", receiptId)
+    .maybeSingle()
+  const ownerId = (ownerRow as { staff_member_id?: string | null } | null)?.staff_member_id ?? null
+  const alreadyRegistered = ownerId
+    ? await findRegisteredTrips(supabase, ownerId, trips, receiptId)
+    : new Set<number>()
+
   const picked = (selected ?? trips.map((_, i) => i))
     .filter((i) => trips[i])
     .filter((i) => !submitted.includes(i))
+    .filter((i) => !alreadyRegistered.has(i))
   if (picked.length === 0) {
     await sendLineMessage(
       replyToken,
@@ -1491,6 +1865,8 @@ async function handleIcConfirmPostback(event: LineEvent, params: URLSearchParams
           .from("staff_receipts")
           .update({ date: trip.date, amount: trip.fare, store_name: trip.route })
           .eq("id", receiptId)
+        // 取り消したときにどの移動かを特定できるよう番号を残す
+        await saveTripState(supabase, receiptId, { extra: { trip_index: idx } })
         targetIds.push(receiptId)
         useBase = false
         continue
@@ -1505,7 +1881,7 @@ async function handleIcConfirmPostback(event: LineEvent, params: URLSearchParams
           amount: trip.fare,
           store_name: trip.route,
           ai_raw: JSON.parse(
-            JSON.stringify({ selected_trip: trip, from_receipt_id: receiptId })
+            JSON.stringify({ selected_trip: trip, from_receipt_id: receiptId, trip_index: idx })
           ) as Json,
         })
         .select("id")
@@ -5695,9 +6071,48 @@ async function handleAcademyConfirmPostback(event: LineEvent, params: URLSearchP
 
 /* ---------- 申請履歴 ---------- */
 
-/** 「申請履歴」→ 自分の直近5件をカードで返す */
-async function sendHistory(event: LineEvent, supabase: ServiceClient, staffId: string): Promise<void> {
+/** 申請履歴の1ページあたりの件数（Flexカードに収まる件数） */
+const HISTORY_PAGE_SIZE = 5
+
+/** 申請履歴で読み込む最大件数（これより古いものは「問い合わせ」で対応する） */
+const HISTORY_MAX_ROWS = 60
+
+/**
+ * 「さらに表示」「取り消した申請を見る」の postback。
+ *
+ * 取り消した申請が直近5件を埋めてしまい、取り消したい申請が
+ * 履歴に出てこない状態を避けるため、ページ送りと出し分けを持つ。
+ */
+async function handleHistoryPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
   const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const staffMembers = await fetchStaffMembers(supabase)
+  const linked = staffMembers ? resolveStaffForUser(staffMembers, source.userId) : null
+  if (!linked) {
+    await sendLineMessage(replyToken, source.userId, NOT_REGISTERED_TEXT)
+    return
+  }
+  const page = Math.max(0, Number(params.get("p") ?? 0) || 0)
+  const cancelled = params.get("c") === "1"
+  await sendHistory(event, supabase, linked.id, { page, cancelled })
+}
+
+/**
+ * 「申請履歴」→ 自分の申請をカードで返す。
+ *
+ * 既定では**取り消していない申請**だけを新しい順に並べる。
+ * 取り消した申請は件数だけを添え、「取り消した申請を見る」で切り替える。
+ * 取り消し済みが一覧を埋めて、取り消したい申請が出てこなくなるのを防ぐ。
+ */
+async function sendHistory(
+  event: LineEvent,
+  supabase: ServiceClient,
+  staffId: string,
+  opts: { page?: number; cancelled?: boolean } = {}
+): Promise<void> {
+  const { replyToken, source } = event
+  const page = opts.page ?? 0
+  const showCancelled = !!opts.cancelled
   const { data: staffRow } = await supabase.from("staff_members").select("name").eq("id", staffId).single()
   const staffName = (staffRow as { name?: string } | null)?.name || ""
 
@@ -5706,7 +6121,7 @@ async function sendHistory(event: LineEvent, supabase: ServiceClient, staffId: s
     .select("id, store_name, amount, created_at, ai_raw")
     .eq("staff_member_id", staffId)
     .order("created_at", { ascending: false })
-    .limit(5)
+    .limit(HISTORY_MAX_ROWS)
   if (error) {
     console.error("[LINE Bot] 申請履歴の取得エラー:", error)
     await sendLineMessage(replyToken, source.userId, "⚠️ 申請履歴を取得できませんでした。")
@@ -5807,18 +6222,98 @@ async function sendHistory(event: LineEvent, supabase: ServiceClient, staffId: s
       subsidy: tx ? calcSubsidy(tx.amount, tx.subsidy_category) : null,
     }
   })
-  const footer =
-    upcomingMonths.size > 0
-      ? `登録済みの分は ${[...upcomingMonths].map((m) => `${m}分`).join("・")} として提出されます。\n` +
-        "確認が必要なものは翌月のお給与になることがあります（担当からご連絡します）。\n" +
-        "間違えた申請は「この申請を取り消す」で取り消せます。\n" +
-        "取り消したあと、正しい内容で出し直してください。"
-      : null
+  // 取り消した申請は通常の一覧から分ける。
+  // 混ぜると取り消し済みが一覧を埋め、取り消したい申請が出てこなくなる。
+  const active = items.filter((i) => i.status !== "cancelled")
+  const cancelledItems = items.filter((i) => i.status === "cancelled")
+  const source_ = showCancelled ? cancelledItems : active
 
-  const card = historyCard({ staffFamilyName: familyName(staffName), items, footer })
+  const start = page * HISTORY_PAGE_SIZE
+  const shown = source_.slice(start, start + HISTORY_PAGE_SIZE)
+  const hasMore = source_.length > start + HISTORY_PAGE_SIZE
+
+  if (shown.length === 0) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      showCancelled ? "取り消した申請はありません。" : "まだ申請はありません。"
+    )
+    return
+  }
+
+  const rangeNote =
+    source_.length > HISTORY_PAGE_SIZE
+      ? `${start + 1}〜${start + shown.length}件目／全${source_.length}件\n`
+      : ""
+
+  const footerLines: string[] = []
+  if (showCancelled) {
+    footerLines.push(rangeNote + "取り消した申請の一覧です。支給の対象から外れています。")
+    footerLines.push("同じ写真をそのまま送り直せます。")
+  } else {
+    if (rangeNote) footerLines.push(rangeNote.trim())
+    if (upcomingMonths.size > 0) {
+      footerLines.push(
+        `登録済みの分は ${[...upcomingMonths].map((m) => `${m}分`).join("・")} として提出されます。`
+      )
+      footerLines.push("確認が必要なものは翌月のお給与になることがあります（担当からご連絡します）。")
+    }
+    footerLines.push("間違えた申請は「この申請を取り消す」で取り消せます。")
+    footerLines.push("取り消したあと、正しい内容で出し直してください。")
+    if (cancelledItems.length > 0) {
+      footerLines.push(`※ 取り消した申請が ${cancelledItems.length}件 あります（下のボタンで見られます）。`)
+    }
+  }
+  const footer = footerLines.length > 0 ? footerLines.join("\n") : null
+
+  // 続きと、取り消し済みへの切り替えをボタンで出す
+  const actions: PostbackAction[] = []
+  if (hasMore) {
+    actions.push({
+      type: "postback",
+      label: "さらに表示",
+      data: `action=hist&p=${page + 1}${showCancelled ? "&c=1" : ""}`,
+      displayText: "続きを見ます",
+    })
+  }
+  if (page > 0) {
+    actions.push({
+      type: "postback",
+      label: "前に戻る",
+      data: `action=hist&p=${page - 1}${showCancelled ? "&c=1" : ""}`,
+      displayText: "前のページに戻ります",
+    })
+  }
+  if (showCancelled) {
+    actions.push({
+      type: "postback",
+      label: "通常の申請に戻る",
+      data: "action=hist",
+      displayText: "通常の申請を見ます",
+    })
+  } else if (cancelledItems.length > 0) {
+    actions.push({
+      type: "postback",
+      label: `取り消した申請（${cancelledItems.length}）`,
+      data: "action=hist&c=1",
+      displayText: "取り消した申請を見ます",
+    })
+  }
+
+  const card = historyCard({ staffFamilyName: familyName(staffName), items: shown, footer })
+  if (actions.length > 0) {
+    card.quickReply = flexQuickReply(
+      actions.map((a) => ({
+        type: "postback" as const,
+        label: a.label,
+        data: a.data,
+        displayText: a.displayText,
+      }))
+    )
+  }
   const fallback =
-    `📋 ${familyName(staffName)}さんの申請（直近${items.length}件）\n` +
-    items
+    `📋 ${familyName(staffName)}さんの${showCancelled ? "取り消した申請" : "申請"}（${shown.length}件）\n` +
+    shown
       .map(
         (i) =>
           `${i.date} ${i.store} ¥${formatAmount(i.amount)}` +
@@ -6756,12 +7251,30 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     }
     console.log(`[LINE Bot] 画像取得完了: ${imageBuffer.length} bytes`)
 
+    // 「交通費を申請」から入った直後は、ICカードの利用履歴として扱う。
+    // 履歴は1枚に何件もの移動が並ぶため、領収書と同じ読み方では合計が狂う。
+    // 重複の扱いも領収書と違うので、ハッシュ照合より先に判定する。
+    const { session: photoSession } = await loadTransitSession(supabase, source.userId)
+    const isTransitHistory = photoSession?.step === "await_ic_photo"
+
     // 4.5 画像ハッシュで重複チェック（解析前。同一画像の再送をハードブロック）
     const imageHash = crypto.createHash("sha256").update(imageBuffer).digest("hex")
-    const imageDup = await findImageHashDuplicate(supabase, imageHash)
+
+    // 利用履歴は「研修の往復を先に申請し、あとで残りを申請する」使い方があるため、
+    // 同じ画像の再送は止めずに前回の読み取り結果へ戻す（登録済みの明細は選べない）。
+    if (isTransitHistory) {
+      const resumed = await resumeTransitFromSameImage(event, supabase, matchedStaff.id, imageHash)
+      if (resumed) {
+        console.log("[LINE Bot] 同じ利用履歴の再送 → 前回の読み取り結果に戻す")
+        await clearTransitSession(supabase, source.userId)
+        return
+      }
+    }
+
+    const imageDup = isTransitHistory ? null : await findImageHashDuplicate(supabase, imageHash)
     if (imageDup) {
       console.log("[LINE Bot] 画像ハッシュ重複を検知 → 登録中止")
-      await sendLineMessage(replyToken, source.userId, buildDuplicateWarning(imageDup))
+      await sendDuplicateWarning(event, imageDup, imageDup.staff_member_id === matchedStaff.id)
       return
     }
 
@@ -6769,10 +7282,6 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     console.log("[LINE Bot] Gemini AI解析開始")
     const base64Data = imageBuffer.toString("base64")
     const mimeType = "image/jpeg" // LINEの画像はJPEG
-    // 「交通費を申請」から入った直後は、ICカードの利用履歴として読み取る。
-    // 履歴は1枚に何件もの移動が並ぶため、領収書と同じ読み方では合計が狂う。
-    const { session: photoSession } = await loadTransitSession(supabase, source.userId)
-    const isTransitHistory = photoSession?.step === "await_ic_photo"
     const ocrResult = await analyzeDocument(base64Data, mimeType, {
       extraHint: isTransitHistory
         ? TRANSIT_HISTORY_ANALYSIS_EXTRA_HINT
@@ -6788,8 +7297,13 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     // 5.5 内容（店名+金額+日付）で重複チェック（同一スタッフ内。別画像での再申請をブロック）
     // 分割候補があれば各件を、なければ書類全体を1回照合する（分割兄弟同士はDB未登録なので互いにブロックしない）
     const receiptDate = ocrResult.issue_date || new Date().toISOString().split("T")[0]
-    const dupTargets =
-      splitCandidates.length >= 2
+    // ICカードの利用履歴は、書類全体では照合しない。
+    // 1枚に何件もの移動が並び、全体の店名・金額は移動1件の内容と一致しないため、
+    // 1件でも申請済みだと履歴全体が登録できなくなってしまう。
+    // 申請済みの移動は選択の段階で除く（findRegisteredTrips）。
+    const dupTargets = isTransitHistory
+      ? []
+      : splitCandidates.length >= 2
         ? splitCandidates.map((c) => ({
             storeName: c.store || ocrResult.vendor_name || null,
             amount: c.amount as number | null,
@@ -6805,7 +7319,7 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
       })
       if (contentDup) {
         console.log("[LINE Bot] 内容重複を検知 → 登録中止")
-        await sendLineMessage(replyToken, source.userId, buildDuplicateWarning(contentDup))
+        await sendDuplicateWarning(event, contentDup, true)
         return
       }
     }

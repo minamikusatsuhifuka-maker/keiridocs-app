@@ -120,6 +120,8 @@ export function findDuplicateIds(receipts: DedupReceiptLike[]): Set<string> {
 /** 既存の重複領収書（警告メッセージ表示に使う最小情報） */
 export interface ExistingDuplicate {
   id: string
+  /** 誰の申請か。画像照合は全スタッフ対象のため、本人以外の申請と一致することがある */
+  staff_member_id: string | null
   store_name: string | null
   amount: number | null
   date: string | null
@@ -130,6 +132,7 @@ export interface ExistingDuplicate {
 
 type ExistingRow = {
   id: string
+  staff_member_id: string | null
   store_name: string | null
   amount: number | null
   date: string | null
@@ -148,7 +151,7 @@ export async function findImageHashDuplicate(
   const { data, error } = await supabase
     .from("staff_receipts")
     // image_hash は型に存在するが、未適用環境では実行時エラーになるため下でハンドリング
-    .select("id, store_name, amount, date, created_at")
+    .select("id, staff_member_id, store_name, amount, date, created_at")
     .eq("image_hash", imageHash)
     // 取り消した申請は重複扱いしない（同じ写真で出し直せるようにするため）
     .filter("ai_raw->>cancelled_at", "is", null)
@@ -183,7 +186,7 @@ export async function findContentDuplicate(
 
   const { data, error } = await supabase
     .from("staff_receipts")
-    .select("id, store_name, amount, date, created_at")
+    .select("id, staff_member_id, store_name, amount, date, created_at")
     .eq("staff_member_id", staffMemberId)
     .eq("amount", amount)
     .eq("date", normalizeDate(date))
