@@ -57,6 +57,8 @@ interface PriorRow {
   excess_amount: number | null
   staff_receipt_id: string | null
   created_at: string | null
+  /** 領収書の日付（支払日）。受講ごとに束ねる区切りに使う */
+  transaction_date: string | null
 }
 
 export interface AssessInput {
@@ -116,8 +118,12 @@ export interface AssessResult extends SubsidyResult {
   capUsed: number
   /** 交通費・宿泊費の枠を数え始めた時点。全期間を数えているなら null */
   capResetAt: string | null
-  /** 枠を数え始めた理由（all=講座の全期間／tuition=直近の受講料以降／manual=担当の数え直し） */
+  /** 枠を数えた範囲の決め方（all=講座の全期間／tuition=受講ごと／manual=担当の数え直し） */
   capWindowOrigin: TravelWindowOrigin
+  /** 枠を数えた範囲の開始日（受講料の領収書の日付）。制限なしは null */
+  capWindowFrom: string | null
+  /** 枠を数えた範囲の終了日（次の受講の開始日）。制限なしは null */
+  capWindowTo: string | null
   /** テストスタッフのため枠を数えていないか（テスト申請は枠を消費しない） */
   capSkippedForTest: boolean
 }
@@ -135,7 +141,7 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
   const priors = await fetchAllRows<PriorRow>((from, to) =>
     supabase
       .from("petty_cash_transactions")
-      .select("id, amount, expense_item, course_id, excess_amount, staff_receipt_id, created_at")
+      .select("id, amount, expense_item, course_id, excess_amount, staff_receipt_id, created_at, transaction_date")
       .eq("category", "staff_refund")
       .eq("staff_member_id", staffMemberId)
       .order("id", { ascending: true })
@@ -151,11 +157,13 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
   const staffState = await fetchStaffCapState(supabase, staffMemberId, input.courseId ?? null)
   const counted = staffState.isTest ? [] : await rejectCancelled(supabase, priors)
 
-  // 交通費・宿泊費の枠は「受講ごと」に数える（travelWindowStart）
-  const travelWindowStart = resolveTravelWindowStart(
+  // 交通費・宿泊費の枠は「受講ごと」に数える。
+  // 区切りは領収書の日付（申請の順番では変わらないようにするため）
+  const travelWindow = resolveTravelWindow(
     counted,
     input.courseId ?? null,
-    staffState.travelCapResetAt
+    staffState.travelCapResetAt,
+    input.judgeDate ?? null
   )
 
   const capUsed = isTravelItem(item)
@@ -167,7 +175,7 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
               p.course_id === input.courseId &&
               isTravelItem(p.expense_item as ExpenseItem)
           )
-          .filter((p) => isAfterReset(p, travelWindowStart.at))
+          .filter((p) => isInTravelWindow(p, travelWindow))
       )
     : item === "books" || item === "medical"
       ? sumCapUsed(
@@ -254,8 +262,10 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
     priorTuitionCount,
     holdReason,
     capUsed,
-    capResetAt: travelWindowStart.at,
-    capWindowOrigin: travelWindowStart.origin,
+    capResetAt: travelWindow.manualAt,
+    capWindowOrigin: travelWindow.origin,
+    capWindowFrom: travelWindow.fromDate,
+    capWindowTo: travelWindow.toDate,
     capSkippedForTest: staffState.isTest,
   }
 }
@@ -289,58 +299,97 @@ async function fetchStaffCapState(
   }
 }
 
-/** 数え直した日時より後の申請か（数え直していなければ全件が対象） */
-function isAfterReset(row: PriorRow, resetAt: string | null): boolean {
-  if (!resetAt) return true
-  if (!row.created_at) return true // 日時が無いものは安全側（枠に数える）
-  return row.created_at > resetAt
-}
-
-/** 交通費・宿泊費の枠を、いつ以降の申請で数えるか */
+/** 交通費・宿泊費の枠を、どの範囲で数えるか */
 export type TravelWindowOrigin = "all" | "tuition" | "manual"
 
+/** 交通費・宿泊費の枠を数える範囲 */
+export interface TravelWindow {
+  /** この日以降の領収書を数える（YYYY-MM-DD）。制限なしは null */
+  fromDate: string | null
+  /** この日より前の領収書を数える（次の受講の開始日）。制限なしは null */
+  toDate: string | null
+  /** この日時より後に申請した分だけを数える（担当の数え直し）。無ければ null */
+  manualAt: string | null
+  origin: TravelWindowOrigin
+}
+
 /**
- * 交通費・宿泊費の枠（講座ごと30,000円）を数え始める時点を決める。
+ * 交通費・宿泊費の枠（講座ごと30,000円）を数える範囲を決める。
  *
- * ■ なぜ時点が必要か
+ * ■ なぜ範囲が必要か
  * 枠は「講座ごと」だが、講座マスタは同じ講座名を再受講でも使い回すため、
  * 講座の生涯累計で数えると1回目の受講で枠を使い切り、
  * 2回目以降の交通費が全額「上限超過・支給額0円」になってしまう。
  *
- * ■ 自動で数え直す（tuition）
- * その講座の**直近の受講料の申請より後**の分だけを数える。
- * 受講料を申請した時点で次の受講が始まったと見なせるため、
- * 担当が操作しなくても受講ごとに枠が戻る。
+ * ■ 受講ごとに束ねる（tuition）
+ * **領収書の日付**で束ねる。申請した順番ではなく、支払った日で決める。
  *
- * 受講料より先に交通費を申請した場合は、まだ前の受講の枠で数えるため
- * 上限超過として担当の確認に回る（過大支給にはならない）。
- * そのまま支給してよければ、担当が「交通費・宿泊費の枠」で数え直す。
+ *   受講料の領収書の日付を区切りとして、
+ *   「その受講料の日付以降、次の受講料の日付より前」の交通費・宿泊費を
+ *   1つの受講分として累計する。
+ *
+ * 申請の順番は本人任せで管理できない（新幹線を先に出す、受講料を後で出すなど）。
+ * 提出日時で区切ると、受講料を挟んだ前後で同じ移動の交通費が別の受講に
+ * 分かれてしまい、累計されない。領収書の日付は申請の順番で変わらないため、
+ * どの順で出しても同じ結果になる。
  *
  * ■ 手動の数え直し（manual）
- * 担当の操作のほうが新しければそちらを使う（最後の操作を優先する）。
+ * 担当が数え直した場合は、それより後に申請した分だけを数える。
+ * 日付の束ねと併用する（両方を満たすものだけが枠に入る）。
+ *
+ * @param judgeDate 今回の申請の領収書の日付（YYYY-MM-DD）。読めていなければ null
  */
-export function resolveTravelWindowStart(
+export function resolveTravelWindow(
   counted: PriorRow[],
   courseId: string | null,
-  manualResetAt: string | null
-): { at: string | null; origin: TravelWindowOrigin } {
-  if (!courseId) return { at: manualResetAt, origin: manualResetAt ? "manual" : "all" }
-
-  // その講座の直近の受講料の申請
-  const latestTuition = counted
-    .filter((p) => p.course_id === courseId && p.expense_item === "tuition" && p.created_at)
-    .map((p) => p.created_at as string)
-    .sort()
-    .pop() ?? null
-
-  if (manualResetAt && latestTuition) {
-    return manualResetAt >= latestTuition
-      ? { at: manualResetAt, origin: "manual" }
-      : { at: latestTuition, origin: "tuition" }
+  manualResetAt: string | null,
+  judgeDate: string | null
+): TravelWindow {
+  const base: TravelWindow = {
+    fromDate: null,
+    toDate: null,
+    manualAt: manualResetAt,
+    origin: manualResetAt ? "manual" : "all",
   }
-  if (manualResetAt) return { at: manualResetAt, origin: "manual" }
-  if (latestTuition) return { at: latestTuition, origin: "tuition" }
-  return { at: null, origin: "all" }
+  if (!courseId) return base
+
+  // その講座の受講料の領収書の日付（古い順）
+  const tuitionDates = Array.from(
+    new Set(
+      counted
+        .filter((p) => p.course_id === courseId && p.expense_item === "tuition")
+        .map((p) => (p.transaction_date ?? "").slice(0, 10))
+        .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+    )
+  ).sort()
+  if (tuitionDates.length === 0) return base
+
+  // 今回の領収書の日付が読めていない場合は束ねない（全期間を数える＝安全側）
+  const d = (judgeDate ?? "").slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return base
+
+  // 今回の日付が属する受講 = その日以前で最も新しい受講料の日付
+  const fromDate = tuitionDates.filter((t) => t <= d).pop() ?? null
+  // 次の受講の開始日（そこから先は別の受講の枠）
+  const toDate = tuitionDates.find((t) => t > (fromDate ?? d)) ?? null
+
+  return {
+    fromDate,
+    toDate,
+    manualAt: manualResetAt,
+    origin: fromDate ? "tuition" : base.origin,
+  }
+}
+
+/** その明細を枠に数えるか（受講の範囲内かつ、担当の数え直しより後か） */
+function isInTravelWindow(row: PriorRow, w: TravelWindow): boolean {
+  if (w.manualAt && row.created_at && row.created_at <= w.manualAt) return false
+  const d = (row.transaction_date ?? "").slice(0, 10)
+  // 日付が無いものは安全側（枠に数える）
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return true
+  if (w.fromDate && d < w.fromDate) return false
+  if (w.toDate && d >= w.toDate) return false
+  return true
 }
 
 /**

@@ -441,29 +441,49 @@ export function calcBreakdownLines(
     rate: number
     capUsed: number
     holdReason?: HoldReason | null
-    /** 交通費・宿泊費の枠をどの時点から数えているか */
+    /** 交通費・宿泊費の枠をどの範囲で数えているか */
     capWindowOrigin?: "all" | "tuition" | "manual"
+    /** 枠を数えた範囲の開始日（受講料の領収書の日付） */
+    capWindowFrom?: string | null
+    /** 枠を数えた範囲の終了日（次の受講の開始日） */
+    capWindowTo?: string | null
   },
   amount: number,
-  item: ExpenseItem
+  item: ExpenseItem,
+  /** 講座名。交通費・宿泊費の累計がどの講座の分かを示す */
+  courseName?: string | null
 ): string[] {
   const lines: string[] = []
 
   if (assessed.cap !== null) {
-    const unit = isTravelItem(item) ? "この講座の交通費＋宿泊費 合計" : "今月"
+    const travel = isTravelItem(item)
+    // どの講座の累計なのかを本人が分かるように講座名を入れる
+    const unit = travel
+      ? `${courseName ? `${courseName}の` : "この講座の"}交通費・宿泊費 累計`
+      : "今月"
     lines.push(`上限：${unit} ${yen(assessed.cap)}`)
-    // 「すでに使った分」がどの範囲の合計なのかを明示する（受講ごとに数え直すため）
-    if (isTravelItem(item)) {
+
+    // 「すでに使った分」がどの範囲の合計なのかを明示する（受講ごとに数えるため）
+    if (travel) {
       if (assessed.capWindowOrigin === "tuition") {
-        lines.push("数える範囲：今回の受講分（直近の受講料の申請より後）")
+        const from = assessed.capWindowFrom
+        const to = assessed.capWindowTo
+        lines.push(
+          `数える範囲：今回の受講分（${from ?? "?"}の受講料以降` +
+            (to ? `／${to}の受講料より前` : "") +
+            "）"
+        )
       } else if (assessed.capWindowOrigin === "manual") {
         lines.push("数える範囲：担当が数え直した時点より後")
       }
-    }
-    if (assessed.capUsed > 0) {
+      // 累計は0円でも出す（いまどれだけ使っているかを毎回確かめられるようにする）
+      lines.push(`これまでの累計：${yen(assessed.capUsed)}`)
+      lines.push(`残りの枠：${yen(Math.max(0, assessed.cap - assessed.capUsed))}`)
+    } else if (assessed.capUsed > 0) {
       lines.push(`すでに使った分：${yen(assessed.capUsed)}`)
       lines.push(`残りの枠：${yen(Math.max(0, assessed.cap - assessed.capUsed))}`)
     }
+
     lines.push(`今回の立替額：${yen(amount)}`)
     lines.push(`うち上限の対象：${yen(Math.max(0, amount - assessed.excess))}`)
   }

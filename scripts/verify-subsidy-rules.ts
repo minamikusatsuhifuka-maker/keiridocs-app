@@ -26,7 +26,7 @@ import {
   type ExpenseItem,
 } from "../src/lib/subsidy-rules"
 import { applyYear, deriveTransitTrips, hasUnknownYear } from "../src/lib/transit-history"
-import { resolveTravelWindowStart } from "../src/lib/subsidy-assess"
+import { resolveTravelWindow } from "../src/lib/subsidy-assess"
 
 let passed = 0
 const failures: string[] = []
@@ -485,78 +485,115 @@ check(
   )
 }
 
-/* ---------- 交通費・宿泊費の枠を数え始める時点（受講ごとに自動で数え直す） ---------- */
+/* ---------- 交通費・宿泊費の枠を数える範囲（受講ごと・領収書の日付で束ねる） ----------
+ *
+ * 申請の順番は本人任せで管理できないため、提出日時ではなく
+ * **領収書の日付**で受講ごとに束ねる。どの順で出しても同じ結果になること。
+ */
 {
   const C = "course-1"
-  const row = (p: { item: string; at: string; course?: string }) => ({
-    id: p.at,
+  const row = (p: { item: string; date: string; course?: string; createdAt?: string }) => ({
+    id: `${p.item}-${p.date}`,
     amount: 1000,
     expense_item: p.item,
     course_id: p.course ?? C,
     excess_amount: 0,
     staff_receipt_id: null,
-    created_at: p.at,
+    created_at: p.createdAt ?? `${p.date}T00:00:00Z`,
+    transaction_date: p.date,
   })
+  const win = (
+    rows: ReturnType<typeof row>[],
+    judgeDate: string | null,
+    manual: string | null = null
+  ) => resolveTravelWindow(rows, C, manual, judgeDate)
 
-  check("実績が無ければ全期間を数える", resolveTravelWindowStart([], C, null), {
-    at: null,
+  check("受講料の実績が無ければ全期間を数える", win([], "2026-11-17"), {
+    fromDate: null,
+    toDate: null,
+    manualAt: null,
     origin: "all",
   })
 
+  // 受講料が1回（初受講）
+  const one = [row({ item: "tuition", date: "2026-06-10" })]
+  check("受講料の日付以降が同じ受講の枠", win(one, "2026-07-01"), {
+    fromDate: "2026-06-10",
+    toDate: null,
+    manualAt: null,
+    origin: "tuition",
+  })
+  check("受講料より前の領収書は別の枠（受講前の分）", win(one, "2026-05-01"), {
+    fromDate: null,
+    toDate: "2026-06-10",
+    manualAt: null,
+    origin: "all",
+  })
+
+  // 受講料が2回（再受講）→ 期間で区切る
+  const two = [
+    row({ item: "tuition", date: "2026-01-10" }),
+    row({ item: "tuition", date: "2026-06-10" }),
+  ]
+  check("1回目の受講の範囲は 1/10〜6/10", win(two, "2026-03-01"), {
+    fromDate: "2026-01-10",
+    toDate: "2026-06-10",
+    manualAt: null,
+    origin: "tuition",
+  })
+  check("2回目の受講の範囲は 6/10以降", win(two, "2026-07-01"), {
+    fromDate: "2026-06-10",
+    toDate: null,
+    manualAt: null,
+    origin: "tuition",
+  })
+  check("受講料と同じ日付の交通費は、その受講に入る", win(two, "2026-06-10"), {
+    fromDate: "2026-06-10",
+    toDate: null,
+    manualAt: null,
+    origin: "tuition",
+  })
+
+  // 申請の順番に依存しないこと（提出日時を入れ替えても同じ結果）
+  const reordered = [
+    row({ item: "tuition", date: "2026-06-10", createdAt: "2026-07-20T00:00:00Z" }),
+    row({ item: "transport", date: "2026-06-12", createdAt: "2026-06-13T00:00:00Z" }),
+  ]
   check(
-    "初受講で交通費だけ申請済みなら、まだ全期間を数える",
-    resolveTravelWindowStart([row({ item: "transport", at: "2026-03-01T00:00:00Z" })], C, null),
-    { at: null, origin: "all" }
+    "受講料を後から申請しても、6/12の交通費は同じ受講の枠に入る",
+    win(reordered, "2026-06-15"),
+    { fromDate: "2026-06-10", toDate: null, manualAt: null, origin: "tuition" }
   )
 
-  // 再受講：受講料を申請した時点から枠を数え直す
   check(
-    "受講料の申請があれば、その時点より後だけを数える",
-    resolveTravelWindowStart(
-      [
-        row({ item: "tuition", at: "2026-01-10T00:00:00Z" }),
-        row({ item: "transport", at: "2026-01-20T00:00:00Z" }),
-        row({ item: "tuition", at: "2026-06-10T00:00:00Z" }),
-      ],
-      C,
-      null
-    ),
-    { at: "2026-06-10T00:00:00Z", origin: "tuition" }
+    "別の講座の受講料は範囲に影響しない",
+    win([row({ item: "tuition", date: "2026-06-10", course: "course-2" })], "2026-07-01"),
+    { fromDate: null, toDate: null, manualAt: null, origin: "all" }
   )
 
-  check(
-    "別の講座の受講料は数え始めの時点に影響しない",
-    resolveTravelWindowStart(
-      [row({ item: "tuition", at: "2026-06-10T00:00:00Z", course: "course-2" })],
-      C,
-      null
-    ),
-    { at: null, origin: "all" }
-  )
+  // 領収書の日付が読めていない場合は束ねない（全期間＝安全側）
+  check("今回の日付が読めなければ束ねない", win(two, null), {
+    fromDate: null,
+    toDate: null,
+    manualAt: null,
+    origin: "all",
+  })
 
-  // 担当の手動操作は、受講料より後であれば優先する（最後の操作を優先）
+  // 手動の数え直しは日付の束ねと併用する
   check(
-    "手動の数え直しが受講料より後なら手動を使う",
-    resolveTravelWindowStart(
-      [row({ item: "tuition", at: "2026-06-10T00:00:00Z" })],
-      C,
-      "2026-07-01T00:00:00Z"
-    ),
-    { at: "2026-07-01T00:00:00Z", origin: "manual" }
+    "手動の数え直しは範囲と併用する",
+    win(two, "2026-07-01", "2026-07-15T00:00:00Z"),
+    {
+      fromDate: "2026-06-10",
+      toDate: null,
+      manualAt: "2026-07-15T00:00:00Z",
+      origin: "tuition",
+    }
   )
-
-  check(
-    "手動の数え直しが受講料より前なら受講料を使う",
-    resolveTravelWindowStart(
-      [row({ item: "tuition", at: "2026-06-10T00:00:00Z" })],
-      C,
-      "2026-02-01T00:00:00Z"
-    ),
-    { at: "2026-06-10T00:00:00Z", origin: "tuition" }
-  )
-
-  check("講座に紐づかない申請は枠の数え直しをしない", resolveTravelWindowStart([], null, null), {
-    at: null,
+  check("講座に紐づかない申請は束ねない", resolveTravelWindow([], null, null, "2026-11-17"), {
+    fromDate: null,
+    toDate: null,
+    manualAt: null,
     origin: "all",
   })
 }
@@ -574,16 +611,30 @@ check(
     []
   )
 
-  // 半額だけの場合は支給率と支給額を出す
+  // 講座名つきで累計を出す（本人がどの講座の枠か分かるように）
   check(
-    "半額支給は支給率と支給額を出す",
+    "講座名つきで累計と残枠を出す（累計0円でも出す）",
     calcBreakdownLines(
-      { subsidy: 730, excess: 0, cap: 30000, rate: 0.5, capUsed: 0, holdReason: null },
+      {
+        subsidy: 730,
+        excess: 0,
+        cap: 30000,
+        rate: 0.5,
+        capUsed: 0,
+        holdReason: null,
+        capWindowOrigin: "tuition",
+        capWindowFrom: "2026-06-10",
+        capWindowTo: null,
+      },
       1460,
-      "transport"
+      "transport",
+      "ピークパフォーマンスコース"
     ),
     [
-      "上限：この講座の交通費＋宿泊費 合計 ¥30,000",
+      "上限：ピークパフォーマンスコースの交通費・宿泊費 累計 ¥30,000",
+      "数える範囲：今回の受講分（2026-06-10の受講料以降）",
+      "これまでの累計：¥0",
+      "残りの枠：¥30,000",
       "今回の立替額：¥1,460",
       "うち上限の対象：¥1,460",
       "支給率：50％（半額支給の講座）",
@@ -591,24 +642,67 @@ check(
     ]
   )
 
-  // 枠が消費されている場合は、残枠と超過の理由が分かるようにする
+  // 在来線のあとに新幹線を出した場合（累計が見える）
   check(
-    "枠を使っている場合は すでに使った分と残枠を出す",
+    "累計があるときは残枠と合わせて出す",
     calcBreakdownLines(
-      { subsidy: 13905, excess: 130, cap: 30000, rate: 0.5, capUsed: 2190, holdReason: "excess" },
+      {
+        subsidy: 13970,
+        excess: 0,
+        cap: 30000,
+        rate: 0.5,
+        capUsed: 1460,
+        holdReason: null,
+        capWindowOrigin: "tuition",
+        capWindowFrom: "2026-06-10",
+        capWindowTo: "2026-12-01",
+      },
       27940,
-      "transport"
+      "transport",
+      "ピークパフォーマンスコース"
     ),
     [
-      "上限：この講座の交通費＋宿泊費 合計 ¥30,000",
-      "すでに使った分：¥2,190",
-      "残りの枠：¥27,810",
+      "上限：ピークパフォーマンスコースの交通費・宿泊費 累計 ¥30,000",
+      "数える範囲：今回の受講分（2026-06-10の受講料以降／2026-12-01の受講料より前）",
+      "これまでの累計：¥1,460",
+      "残りの枠：¥28,540",
       "今回の立替額：¥27,940",
-      "うち上限の対象：¥27,810",
+      "うち上限の対象：¥27,940",
       "支給率：50％（半額支給の講座）",
-      "支給額：¥13,905",
-      "上限を超えた分：¥130（担当が確認します）",
+      "支給額：¥13,970",
     ]
+  )
+
+  // 超過したときは担当の確認に回ることを出す
+  check(
+    "超過分は担当が確認することを出す",
+    calcBreakdownLines(
+      {
+        subsidy: 12500,
+        excess: 5000,
+        cap: 30000,
+        rate: 0.5,
+        capUsed: 5000,
+        holdReason: "excess",
+        capWindowOrigin: "tuition",
+        capWindowFrom: "2026-06-10",
+      },
+      30000,
+      "transport",
+      "ピークパフォーマンスコース"
+    ).slice(-1),
+    ["上限を超えた分：¥5,000（担当が確認します）"]
+  )
+
+  // 講座名が分からないときも累計の意味が分かるようにする
+  check(
+    "講座名が無い場合は「この講座の」と出す",
+    calcBreakdownLines(
+      { subsidy: 730, excess: 0, cap: 30000, rate: 0.5, capUsed: 0, holdReason: null },
+      1460,
+      "transport"
+    )[0],
+    "上限：この講座の交通費・宿泊費 累計 ¥30,000"
   )
 
   // 定期券区間の控除も理由を出す
@@ -632,10 +726,6 @@ check(
     "上限：今月 ¥5,000"
   )
 }
-
-/* ---------- 結果 ---------- */
-
-console.log("")
 
 /* ---------- アカデミー会員の有効期間（3年で6回） ---------- */
 {
@@ -695,6 +785,8 @@ console.log("")
   })
   check("金額や区間が読めない行は除く", broken.length, 0)
 }
+
+/* ---------- 結果 ---------- */
 
 if (failures.length === 0) {
   console.log(`✅ 支給ルールの検証：${passed}件すべて規程どおりです`)

@@ -1744,7 +1744,7 @@ async function sendIcBatchConfirm(
     subsidy: assessed.subsidy,
     subsidyRateLabel: rateLabel(assessed.rate, item),
     targetMonth: month ? `${labelYearMonth(month)}分` : "不明",
-    calcNote: calcBreakdownLines(assessed, total, item),
+    calcNote: calcBreakdownLines(assessed, total, item, course?.name ?? readPendingCourseName(raw)),
     overLimit:
       assessed.excess > 0
         ? { category: EXPENSE_ITEM_LABELS[item], exceeded: assessed.excess }
@@ -2531,7 +2531,7 @@ async function sendPhase2Confirm(
       subsidy: assessed.subsidy,
       subsidyRateLabel: rateLabel(assessed.rate, item),
       targetMonth,
-      calcNote: calcBreakdownLines(assessed, amount, item),
+      calcNote: calcBreakdownLines(assessed, amount, item, course?.name ?? pendingCourseName),
       overLimit: assessed.excess > 0 ? { category: EXPENSE_ITEM_LABELS[item], exceeded: assessed.excess } : undefined,
       okData,
       fixData,

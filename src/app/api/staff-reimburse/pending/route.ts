@@ -154,7 +154,8 @@ export async function GET() {
                 holdReason: (t.hold_reason ?? null) as HoldReason | null,
               },
               t.amount ?? 0,
-              item
+              item,
+              (t.course_id && courses.get(t.course_id)) || t.course_pending_name || null
             )
           })(),
           submittedAt: t.created_at,
