@@ -17,6 +17,7 @@ import {
   availableItems,
   academyTermEnd,
   calcBreakdownLines,
+  calcStoredSubsidy,
   computeSubsidy,
   needsDetailReview,
   isWithinAcademyTerm,
@@ -396,6 +397,89 @@ check(
   )
   check(
     "【不具合の再現】枠を使い切っていると ①は支給0円・超過1,460円になる",
+    calc({ ...half, amount: 1460, travelCapUsed: 30000 }),
+    { 支給: 0, 超過: 1460, 承認既定値: 730 }
+  )
+}
+
+/* ---------- 新幹線と在来線を分けて申請しても1つの講座で累計する ----------
+ *
+ * 1回の移動が新幹線と在来線に分かれ、別々に申請されることがある。
+ * 枠は「講座ごと 合計30,000円」なので、同じ講座の交通費・宿泊費は
+ * 申請が分かれても累計し、超えた分は担当の承認に回す。
+ */
+{
+  const half = {
+    item: "transport" as const,
+    courseKind: "ach_other" as const,
+    courseRule: "half" as const,
+  }
+
+  // 在来線 → 新幹線（合計 29,400円。上限内）
+  const local = calc({ ...half, amount: 1460 })
+  check("① 在来線 ¥1,460 → 支給 ¥730", local, { 支給: 730, 超過: 0, 承認既定値: 0 })
+  const shinkansen = calc({ ...half, amount: 27940, travelCapUsed: 1460 })
+  check("② 新幹線往復 ¥27,940（在来線1,460円を累計）→ 支給 ¥13,970", shinkansen, {
+    支給: 13970,
+    超過: 0,
+    承認既定値: 0,
+  })
+  check("①②の支給額の合計", local.支給 + shinkansen.支給, 14700)
+
+  // 宿泊費も同じ枠（交通費＋宿泊費 合計30,000円）
+  check(
+    "宿泊費も同じ枠で累計する",
+    calc({ ...half, item: "lodging", amount: 10000, travelCapUsed: 29400 }),
+    // 残枠600円 → 支給300円、超過9,400円（承認すれば半額の4,700円）
+    { 支給: 300, 超過: 9400, 承認既定値: 4700 }
+  )
+
+  // 超えた場合：上限までは自動で半額支給し、超過分は担当の承認
+  const over = calc({ ...half, amount: 30000, travelCapUsed: 5000 })
+  check("在来線5,000円のあと新幹線30,000円 → 残枠25,000円まで半額", over, {
+    支給: 12500,
+    超過: 5000,
+    承認既定値: 2500, // 超過分も半額（半額支給の講座のため）
+  })
+
+  // 担当が超過分を承認したあとの保存済み明細からの支給額
+  check(
+    "超過分 ¥2,500 を承認すると支給額は ¥15,000（30,000円の半額）",
+    calcStoredSubsidy({
+      amount: 30000,
+      subsidy_category: "achievement_repeat",
+      expense_item: "transport",
+      excess_amount: 5000,
+      approved_excess: 2500,
+    }),
+    15000
+  )
+  check(
+    "超過分を承認しない（0円）場合は上限分の半額だけ",
+    calcStoredSubsidy({
+      amount: 30000,
+      subsidy_category: "achievement_repeat",
+      expense_item: "transport",
+      excess_amount: 5000,
+      approved_excess: 0,
+    }),
+    12500
+  )
+  check(
+    "未承認（NULL）は加算しない",
+    calcStoredSubsidy({
+      amount: 30000,
+      subsidy_category: "achievement_repeat",
+      expense_item: "transport",
+      excess_amount: 5000,
+      approved_excess: null,
+    }),
+    12500
+  )
+
+  // 枠を使い切ったあとの申請は全額が超過（承認すれば半額）
+  check(
+    "枠を使い切ったあとの在来線 ¥1,460 は全額が超過",
     calc({ ...half, amount: 1460, travelCapUsed: 30000 }),
     { 支給: 0, 超過: 1460, 承認既定値: 730 }
   )
