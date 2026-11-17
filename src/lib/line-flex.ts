@@ -512,6 +512,8 @@ export function applicationConfirmCard(params: {
   purpose?: string
   breakdown?: { label: string; amount: number | null; sub?: string }[]
   receiptTotal: number
+  /** 合計の見出し（既定は「領収書の金額」。IC履歴の一括申請では「交通費の合計」） */
+  totalLabel?: string
   subsidy: number
   subsidyRateLabel: string
   targetMonth: string
@@ -530,7 +532,7 @@ export function applicationConfirmCard(params: {
     body.push(panel(bd))
   }
   body.push(separator())
-  body.push(infoRow("領収書の金額", yen(params.receiptTotal)))
+  body.push(infoRow(params.totalLabel ?? "領収書の金額", yen(params.receiptTotal)))
   body.push(
     payBlock(params.overLimit ? "支給額（上限分）" : "支給額", yen(params.subsidy), params.subsidyRateLabel)
   )

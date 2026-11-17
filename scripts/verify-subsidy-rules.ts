@@ -23,6 +23,7 @@ import {
   type CourseRule,
   type ExpenseItem,
 } from "../src/lib/subsidy-rules"
+import { applyYear, deriveTransitTrips, hasUnknownYear } from "../src/lib/transit-history"
 
 let passed = 0
 const failures: string[] = []
@@ -373,6 +374,49 @@ console.log("")
   check("未登録なら期限なし", academyTermEnd(null), null)
 }
 
+
+
+/* ---------- 交通系ICカードの利用履歴の読み取り ---------- */
+{
+  const ocr = {
+    payments: [
+      { vendor_name: "南草津 → 京都", amount: 420, issue_date: "2026-11-17", description: "鉄道" },
+      { vendor_name: "京都 → 南草津", amount: 420, issue_date: "2026-11-17", description: "鉄道" },
+      { vendor_name: "チャージ", amount: 5000, issue_date: "2026-11-17", description: "入金" },
+      { vendor_name: "セブンイレブン", amount: 580, issue_date: "2026-11-16", description: "物販" },
+      { vendor_name: "残高", amount: 3200, issue_date: "2026-11-16", description: "残高照会" },
+      { vendor_name: "近江鉄道バス", amount: 230, issue_date: "2026-11-15", description: "バス" },
+      { vendor_name: "定期券購入", amount: 18000, issue_date: "2026-11-01", description: "定期" },
+    ],
+  }
+  const trips = deriveTransitTrips(ocr)
+  check("チャージ・物販・残高・定期券を除いて移動だけを拾う", trips.length, 3)
+  check(
+    "移動の合計にチャージや物販が混ざらない",
+    trips.reduce((s, t) => s + t.fare, 0),
+    420 + 420 + 230
+  )
+  check("新しい日付が先頭に来る", trips[0].date, "2026-11-17")
+
+  // 年が読み取れない履歴（"0000-MM-DD"）は推測で補わない
+  const noYear = deriveTransitTrips({
+    payments: [{ vendor_name: "南草津 → 草津", amount: 190, issue_date: "0000-11-15", description: "鉄道" }],
+  })
+  check("年が無い行も捨てずに残す", noYear.length, 1)
+  check("年が無いことを判定できる", hasUnknownYear(noYear), true)
+  check("年を当てはめられる", applyYear(noYear, 2026)[0].date, "2026-11-15")
+  check("年が分かっている行は書き換えない", applyYear(trips, 2024)[0].date, "2026-11-17")
+
+  // 金額が読めない行・区間が空の行は混ぜない
+  const broken = deriveTransitTrips({
+    payments: [
+      { vendor_name: "", amount: 300, issue_date: "2026-11-10" },
+      { vendor_name: "南草津 → 大津", amount: 0, issue_date: "2026-11-10" },
+      { vendor_name: "南草津 → 大津", amount: null, issue_date: "2026-11-10" },
+    ],
+  })
+  check("金額や区間が読めない行は除く", broken.length, 0)
+}
 
 if (failures.length === 0) {
   console.log(`✅ 支給ルールの検証：${passed}件すべて規程どおりです`)

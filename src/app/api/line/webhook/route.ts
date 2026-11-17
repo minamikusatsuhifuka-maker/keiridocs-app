@@ -57,6 +57,12 @@ import {
 import { decidePassDeparture, passDeductionNote } from "@/lib/commuter-pass-deduction"
 import { notifyAdmins } from "@/lib/line-admin-notify"
 import {
+  applyYear,
+  deriveTransitTrips,
+  hasUnknownYear,
+  type TransitTrip,
+} from "@/lib/transit-history"
+import {
   COURSE_NOT_LISTED,
   OTHER_ITEMS,
   PHASE2_GROUPS,
@@ -592,11 +598,32 @@ async function handlePostback(event: LineEvent): Promise<void> {
       )
       return
     // ICカードの利用履歴から選ぶ／読み取れなかったときの進み方
-    case "ictrip":
-      await handleIcTripPostback(event, params)
+    case "ictog": // 1件の選択を切り替える
+      await handleIcTogglePostback(event, params)
       return
-    case "icnone":
-      await handleIcNonePostback(event, params)
+    case "icall": // 全選択・選択解除
+      await handleIcSelectAllPostback(event, params)
+      return
+    case "icnext": // 選択を終えて利用目的へ
+      await handleIcNextPostback(event, params)
+      return
+    case "icpurpose": // 研修・講座／通常業務
+      await handleIcPurposePostback(event, params)
+      return
+    case "iccourse": // 講座の選択（選んだ全件に適用）
+      await handleIcCoursePostback(event, params)
+      return
+    case "icback": // 選択からやり直す
+      await handleIcBackPostback(event, params)
+      return
+    case "icok": // 一括で確定する
+      await handleIcConfirmPostback(event, params)
+      return
+    case "icmore": // 残りの移動を続けて申請
+      await handleIcMorePostback(event, params)
+      return
+    case "icyear": // 年の確認
+      await handleIcYearPostback(event, params)
       return
     case "rfretry":
       await handleRetryPhotoPostback(event, params)
@@ -849,155 +876,554 @@ async function sendTransitGuide(
 
 /* ---------- 交通系ICカードの利用履歴 ---------- */
 
-/** 利用履歴から読み取った移動1件 */
-interface TransitTrip {
-  /** 利用日（YYYY-MM-DD） */
-  date: string
-  /** 区間（例「南草津 → 京都」）または事業者名 */
-  route: string
-  /** 運賃（円） */
-  fare: number
-}
-
-/** チャージ・残高・物販を取り除く語（合計に混ぜると支給額が過大になる） */
-const NON_TRIP_WORDS = /チャージ|入金|積増|オートチャージ|残高|繰越|物販|現金併用|販売|購入|定期/
-
 /**
- * AI解析の payments から「移動」だけを取り出す。
+ * 読み取った移動の一覧を出し、申請するものを選んでもらう（複数可）。
  *
- * プロンプト側でもチャージ等を除外しているが、読み違いが残ることがあるため
- * ここでも language で弾く。二重に守る（過大支給は取り返せないため）。
- */
-function deriveTransitTrips(ocr: { payments?: unknown }): TransitTrip[] {
-  const rows = Array.isArray(ocr.payments) ? ocr.payments : []
-  const trips: TransitTrip[] = []
-  for (const r of rows as Record<string, unknown>[]) {
-    const fare = typeof r.amount === "number" ? r.amount : Number(r.amount)
-    if (!Number.isFinite(fare) || fare <= 0) continue
-    const route = String(r.vendor_name ?? "").trim()
-    const note = String(r.description ?? "").trim()
-    if (!route) continue
-    if (NON_TRIP_WORDS.test(route) || NON_TRIP_WORDS.test(note)) continue
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(r.issue_date ?? ""))
-      ? String(r.issue_date)
-      : toJstDateString(new Date())
-    trips.push({ date, route: route.slice(0, 40), fare: Math.round(fare) })
-  }
-  // 新しい日付が上に来るようにする（直近の移動を申請することが多いため）
-  return trips.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)).slice(0, 20)
-}
-
-/**
- * 読み取った移動の一覧を出し、申請する1件を選んでもらう。
- *
- * 読み取った行は領収書（staff_receipts）の ai_raw に残し、
- * 選ばれた1件の日付・区間・金額をその領収書に書き込んでから確認へ進む。
- * 複数申請したいときは、同じ写真をもう一度送らずに済むよう案内する。
+ * 1枚の履歴に往復・乗り継ぎが並ぶため、1件ずつ申請させると手間が大きい。
+ * チェックを付け外しして、まとめて申請できるようにする。
+ * 私用の移動は外せるよう、1件ずつ切り替えられる。
  */
 async function sendTransitTripPicker(
+  event: LineEvent,
+  receiptId: string,
+  trips: TransitTrip[],
+  lead = ""
+): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const state = await loadTripState(supabase, receiptId)
+  // 初回は全件を選んだ状態にする（通勤・私用を外すほうが件数が少ないため）
+  const selected = state.selected ?? trips.map((_, i) => i)
+  await saveTripState(supabase, receiptId, { trips, selected })
+
+  const total = selected.reduce((sum, i) => sum + (trips[i]?.fare ?? 0), 0)
+  const lines = trips.map((t, i) => {
+    const mark = selected.includes(i) ? "✅" : "⬜"
+    return `${mark} ${i + 1}. ${t.date} ${t.route} ¥${formatAmount(t.fare)}`
+  })
+
+  // クイックリプライは13個まで。番号で選び、全選択・解除・次へを置く
+  const items: PostbackAction[] = trips.slice(0, 10).map((t, i) => ({
+    type: "postback",
+    label: `${selected.includes(i) ? "外す" : "選ぶ"}${i + 1}`,
+    data: `action=ictog&rid=${receiptId}&i=${i}`,
+    displayText: `${i + 1}番を${selected.includes(i) ? "外します" : "選びます"}`,
+  }))
+  items.push({
+    type: "postback",
+    label: "全選択",
+    data: `action=icall&rid=${receiptId}&v=1`,
+    displayText: "すべて選びます",
+  })
+  items.push({
+    type: "postback",
+    label: "選択解除",
+    data: `action=icall&rid=${receiptId}&v=0`,
+    displayText: "選択を解除します",
+  })
+  items.push({
+    type: "postback",
+    label: `次へ（${selected.length}件）`,
+    data: `action=icnext&rid=${receiptId}`,
+    displayText: `選んだ${selected.length}件で進みます`,
+  })
+
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    lead +
+      "🚃 利用履歴を読み取りました\n" +
+      "─────────────\n" +
+      `${lines.join("\n")}\n\n` +
+      `選択中：${selected.length}件　合計 ¥${formatAmount(total)}\n\n` +
+      "申請するものを選んでください。番号のボタンで付け外しできます。\n" +
+      "私用の移動は外してください。\n" +
+      "※チャージ・残高・お買い物は最初から除いています。\n" +
+      "終わったら「次へ」を押してください。",
+    items
+  )
+}
+
+/**
+ * 年が読み取れなかったときに、対象の年を確認する。
+ *
+ * 利用履歴の画面は月日しか写らないことが多い。
+ * 今年として補うと、年をまたぐ申請（1月に12月分を出すなど）で
+ * 対象月がずれ、給与の支給月も変わってしまう。
+ */
+async function askTransitYear(
   event: LineEvent,
   receiptId: string,
   trips: TransitTrip[]
 ): Promise<void> {
   const { replyToken, source } = event
-  const supabase = createServiceClient()
-
-  // 選択肢の元データを残す（選んだあとに日付・区間・金額を確定させるため）
-  const { data } = await supabase.from("staff_receipts").select("ai_raw").eq("id", receiptId).maybeSingle()
-  const current = parseAiRawObject((data as { ai_raw?: unknown } | null)?.ai_raw) ?? {}
-  await supabase
-    .from("staff_receipts")
-    .update({
-      ai_raw: JSON.parse(JSON.stringify({ ...current, transit_trips: trips })),
-    })
-    .eq("id", receiptId)
-
-  // クイックリプライは13個まで。1つは「一覧に無い」に使う
-  const shown = trips.slice(0, 12)
-  const items: PostbackAction[] = shown.map((t, i) => {
-    const label = `${t.date.slice(5).replace("-", "/")} ${t.route} ¥${formatAmount(t.fare)}`
-    return {
-      type: "postback",
-      label: label.slice(0, 20),
-      data: `action=ictrip&rid=${receiptId}&i=${i}`,
-      displayText: label,
-    }
-  })
-  items.push({
-    type: "postback",
-    label: "この中にない",
-    data: `action=icnone&rid=${receiptId}`,
-    displayText: "この中にありません",
-  })
-
-  const list = shown
-    .map((t, i) => `${i + 1}. ${t.date} ${t.route} ¥${formatAmount(t.fare)}`)
+  const thisYear = Number(toJstDateString(new Date()).slice(0, 4))
+  const sample = trips
+    .slice(0, 6)
+    .map((t) => `・${t.date.slice(5).replace("-", "/")} ${t.route} ¥${formatAmount(t.fare)}`)
     .join("\n")
+
   await sendLineQuickReply(
     replyToken,
     source.userId,
     "🚃 利用履歴を読み取りました。\n" +
       "─────────────\n" +
-      `${list}\n\n` +
-      "申請する移動を1つ選んでください。\n" +
-      "※チャージ・残高・お買い物は除いています。\n" +
-      "※複数申請する場合は、1件ずつ選んでいただきます。\n" +
-      "　1件目が終わったら「交通費を申請」からもう一度お選びください。",
-    items
+      `${sample}\n\n` +
+      "画像に年が写っていないため、何年のご利用かを教えてください。\n" +
+      "（推測で登録すると、支給される月がずれてしまいます）",
+    [
+      {
+        type: "postback",
+        label: `${thisYear}年`,
+        data: `action=icyear&rid=${receiptId}&y=${thisYear}`,
+        displayText: `${thisYear}年です`,
+      },
+      {
+        type: "postback",
+        label: `${thisYear - 1}年`,
+        data: `action=icyear&rid=${receiptId}&y=${thisYear - 1}`,
+        displayText: `${thisYear - 1}年です`,
+      },
+    ]
   )
 }
 
-/** 選ばれた移動を領収書に書き込み、通常の申請（確認まで）へ進む */
-async function handleIcTripPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
-  const { replyToken, source } = event
+/** 年の確認 → 全件に当てはめて選択へ進む */
+async function handleIcYearPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const receiptId = params.get("rid")
+  const year = Number(params.get("y"))
+  if (!receiptId || !Number.isInteger(year) || year < 2000 || year > 2100) {
+    await sendLineMessage(event.replyToken, event.source.userId, "⚠️ 処理できませんでした。")
+    return
+  }
+  const supabase = createServiceClient()
+  const { trips } = await loadTripState(supabase, receiptId)
+  const applied = applyYear(trips, year)
+  await saveTripState(supabase, receiptId, { trips: applied })
+  await sendTransitTripPicker(event, receiptId, applied, `${year}年として進めます。\n\n`)
+}
+
+/** 選択状態を読む */
+async function loadTripState(
+  supabase: ServiceClient,
+  receiptId: string
+): Promise<{ raw: Record<string, unknown>; trips: TransitTrip[]; selected: number[] | null }> {
+  const { data } = await supabase.from("staff_receipts").select("ai_raw").eq("id", receiptId).maybeSingle()
+  const raw = parseAiRawObject((data as { ai_raw?: unknown } | null)?.ai_raw) ?? {}
+  const trips = Array.isArray(raw.transit_trips) ? (raw.transit_trips as TransitTrip[]) : []
+  const selected = Array.isArray(raw.transit_selected) ? (raw.transit_selected as number[]) : null
+  return { raw, trips, selected }
+}
+
+/** 選択状態を保存する */
+async function saveTripState(
+  supabase: ServiceClient,
+  receiptId: string,
+  patch: { trips?: TransitTrip[]; selected?: number[]; extra?: Record<string, unknown> }
+): Promise<void> {
+  const { raw } = await loadTripState(supabase, receiptId)
+  const next: Record<string, unknown> = { ...raw, ...(patch.extra ?? {}) }
+  if (patch.trips) next.transit_trips = patch.trips
+  if (patch.selected) next.transit_selected = patch.selected
+  await supabase
+    .from("staff_receipts")
+    .update({ ai_raw: JSON.parse(JSON.stringify(next)) })
+    .eq("id", receiptId)
+}
+
+/** 1件の選択を切り替える */
+async function handleIcTogglePostback(event: LineEvent, params: URLSearchParams): Promise<void> {
   const receiptId = params.get("rid")
   const index = Number(params.get("i"))
   if (!receiptId || !Number.isInteger(index)) {
-    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
+    await sendLineMessage(event.replyToken, event.source.userId, "⚠️ 処理できませんでした。")
     return
   }
-
   const supabase = createServiceClient()
-  const { data } = await supabase
-    .from("staff_receipts")
-    .select("ai_raw")
-    .eq("id", receiptId)
-    .maybeSingle()
-  const raw = parseAiRawObject((data as { ai_raw?: unknown } | null)?.ai_raw) ?? {}
-  const trips = Array.isArray(raw.transit_trips) ? (raw.transit_trips as TransitTrip[]) : []
-  const trip = trips[index]
-  if (!trip) {
-    await sendLineMessage(replyToken, source.userId, "⚠️ 選んだ移動を確認できませんでした。もう一度お試しください。")
-    return
-  }
-
-  // 選んだ1件を、この領収書の内容として確定させる
-  await supabase
-    .from("staff_receipts")
-    .update({
-      date: trip.date,
-      amount: trip.fare,
-      store_name: trip.route,
-      ai_raw: JSON.parse(JSON.stringify({ ...raw, selected_trip: trip })),
-    })
-    .eq("id", receiptId)
-
-  // 以降は通常の交通費と同じ（定期券区間の確認 → 確認カード → OK）
-  await handlePhase2ItemPostback(
-    event,
-    new URLSearchParams({ rid: receiptId, i: "commute" })
-  )
+  const { trips, selected } = await loadTripState(supabase, receiptId)
+  const cur = selected ?? trips.map((_, i) => i)
+  const next = cur.includes(index) ? cur.filter((i) => i !== index) : [...cur, index].sort((a, b) => a - b)
+  await saveTripState(supabase, receiptId, { selected: next })
+  await sendTransitTripPicker(event, receiptId, trips)
 }
 
-/** 「この中にない」→ 自分で入力してもらう */
-async function handleIcNonePostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+/** 全選択・選択解除 */
+async function handleIcSelectAllPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
   const receiptId = params.get("rid")
   if (!receiptId) {
     await sendLineMessage(event.replyToken, event.source.userId, "⚠️ 処理できませんでした。")
     return
   }
-  await startManualAmount(event, receiptId)
+  const supabase = createServiceClient()
+  const { trips } = await loadTripState(supabase, receiptId)
+  const next = params.get("v") === "1" ? trips.map((_, i) => i) : []
+  await saveTripState(supabase, receiptId, { selected: next })
+  await sendTransitTripPicker(event, receiptId, trips)
 }
+
+/** 「次へ」→ 利用目的（研修・講座／通常業務）を聞く */
+async function handleIcNextPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  if (!receiptId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。")
+    return
+  }
+  const supabase = createServiceClient()
+  const { trips, selected } = await loadTripState(supabase, receiptId)
+  const picked = selected ?? trips.map((_, i) => i)
+  if (picked.length === 0) {
+    await sendTransitTripPicker(event, receiptId, trips, "1件も選ばれていません。\n\n")
+    return
+  }
+
+  // 研修の交通費を自動で「通常業務」にしない。目的によって上限と支給率が変わるため必ず聞く。
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    `選んだ ${picked.length}件 の交通費は、何のための移動ですか？\n\n` +
+      "・研修・講座 … 受講のための移動（講座ごとに上限30,000円）\n" +
+      "・通常業務 … 研修以外の業務での移動",
+    [
+      {
+        type: "postback",
+        label: "研修・講座",
+        data: `action=icpurpose&rid=${receiptId}&p=course`,
+        displayText: "研修・講座のための移動です",
+      },
+      {
+        type: "postback",
+        label: "通常業務",
+        data: `action=icpurpose&rid=${receiptId}&p=work`,
+        displayText: "通常業務での移動です",
+      },
+    ]
+  )
+}
+
+/** 利用目的の選択 → 研修なら講座を選ぶ／通常業務なら確認へ */
+async function handleIcPurposePostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  const purpose = params.get("p")
+  if (!receiptId || (purpose !== "course" && purpose !== "work")) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。")
+    return
+  }
+  const supabase = createServiceClient()
+  await saveTripState(supabase, receiptId, { extra: { transit_purpose: purpose } })
+
+  if (purpose === "work") {
+    await sendIcBatchConfirm(event, receiptId, null)
+    return
+  }
+
+  // 同じ研修の往復・乗り継ぎは、講座を1回選べば全件に適用する
+  const courses = await fetchCourseChoices(supabase)
+  if (courses.length === 0) {
+    await askCourseName(event, receiptId)
+    return
+  }
+  const items: PostbackAction[] = courses.slice(0, 12).map((c) => ({
+    type: "postback",
+    label: c.name,
+    data: `action=iccourse&rid=${receiptId}&c=${c.id}`,
+    displayText: c.name,
+  }))
+  items.push({
+    type: "postback",
+    label: "一覧に無い講座",
+    data: `action=iccourse&rid=${receiptId}&c=${COURSE_NOT_LISTED}`,
+    displayText: "一覧に無い講座",
+  })
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    "どの講座のための移動ですか？\n選んだ移動すべてに同じ講座を適用します。\n\n" +
+      "別の講座の移動が混ざっている場合は、まず同じ講座の分だけを選んで申請し、\n" +
+      "そのあと「交通費を申請」からもう一度お選びください。",
+    items
+  )
+}
+
+/** 講座の選択 → 確認へ */
+async function handleIcCoursePostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const receiptId = params.get("rid")
+  const courseId = params.get("c")
+  if (!receiptId || !courseId) {
+    await sendLineMessage(event.replyToken, event.source.userId, "⚠️ 処理できませんでした。")
+    return
+  }
+  if (courseId === COURSE_NOT_LISTED) {
+    await askCourseName(event, receiptId)
+    return
+  }
+  await sendIcBatchConfirm(event, receiptId, courseId)
+}
+
+/**
+ * 一括申請の確認画面。
+ *
+ * 各移動の日付・区間・運賃、合計、支給額を出し、1回の操作で確定できるようにする。
+ */
+async function sendIcBatchConfirm(
+  event: LineEvent,
+  receiptId: string,
+  courseId: string | null
+): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  const fetched = await fetchReceiptWithSiblings(supabase, receiptId)
+  if (!fetched) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 対象の申請が見つかりませんでした。")
+    return
+  }
+  const { trips, selected, raw } = await loadTripState(supabase, receiptId)
+  const picked = (selected ?? trips.map((_, i) => i)).filter((i) => trips[i])
+  if (picked.length === 0) {
+    await sendTransitTripPicker(event, receiptId, trips, "1件も選ばれていません。\n\n")
+    return
+  }
+
+  const total = picked.reduce((sum, i) => sum + trips[i].fare, 0)
+  const course = courseId ? await fetchCourseById(supabase, courseId) : null
+  const item: ExpenseItem = course ? "transport" : "commute"
+
+  const assessed = await assessSubsidy({
+    supabase,
+    staffMemberId: fetched.receipt.staff_member_id,
+    amount: total,
+    item,
+    courseId: course?.id ?? null,
+    courseKind: course?.kind ?? null,
+    courseRule: course?.rule ?? null,
+    pendingCourseName: course ? null : readPendingCourseName(raw),
+    judgeDate: trips[picked[0]].date,
+    submittedAt: new Date(fetched.receipt.created_at),
+  })
+
+  const month = resolveStaffSubmissionMonth(
+    fetched.receipt.ai_raw,
+    toJstDateString(new Date(fetched.receipt.created_at))
+  ).month
+  const card = applicationConfirmCard({
+    applicant: fetched.receipt.staffName,
+    course: course?.name ?? readPendingCourseName(raw) ?? undefined,
+    category: EXPENSE_ITEM_LABELS[item],
+    breakdown: picked.map((i) => ({
+      label: trips[i].date.slice(5).replace("-", "/"),
+      amount: trips[i].fare,
+      sub: trips[i].route.slice(0, 24),
+    })),
+    receiptTotal: total,
+    totalLabel: "交通費の合計",
+    subsidy: assessed.subsidy,
+    subsidyRateLabel: rateLabel(assessed.rate, item),
+    targetMonth: month ? `${labelYearMonth(month)}分` : "不明",
+    overLimit:
+      assessed.excess > 0
+        ? { category: EXPENSE_ITEM_LABELS[item], exceeded: assessed.excess }
+        : undefined,
+    okData: `action=icok&rid=${receiptId}` + (course ? `&c=${course.id}` : ""),
+    fixData: `action=icback&rid=${receiptId}`,
+  })
+  const fallback =
+    `交通費 ${picked.length}件 の申請内容\n` +
+    picked.map((i) => `${trips[i].date} ${trips[i].route} ¥${formatAmount(trips[i].fare)}`).join("\n") +
+    `\n交通費の合計：¥${formatAmount(total)}\n支給額：¥${formatAmount(assessed.subsidy)}`
+  await sendFlexCard(replyToken, source.userId, card, fallback)
+}
+
+/** 「修正」→ 選択からやり直す */
+async function handleIcBackPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const receiptId = params.get("rid")
+  if (!receiptId) {
+    await sendLineMessage(event.replyToken, event.source.userId, "⚠️ 処理できませんでした。")
+    return
+  }
+  const supabase = createServiceClient()
+  const { trips } = await loadTripState(supabase, receiptId)
+  await sendTransitTripPicker(event, receiptId, trips, "もう一度選んでください。\n\n")
+}
+
+/**
+ * 一括申請の確定。
+ *
+ * 選んだ移動ごとに明細（staff_receipts → petty_cash_transactions）を作る。
+ * 1件目は元のレコードを使い、2件目以降は同じ画像を参照する行を足す。
+ *
+ * ■ 二重登録を防ぐ
+ * 申請済みの番号を ai_raw.transit_submitted に積み、同じ番号は二度登録しない。
+ * 連打に備えて処理中の印（transit_lock）も置く。
+ *
+ * ■ 目的が違う移動を分けられる
+ * 申請済み以外が残っていれば、同じ写真のまま続けて申請できる。
+ * 研修の往復と通常業務の移動が1枚に混ざっていても、2回に分けて出せる。
+ */
+async function handleIcConfirmPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  const courseId = params.get("c")
+  if (!receiptId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。")
+    return
+  }
+
+  const supabase = createServiceClient()
+  const { raw, trips, selected } = await loadTripState(supabase, receiptId)
+  const submitted = Array.isArray(raw.transit_submitted) ? (raw.transit_submitted as number[]) : []
+
+  // 連打対策。処理中の印が1分以内に付いていれば何もしない
+  const lock = typeof raw.transit_lock === "string" ? Date.parse(raw.transit_lock) : 0
+  if (lock && Date.now() - lock < 60_000) {
+    await sendLineMessage(replyToken, source.userId, "処理中です。少しお待ちください。")
+    return
+  }
+
+  const picked = (selected ?? trips.map((_, i) => i))
+    .filter((i) => trips[i])
+    .filter((i) => !submitted.includes(i))
+  if (picked.length === 0) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "ℹ️ 選ばれた移動はすでに申請済みです。\n「申請履歴」でご確認いただけます。"
+    )
+    return
+  }
+
+  await saveTripState(supabase, receiptId, { extra: { transit_lock: new Date().toISOString() } })
+
+  try {
+    const { data: baseRow } = await supabase
+      .from("staff_receipts")
+      .select("*")
+      .eq("id", receiptId)
+      .maybeSingle()
+    const base = baseRow as Record<string, unknown> | null
+    if (!base) {
+      await sendLineMessage(replyToken, source.userId, "⚠️ 対象の申請が見つかりませんでした。")
+      return
+    }
+
+    const course = courseId ? await fetchCourseById(supabase, courseId) : null
+    const item: ExpenseItem = course ? "transport" : "commute"
+    const phase2 = {
+      item,
+      courseId: course?.id ?? null,
+      courseKind: course?.kind ?? null,
+      courseRule: course?.rule ?? null,
+      pendingCourseName: course ? null : readPendingCourseName(raw),
+      awaitingAttachment: false,
+    }
+
+    // 1回目の申請だけ元のレコードを使う（2回目以降は使用済みなので新しい行を作る）
+    const targetIds: string[] = []
+    let useBase = submitted.length === 0
+    for (const idx of picked) {
+      const trip = trips[idx]
+      if (useBase) {
+        await supabase
+          .from("staff_receipts")
+          .update({ date: trip.date, amount: trip.fare, store_name: trip.route })
+          .eq("id", receiptId)
+        targetIds.push(receiptId)
+        useBase = false
+        continue
+      }
+      const { data: created } = await supabase
+        .from("staff_receipts")
+        .insert({
+          staff_member_id: String(base.staff_member_id),
+          file_name: String(base.file_name),
+          dropbox_path: String(base.dropbox_path),
+          date: trip.date,
+          amount: trip.fare,
+          store_name: trip.route,
+          ai_raw: JSON.parse(
+            JSON.stringify({ selected_trip: trip, from_receipt_id: receiptId })
+          ) as Json,
+        })
+        .select("id")
+        .single()
+      if (created) targetIds.push((created as { id: string }).id)
+    }
+
+    let settledTotal = 0
+    for (const id of targetIds) {
+      const result = await settleStaffReceipt({
+        staffReceiptId: id,
+        settlementMethod: "payroll",
+        expenseDetail: EXPENSE_ITEM_LABELS[item],
+        client: supabase,
+        phase2,
+      })
+      if (result.status === "ok") settledTotal += result.amount ?? 0
+    }
+    const subsidyTotal = await sumSettledSubsidy(supabase, targetIds)
+    const holdReason = await readHoldReason(supabase, targetIds[0] ?? receiptId)
+
+    // 申請済みの番号を記録し、処理中の印を外す
+    const nextSubmitted = [...submitted, ...picked].sort((a, b) => a - b)
+    await saveTripState(supabase, receiptId, {
+      extra: { transit_submitted: nextSubmitted, transit_lock: null },
+    })
+
+    const remaining = trips.map((_, i) => i).filter((i) => !nextSubmitted.includes(i))
+    const body =
+      `✅ 交通費 ${targetIds.length}件 を申請しました。\n` +
+      `　合計：¥${formatAmount(settledTotal)}\n` +
+      `　支給額：¥${formatAmount(subsidyTotal)}\n` +
+      (holdReason ? `\n${holdNotice(holdReason)}\n` : "") +
+      "\n内容は「申請履歴」で確認できます。"
+
+    if (remaining.length > 0) {
+      // 目的が違う移動が残っている場合、同じ写真のまま続けて申請できるようにする
+      await sendLineQuickReply(
+        replyToken,
+        source.userId,
+        `${body}\n\nこの履歴には、まだ申請していない移動が ${remaining.length}件 あります。\n` +
+          "目的が違う移動（通常業務と研修など）は、分けて申請してください。",
+        [
+          {
+            type: "postback",
+            label: `残り${remaining.length}件を申請`,
+            data: `action=icmore&rid=${receiptId}`,
+            displayText: "残りの移動も申請します",
+          },
+        ]
+      )
+      return
+    }
+    await sendLineMessage(replyToken, source.userId, body)
+  } catch (error) {
+    console.error("[LINE Bot] IC履歴の一括申請エラー:", error)
+    // 失敗したまま印が残ると二度と申請できなくなるため、必ず外す
+    await saveTripState(supabase, receiptId, { extra: { transit_lock: null } })
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ 処理中にエラーが発生しました。もう一度お試しください。\n" +
+        "解決しない場合は「問い合わせ」から担当にご連絡ください。"
+    )
+  }
+}
+
+/** 「残りの移動も申請」→ 未申請のものだけを選び直す */
+async function handleIcMorePostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const receiptId = params.get("rid")
+  if (!receiptId) {
+    await sendLineMessage(event.replyToken, event.source.userId, "⚠️ 処理できませんでした。")
+    return
+  }
+  const supabase = createServiceClient()
+  const { raw, trips } = await loadTripState(supabase, receiptId)
+  const submitted = Array.isArray(raw.transit_submitted) ? (raw.transit_submitted as number[]) : []
+  const remaining = trips.map((_, i) => i).filter((i) => !submitted.includes(i))
+  await saveTripState(supabase, receiptId, { selected: remaining })
+  await sendTransitTripPicker(event, receiptId, trips, "まだ申請していない移動を選んでください。\n\n")
+}
+
 
 /**
  * 手入力された金額と日付を領収書に反映し、通常の区分選択へ進む。
@@ -6289,6 +6715,12 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     if (isTransitHistory) {
       const trips = deriveTransitTrips(ocrResult)
       if (trips.length > 0) {
+        // 年が写っていない履歴は多い。推測で補うと対象月がずれるので必ず確認する
+        if (hasUnknownYear(trips)) {
+          await saveTripState(supabase, receiptId, { trips })
+          await askTransitYear(event, receiptId, trips)
+          return
+        }
         await sendTransitTripPicker(event, receiptId, trips)
         console.log(`[LINE Bot] IC履歴 ${trips.length}件を提示`)
         return
