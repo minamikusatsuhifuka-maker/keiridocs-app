@@ -41,6 +41,7 @@ import {
   isCommuteMethodUnanswered,
   isCommuterPassUnanswered,
   isLongAbsence,
+  isReceptionist,
   isSetupComplete,
   isSuspended,
   loadStaffLineState,
@@ -3085,6 +3086,35 @@ async function handleTransitText(
       )
       return
     }
+    case "contact": {
+      // 担当へ転送する。本人には届いたことを返し、返事は担当がアプリから送る
+      const body = inputText.trim()
+      if (!body) {
+        await sendLineMessage(replyToken, source.userId, "お伝えする内容をご入力ください。")
+        return
+      }
+      await clearTransitSession(supabase, source.userId)
+      const staffMembers = await fetchStaffMembers(supabase)
+      const me = staffMembers ? resolveStaffForUser(staffMembers, source.userId) : null
+      const name = me?.name ?? "お名前未登録の方"
+      const sent = await forwardToReceptionists(
+        supabase,
+        "【スタッフからの問い合わせ】\n" +
+          `${name}さん\n\n` +
+          `${body.slice(0, 1500)}\n\n` +
+          "※返信はアプリの「スタッフ立替」または「スタッフ」タブの\n" +
+          "　「連絡」ボタンから送れます。"
+      )
+      await sendLineMessage(
+        replyToken,
+        source.userId,
+        sent > 0
+          ? "担当にお伝えしました。\n確認のうえ、このトークにご連絡します。\n\n" +
+            "お急ぎの場合は、直接お声がけください。"
+          : "申し訳ありません、担当へお伝えできませんでした。\nお手数ですが直接お声がけください。"
+      )
+      return
+    }
     case "academy_start": {
       // アカデミー会員のサービス開始日。再受講「3年で6回」の起算日になる
       const date = parseJpDate(inputText)
@@ -3805,8 +3835,14 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
 
   // 「使い方」「問い合わせ」は読むだけの案内なので、進行中の操作を中断せずに答える
   const infoCommand = findRichMenuCommand(inputText)
-  if (infoCommand === "usage" || infoCommand === "contact") {
-    await sendLineMessage(replyToken, source.userId, infoCommand === "usage" ? USAGE_TEXT : CONTACT_TEXT)
+  if (infoCommand === "usage") {
+    await sendLineMessage(replyToken, source.userId, USAGE_TEXT)
+    return
+  }
+  if (infoCommand === "contact") {
+    // 内容を書いてもらい、担当のLINEへ転送する。
+    // 以前は案内文を出すだけで担当には何も届かず、一方通行だった。
+    await startContact(event, supabase)
     return
   }
 
@@ -4502,6 +4538,67 @@ async function handleSettingsPostback(event: LineEvent, params: URLSearchParams)
     default:
       await sendSettings(event, supabase, staff.id)
   }
+}
+
+/* ---------- 問い合わせ（スタッフ → 担当） ---------- */
+
+/** 「問い合わせ」→ 担当へ伝える内容を書いてもらう */
+async function startContact(event: LineEvent, supabase: ServiceClient): Promise<void> {
+  const { replyToken, source } = event
+  const staffMembers = await fetchStaffMembers(supabase)
+  const me = staffMembers ? resolveStaffForUser(staffMembers, source.userId) : null
+  if (!me) {
+    await sendLineMessage(replyToken, source.userId, NOT_REGISTERED_TEXT)
+    return
+  }
+  const ok = await setTransitSession(supabase, source.userId, me.id, "contact", {})
+  if (!ok) {
+    await sendLineMessage(replyToken, source.userId, CONTACT_TEXT)
+    return
+  }
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    "💬 担当へのお問い合わせ\n" +
+      "─────────────\n" +
+      "お伝えする内容を、このまま送ってください。\n" +
+      "担当に転送し、確認のうえこのトークでご連絡します。\n\n" +
+      "申請の間違いを伝えるときは「日付・支払先・金額」を添えていただくとスムーズです。\n\n" +
+      "※仕事の手順の質問（例「受付の手順は？」）は、\n" +
+      "　メニューを使わずそのまま送ると自動で回答します。"
+  )
+}
+
+/**
+ * 受付担当へ転送する。
+ *
+ * 院長（ADMIN_LINE_USER_ID）と、スタッフ一覧で「受付担当」にした方へ送る。
+ * 1人も設定されていなくても院長には届く。
+ *
+ * @returns 送れた人数
+ */
+async function forwardToReceptionists(supabase: ServiceClient, text: string): Promise<number> {
+  const targets = new Set<string>()
+  const adminId = process.env.ADMIN_LINE_USER_ID
+  if (adminId) targets.add(adminId)
+
+  try {
+    const { data } = await supabase
+      .from("staff_members")
+      .select("line_user_id, line_profile")
+      .not("line_user_id", "is", null)
+    for (const row of (data ?? []) as { line_user_id: string | null; line_profile?: unknown }[]) {
+      if (row.line_user_id && isReceptionist(row.line_profile)) targets.add(row.line_user_id)
+    }
+  } catch (e) {
+    console.warn("[contact] 受付担当の取得に失敗:", e)
+  }
+
+  let sent = 0
+  for (const id of targets) {
+    if (await pushMessage(id, text)) sent++
+  }
+  return sent
 }
 
 /* ---------- アカデミー会員（再受講は3年で6回） ---------- */

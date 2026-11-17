@@ -38,6 +38,8 @@ export type TransitStep =
   | "course_name"
   // アカデミー会員: サービス開始日の入力待ち
   | "academy_start"
+  // 問い合わせ: 担当へ伝える内容の入力待ち
+  | "contact"
   // 自宅最寄り駅 自己登録フロー（同じセッションテーブルを流用）
   | "home_input" // 駅名の入力待ち
   | "home_confirm" // 一意判定の確認待ち（OK/修正）

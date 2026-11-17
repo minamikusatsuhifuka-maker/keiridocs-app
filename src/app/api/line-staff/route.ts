@@ -248,12 +248,40 @@ export async function PATCH(request: NextRequest) {
       suspended?: boolean
       /** 休止の理由（画面に出すだけ。判定には使わない） */
       suspendReason?: string | null
+      /** 受付担当か（スタッフからの問い合わせをこの人のLINEへ転送する） */
+      receptionist?: boolean
     }
     if (!body.id) {
       return NextResponse.json({ error: "IDは必須です" }, { status: 400 })
     }
 
     const service = createServiceClient()
+
+    // 受付担当。スタッフが「問い合わせ」で送った内容がこの人のLINEに届く
+    if (typeof body.receptionist === "boolean") {
+      const { data: member, error: readError } = await service
+        .from("staff_members")
+        .select("line_profile")
+        .eq("id", body.id)
+        .single()
+      if (readError || !member) {
+        return NextResponse.json({ error: "スタッフが見つかりません" }, { status: 404 })
+      }
+      const profile = parseLineProfile(member.line_profile)
+      if (body.receptionist) profile.is_receptionist = true
+      else delete profile.is_receptionist
+      const { data, error } = await service
+        .from("staff_members")
+        .update({ line_profile: JSON.parse(JSON.stringify(profile)) })
+        .eq("id", body.id)
+        .select("*")
+        .single()
+      if (error) {
+        console.error("受付担当の更新エラー:", error.message)
+        return NextResponse.json({ error: "更新に失敗しました" }, { status: 500 })
+      }
+      return NextResponse.json({ data })
+    }
 
     // 一時休止（産休・育休・休職など）。
     // 退職と違い在籍したまま申請だけを止める。再開すればそのまま使える。

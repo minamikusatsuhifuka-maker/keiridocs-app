@@ -37,6 +37,7 @@ import {
   hasPendingNameChange,
   hasPriorCourseRecord,
   hasSeparateLegalName,
+  isReceptionist,
   isSuspended,
   mayHaveCommuterPass,
   parseLineProfile,
@@ -122,6 +123,8 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const [togglingSuspendId, setTogglingSuspendId] = useState<string | null>(null)
   // LINEで連絡する相手（null のときはダイアログを閉じる）
   const [notifyTarget, setNotifyTarget] = useState<{ id: string; name: string } | null>(null)
+  // 受付担当の切り替え処理中のID
+  const [togglingReceptionistId, setTogglingReceptionistId] = useState<string | null>(null)
   const [editHomeStation, setEditHomeStation] = useState("")
   const [editHomeStationPref, setEditHomeStationPref] = useState("")
   const [isSaving, setIsSaving] = useState(false)
@@ -261,6 +264,28 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
    * 退職と違い在籍したままで、LINEからの申請だけを止める。
    * 過去の申請・LINEの紐づけ・設定はすべて残るので、再開すればそのまま使える。
    */
+  /** 受付担当の切り替え（スタッフの問い合わせの転送先） */
+  async function handleToggleReceptionist(member: StaffMember, next: boolean) {
+    setTogglingReceptionistId(member.id)
+    try {
+      const res = await fetch("/api/line-staff", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: member.id, receptionist: next }),
+      })
+      const json = (await res.json().catch(() => ({}))) as { error?: string }
+      if (!res.ok) throw new Error(json.error || "更新に失敗しました")
+      toast.success(
+        next ? `${member.name}さんが問い合わせを受け取ります` : `${member.name}さんへの転送を止めました`
+      )
+      fetchStaff()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "更新に失敗しました")
+    } finally {
+      setTogglingReceptionistId(null)
+    }
+  }
+
   async function handleToggleSuspend(member: StaffMember) {
     const suspended = isSuspended(member.line_profile)
     let reason = ""
@@ -808,6 +833,39 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                             >
                               {togglingId === member.id && <Loader2 className="h-3 w-3 animate-spin" />}
                               {atcHidden ? "非表示" : "表示"}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* 受付担当。スタッフの「問い合わせ」がこの人のLINEに届く */}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium">受付担当</p>
+                            <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                              ONにすると、スタッフがLINEの「問い合わせ」で送った内容が
+                              この方のLINEに届きます。返信は「連絡」ボタンから送れます。
+                              （院長には常に届きます）
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Switch
+                              checked={isReceptionist(member.line_profile)}
+                              onCheckedChange={(checked) => handleToggleReceptionist(member, checked)}
+                              disabled={togglingReceptionistId === member.id}
+                              aria-label="受付担当の切り替え"
+                            />
+                            <span
+                              className="inline-flex items-center gap-1 text-sm font-medium"
+                              style={{
+                                color: isReceptionist(member.line_profile)
+                                  ? "var(--dusk-primary)"
+                                  : "var(--dusk-text-muted)",
+                              }}
+                            >
+                              {togglingReceptionistId === member.id && (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              )}
+                              {isReceptionist(member.line_profile) ? "受け取る" : "受け取らない"}
                             </span>
                           </div>
                         </div>
