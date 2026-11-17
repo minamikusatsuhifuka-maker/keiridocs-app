@@ -1,4 +1,4 @@
-import type { Metadata } from "next"
+import type { Metadata, Viewport } from "next"
 import { Zen_Maru_Gothic } from "next/font/google"
 import "./globals.css"
 import { Toaster } from "@/components/ui/sonner"
@@ -14,6 +14,14 @@ const zenMaruGothic = Zen_Maru_Gothic({
 export const metadata: Metadata = {
   title: "経理書類管理",
   description: "経理書類管理アプリ",
+  // アイコンは src/app/icon.svg（タブ）と src/app/apple-icon.png（iOSのホーム画面）。
+  // Next.jsが自動で読み込むため、ここでの指定は不要。
+  manifest: "/manifest.webmanifest",
+  appleWebApp: { capable: true, title: "経理書類", statusBarStyle: "default" },
+}
+
+export const viewport: Viewport = {
+  themeColor: "#A0703A",
 }
 
 export default function RootLayout({

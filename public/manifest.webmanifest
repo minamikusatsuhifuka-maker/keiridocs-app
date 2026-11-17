@@ -1,0 +1,13 @@
+{
+  "name": "経理書類管理",
+  "short_name": "経理書類",
+  "description": "経理書類管理アプリ",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F0E8D8",
+  "theme_color": "#A0703A",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
