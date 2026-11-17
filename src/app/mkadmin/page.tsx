@@ -21,12 +21,13 @@ import { FloatingButtonSettings } from "@/components/settings/floating-button-se
 import { RegistrantList } from "@/components/settings/registrant-list"
 import { DocumentStaffList } from "@/components/settings/document-staff-list"
 import { StaffManagement } from "@/components/line-staff/staff-management"
+import { StaffAdminGuide } from "@/components/line-staff/staff-admin-guide"
 import { CourseMaster } from "@/components/courses/course-master"
 import { PriorCourseRegistration } from "@/components/courses/prior-course-registration"
 import { PaymentMemo } from "@/components/mkadmin/payment-memo"
 import { StaffReimburseList } from "@/components/mkadmin/staff-reimburse-list"
 import { StaffManualEntry } from "@/components/mkadmin/staff-manual-entry"
-import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus, Users, MessageCircle, Wallet, Loader2, Receipt, ArrowRight, ClipboardList, HandCoins, GraduationCap } from "lucide-react"
+import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, UserPlus, Users, Wallet, Loader2, Receipt, ArrowRight, ClipboardList, HandCoins, GraduationCap } from "lucide-react"
 
 // 管理画面（/mkadmin）認証用 sessionStorage キー
 const SESSION_KEY = "mkadmin-auth"
@@ -136,10 +137,13 @@ export default function MkadminPage() {
 
       <Tabs defaultValue="senders" className="space-y-6">
         {/*
-          タブが19個あり折り返すため、高さの固定（h-9）を h-auto で解除する。
-          解除しないと2段目以降が下の内容に重なって文字が読めなくなる。
+          タブ数が多く折り返すため、
+          ・一覧の高さ固定（h-9）を h-auto で解除
+          ・各タブの高さ h-[calc(100%-1px)]（＝一覧全体の高さ）も h-auto で解除
+          ・flex-1 の引き伸ばしを flex-none で解除
+          の3つが必要。解除しないと2段目以降が重なって文字が読めなくなる。
         */}
-        <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
+        <TabsList className="flex h-auto w-full flex-wrap items-stretch justify-start gap-1 [&>button]:h-auto! [&>button]:flex-none! [&>button]:py-1.5">
           <TabsTrigger value="senders" className="flex items-center gap-1.5">
             <Mail className="size-4" />
             送信元管理
@@ -151,10 +155,6 @@ export default function MkadminPage() {
           <TabsTrigger value="registrants" className="flex items-center gap-1.5">
             <UserPlus className="size-4" />
             登録者管理
-          </TabsTrigger>
-          <TabsTrigger value="document-staff" className="flex items-center gap-1.5">
-            <Users className="size-4" />
-            書類登録スタッフ
           </TabsTrigger>
           <TabsTrigger value="doc-types" className="flex items-center gap-1.5">
             <FileType className="size-4" />
@@ -208,9 +208,9 @@ export default function MkadminPage() {
             <GraduationCap className="size-4" />
             講座マスタ
           </TabsTrigger>
-          <TabsTrigger value="line-staff" className="flex items-center gap-1.5">
-            <MessageCircle className="size-4" />
-            LINEスタッフ管理
+          <TabsTrigger value="staff" className="flex items-center gap-1.5">
+            <Users className="size-4" />
+            スタッフ
           </TabsTrigger>
           <TabsTrigger value="account" className="flex items-center gap-1.5">
             <UserCog className="size-4" />
@@ -228,10 +228,6 @@ export default function MkadminPage() {
 
         <TabsContent value="registrants">
           <RegistrantList />
-        </TabsContent>
-
-        <TabsContent value="document-staff">
-          <DocumentStaffList />
         </TabsContent>
 
         <TabsContent value="doc-types">
@@ -304,16 +300,25 @@ export default function MkadminPage() {
         </TabsContent>
 
         <TabsContent value="courses">
-          {/* 講座マスタ（スタッフが申請時に選ぶ講座。支給率と30,000円上限の判定に使う） */}
+          {/* 講座マスタ（スタッフが申請時に選ぶ講座。支給率と30,000円上限の判定に使う）。
+              スタッフごとの既受講回数は「スタッフ」タブに置き、スタッフの操作を1か所にまとめている */}
+          <CourseMaster showHeader={false} />
+        </TabsContent>
+
+        <TabsContent value="staff">
+          {/*
+            スタッフに関する操作を1か所に集約する。
+            入職・退職・氏名変更・既受講の登録・書類登録スタッフが別タブに散ると、
+            どこを触るのか分からず確認もれにつながるため。
+          */}
           <div className="flex flex-col gap-4">
-            <CourseMaster showHeader={false} />
+            <StaffAdminGuide />
+            <StaffManagement showHeader={false} />
             {/* 既受講の登録（アプリ導入前の受講回数。未登録だと既受講者に全額支給してしまう） */}
             <PriorCourseRegistration />
+            {/* 書類登録スタッフ（経費申請とは別マスタ。表記を揃えるため隣に置く） */}
+            <DocumentStaffList />
           </div>
-        </TabsContent>
-        <TabsContent value="line-staff">
-          {/* LINEスタッフ管理（タブ内なので見出しは非表示） */}
-          <StaffManagement showHeader={false} />
         </TabsContent>
 
         <TabsContent value="account">

@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Plus, Trash2, Loader2, Pencil, Check, X } from "lucide-react"
+import { Plus, Trash2, Loader2, Pencil, Check, X, Download } from "lucide-react"
 import { toast } from "sonner"
 import type { Database } from "@/types/database"
 
@@ -20,6 +20,8 @@ export function DocumentStaffList() {
   const [name, setName] = useState("")
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingName, setEditingName] = useState("")
+  // LINEスタッフ（staff_members）からの取り込み中
+  const [isImporting, setIsImporting] = useState(false)
 
   // 一覧取得
   const fetchStaff = useCallback(async () => {
@@ -62,6 +64,45 @@ export function DocumentStaffList() {
       toast.error(e instanceof Error ? e.message : "追加に失敗しました")
     } finally {
       setIsAdding(false)
+    }
+  }
+
+  /**
+   * LINEスタッフ管理の在籍スタッフを、こちらに未登録の分だけ追加する。
+   *
+   * 2つのマスタで氏名の表記が違うと、同じ人が別名で並んでしまう。
+   * LINE側を正として取り込むことで表記を揃える（こちらにしかいない名前は消さない）。
+   */
+  async function handleImportFromLineStaff() {
+    setIsImporting(true)
+    try {
+      const res = await fetch("/api/line-staff")
+      const json = (await res.json().catch(() => ({}))) as {
+        data?: { name: string; retired_at?: string | null; is_test?: boolean | null }[]
+      }
+      const active = (json.data ?? []).filter((m) => !m.retired_at && !m.is_test)
+      const norm = (v: string) => v.normalize("NFKC").replace(/[\s\u3000]/g, "")
+      const existing = new Set(staffList.map((r) => norm(r.name)))
+      const missing = active.filter((m) => !existing.has(norm(m.name)))
+      if (missing.length === 0) {
+        toast.success("追加が必要なスタッフはありませんでした")
+        return
+      }
+      let added = 0
+      for (const m of missing) {
+        const r = await fetch("/api/document-staff", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: m.name }),
+        })
+        if (r.ok) added++
+      }
+      toast.success(`${added}名を追加しました`)
+      fetchStaff()
+    } catch {
+      toast.error("取り込みに失敗しました")
+    } finally {
+      setIsImporting(false)
     }
   }
 
@@ -114,9 +155,14 @@ export function DocumentStaffList() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle style={{ color: "#1A1A1A" }}>書類登録スタッフ管理</CardTitle>
+        <CardTitle style={{ color: "#1A1A1A" }}>書類登録スタッフ</CardTitle>
         <CardDescription style={{ color: "#4A4A4A" }}>
-          書類登録時に選択するスタッフを管理します
+          書類（請求書・領収書など）を登録した人を記録するための名簿です。
+          経費申請のスタッフ（上の「スタッフ一覧」）とは別のマスタで、
+          LINEの紐づけ・支給額の計算には関係しません。
+          <br />
+          同じ人が別名で並ばないよう、<strong>氏名はフルネームで、上のスタッフ一覧と同じ表記に</strong>してください。
+          下の「スタッフ一覧から取り込む」で、在籍スタッフの未登録分をまとめて追加できます。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -125,7 +171,7 @@ export function DocumentStaffList() {
             <Label htmlFor="document-staff-name" style={{ color: "#1A1A1A" }}>スタッフ名</Label>
             <Input
               id="document-staff-name"
-              placeholder="例: 管理者、伊藤"
+              placeholder="例: 南 ひふ子（フルネーム）"
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
@@ -140,6 +186,11 @@ export function DocumentStaffList() {
           >
             {isAdding ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
             追加
+          </Button>
+          {/* LINEスタッフ管理の在籍スタッフを取り込んで、2つのマスタの表記を揃える */}
+          <Button variant="outline" onClick={handleImportFromLineStaff} disabled={isImporting}>
+            {isImporting ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+            スタッフ一覧から取り込む
           </Button>
         </div>
 
