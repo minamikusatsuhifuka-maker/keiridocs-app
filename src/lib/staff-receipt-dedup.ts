@@ -9,6 +9,9 @@ import type { Database } from "@/types/database"
  *  - 画像の重複: 画像バイト列の SHA-256 ハッシュ一致（全スタッフ照合）
  *  - 内容の重複: 店名（正規化）＋金額＋日付 一致（同一スタッフ内）
  *
+ * 取り消された申請（ai_raw.cancelled_at あり）は、どちらの照合でも除外する。
+ * 取り消したのに同じ写真を送り直せないと、修正する手段が無くなるため。
+ *
  * ※ このファイルはクライアント（管理画面）からも import するため、Node専用の
  *   crypto には依存しない（ハッシュ計算は呼び出し側＝サーバで行う）。
  */
@@ -147,6 +150,8 @@ export async function findImageHashDuplicate(
     // image_hash は型に存在するが、未適用環境では実行時エラーになるため下でハンドリング
     .select("id, store_name, amount, date, created_at")
     .eq("image_hash", imageHash)
+    // 取り消した申請は重複扱いしない（同じ写真で出し直せるようにするため）
+    .filter("ai_raw->>cancelled_at", "is", null)
     .order("created_at", { ascending: true })
     .limit(1)
 
@@ -182,6 +187,8 @@ export async function findContentDuplicate(
     .eq("staff_member_id", staffMemberId)
     .eq("amount", amount)
     .eq("date", normalizeDate(date))
+    // 取り消した申請は重複扱いしない（同じ内容で出し直せるようにするため）
+    .filter("ai_raw->>cancelled_at", "is", null)
     .order("created_at", { ascending: true })
 
   if (error) {
