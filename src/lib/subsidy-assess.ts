@@ -1,0 +1,196 @@
+/**
+ * 支給額の判定（DBを見て上限の残枠を出し、computeSubsidy に渡す）。
+ *
+ * 規程そのもの（上限額・支給率・計算順序）は subsidy-rules.ts にある。
+ * このファイルは「過去の申請をどう数えるか」だけを担う。
+ *
+ * ■ 上限枠の数え方
+ *   上限は**立替額**にかかる。既に枠を使った額は
+ *     Σ（立替額 − 上限超過額）
+ *   で求める。超過分は枠を使っていない（担当が承認すれば枠外で加算される）ため差し引く。
+ *
+ * ■ 交通費＋宿泊費（講座ごと 30,000円）
+ *   同じスタッフ・同じ講座の transport / lodging を合算する。
+ *
+ * ■ 書籍代・診療費（申請月ごと 5,000円）
+ *   提出月（20日締め。手動指定があればそれ）が同じ同一区分を合算する。
+ *   互いに別枠なので区分ごとに数える。
+ *
+ * ■ 初回／2回目以降（頂点への道）
+ *   そのスタッフに「頂点への道」の**別の講座**の申請実績があれば2回目以降。
+ *   初回は1人につき1回だけ。
+ */
+
+import { fetchAllRows } from "@/lib/supabase/fetch-all"
+import { formatYearMonth, resolveStaffSubmissionMonth } from "@/lib/submission-month"
+import {
+  computeSubsidy,
+  isTravelItem,
+  type CourseKind,
+  type ExpenseItem,
+  type HoldReason,
+  type SubsidyResult,
+} from "@/lib/subsidy-rules"
+import type { SupabaseClient } from "@supabase/supabase-js"
+import type { Database } from "@/types/database"
+
+type ServiceClient = SupabaseClient<Database>
+
+/** 上限の合算に必要な過去の明細 */
+interface PriorRow {
+  id: string
+  amount: number | null
+  expense_item: string | null
+  course_id: string | null
+  excess_amount: number | null
+  staff_receipt_id: string | null
+}
+
+export interface AssessInput {
+  supabase: ServiceClient
+  staffMemberId: string
+  /** 立替額（領収書の金額） */
+  amount: number
+  item: ExpenseItem
+  /** 研修・セミナーの場合の講座。講座マスタに無い場合は null＋pendingCourseName */
+  courseId?: string | null
+  courseKind?: CourseKind | null
+  /** 講座マスタに無い講座名で申請された場合 */
+  pendingCourseName?: string | null
+  /** 資格試験で合格通知・修了通知が未添付か */
+  awaitingAttachment?: boolean
+  /** 提出日（20日締めの月割りに使う。既定は今） */
+  submittedAt?: Date
+  /** 提出月の手動指定（staff_receipts.ai_raw.submission_month） */
+  manualSubmissionMonthRaw?: unknown
+}
+
+export interface AssessResult extends SubsidyResult {
+  /** 初回／2回目以降の判定結果（頂点への道のみ意味を持つ） */
+  isRepeat: boolean
+  /** 2回目以降と判断した根拠の講座ID（記録用） */
+  repeatBasisCourseId: string | null
+  /** 確定していない理由。NULL なら確定 */
+  holdReason: HoldReason | null
+  /** 上限枠のうち既に使った立替額 */
+  capUsed: number
+}
+
+/**
+ * 支給額を判定する。
+ *
+ * 保留（holdReason）が付いた明細は、承認・割り当て・添付が済むまで
+ * 税理士提出と支給集計に含めないこと。
+ */
+export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
+  const { supabase, staffMemberId, amount, item } = input
+
+  // 1. 同じスタッフのスタッフ立替明細を全件取得（PostgRESTの1000件上限に当たると上限判定が狂う）
+  const priors = await fetchAllRows<PriorRow>((from, to) =>
+    supabase
+      .from("petty_cash_transactions")
+      .select("id, amount, expense_item, course_id, excess_amount, staff_receipt_id")
+      .eq("category", "staff_refund")
+      .eq("staff_member_id", staffMemberId)
+      .order("id", { ascending: true })
+      .range(from, to) as unknown as PromiseLike<{
+        data: PriorRow[] | null
+        error: { message: string } | null
+      }>
+  )
+
+  // 2. 上限枠の消費分を数える
+  const capUsed = isTravelItem(item)
+    ? sumCapUsed(priors.filter((p) => p.course_id && p.course_id === input.courseId && isTravelItem(p.expense_item as ExpenseItem)))
+    : item === "books" || item === "medical"
+      ? sumCapUsed(await filterSameSubmissionMonth(supabase, priors.filter((p) => p.expense_item === item), input))
+      : 0
+
+  // 3. 頂点への道の初回／2回目以降（別の講座の実績があれば2回目以降）
+  const repeatBasis =
+    input.courseKind === "apex"
+      ? priors.find((p) => p.course_id && p.course_id !== input.courseId) ?? null
+      : null
+  const isRepeat = !!repeatBasis
+
+  // 4. 規程どおりに計算する
+  const result = computeSubsidy({
+    amount,
+    item,
+    courseKind: input.courseKind ?? null,
+    isRepeat,
+    travelCapUsed: isTravelItem(item) ? capUsed : undefined,
+    monthlyCapUsed: item === "books" || item === "medical" ? capUsed : undefined,
+  })
+
+  // 5. 保留の理由（優先順：添付待ち → 講座の割り当て → 上限超過）
+  let holdReason: HoldReason | null = null
+  if (input.awaitingAttachment) holdReason = "attach"
+  else if (input.pendingCourseName && !input.courseId) holdReason = "course"
+  else if (result.excess > 0) holdReason = "excess"
+
+  return {
+    ...result,
+    isRepeat,
+    repeatBasisCourseId: repeatBasis?.course_id ?? null,
+    holdReason,
+    capUsed,
+  }
+}
+
+/** 上限枠を使った立替額の合計（超過分は枠を使っていないので差し引く） */
+function sumCapUsed(rows: PriorRow[]): number {
+  return rows.reduce((sum, r) => {
+    const amount = r.amount ?? 0
+    const excess = r.excess_amount ?? 0
+    return sum + Math.max(0, amount - excess)
+  }, 0)
+}
+
+/**
+ * 同じ提出月（20日締め）の明細だけに絞る。
+ *
+ * 提出月は staff_receipts.created_at から判定し、手動指定（ai_raw.submission_month）があれば
+ * そちらを優先する。既存の月割りロジックを使い、ここで独自に計算しないこと。
+ */
+async function filterSameSubmissionMonth(
+  supabase: ServiceClient,
+  rows: PriorRow[],
+  input: AssessInput
+): Promise<PriorRow[]> {
+  const target = targetSubmissionMonth(input)
+  if (!target) return []
+
+  const receiptIds = rows.map((r) => r.staff_receipt_id).filter((v): v is string => !!v)
+  if (receiptIds.length === 0) return []
+
+  const receipts = await fetchAllRows<{ id: string; created_at: string; ai_raw: unknown }>(
+    (from, to) =>
+      supabase
+        .from("staff_receipts")
+        .select("id, created_at, ai_raw")
+        .in("id", receiptIds)
+        .order("id", { ascending: true })
+        .range(from, to) as unknown as PromiseLike<{
+          data: { id: string; created_at: string; ai_raw: unknown }[] | null
+          error: { message: string } | null
+        }>
+  )
+
+  // 手動指定（ai_raw.submission_month）優先・無ければ提出日の20日締め。既存ロジックに任せる
+  const monthById = new Map(
+    receipts.map((rc) => {
+      const resolved = resolveStaffSubmissionMonth(rc.ai_raw, rc.created_at).month
+      return [rc.id, resolved ? formatYearMonth(resolved) : ""]
+    })
+  )
+
+  return rows.filter((r) => r.staff_receipt_id && monthById.get(r.staff_receipt_id) === target)
+}
+
+/** 今回の申請の提出月（"YYYY-MM"） */
+function targetSubmissionMonth(input: AssessInput): string | null {
+  const submitDate = (input.submittedAt ?? new Date()).toISOString()
+  const resolved = resolveStaffSubmissionMonth(input.manualSubmissionMonthRaw, submitDate).month
+  return resolved ? formatYearMonth(resolved) : null
+}

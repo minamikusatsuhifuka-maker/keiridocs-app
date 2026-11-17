@@ -225,6 +225,37 @@ function yen(n: number): string {
   return `¥${n.toLocaleString("ja-JP")}`
 }
 
+/* ---------- 保存済みの明細から支給額を出す ---------- */
+
+/**
+ * 保存済みの明細から支給額を計算する（一覧・CSV・集計で共通に使う）。
+ *
+ * 上限の残枠は申請時点の履歴で決まるため、出力のたびに再計算すると
+ * 過去の金額が後から変わってしまう。そこで申請時に確定した
+ * 超過額（excess_amount）と承認額（approved_excess）を保存しておき、
+ * ここでは**保存された値だけ**から組み立てる。
+ *
+ *   支給額 = (立替額 − 上限超過額) × 支給率 + 承認された追加支給額
+ *
+ * - excess_amount が NULL（フェーズ1までの明細）は従来どおり 立替額 × 支給率
+ * - approved_excess が NULL（未承認）は加算しない。0 は「承認しない」で確定
+ */
+export function calcStoredSubsidy(row: {
+  amount: number | null
+  subsidy_category?: string | null
+  expense_item?: string | null
+  excess_amount?: number | null
+  approved_excess?: number | null
+}): number {
+  const amount = Math.max(0, Math.floor(row.amount ?? 0))
+  const excess = Math.max(0, Math.floor(row.excess_amount ?? 0))
+  const covered = Math.max(0, amount - excess)
+  // 弁当代は2回目以降でも全額（半額は受講料・交通費・宿泊費のみ）
+  const rate = row.expense_item === "bento" ? 1 : row.subsidy_category === "achievement_repeat" ? REPEAT_RATE : 1
+  const approved = Math.max(0, Math.floor(row.approved_excess ?? 0))
+  return Math.floor(covered * rate) + approved
+}
+
 /* ---------- 保留の理由 ---------- */
 
 /** 確定していない理由。NULL（確定済み）以外は税理士提出・支給集計に含めない */

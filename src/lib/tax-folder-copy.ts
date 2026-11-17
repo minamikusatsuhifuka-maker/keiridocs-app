@@ -333,15 +333,32 @@ export async function runTaxFolderCopy(opts: RunOpts): Promise<TaxFolderCopyResu
         created_at: string
       }
       // ページング必須（1000件超で取りこぼすとその分がコピーされず一覧にも出ない）
-      const staffTxRaw = await fetchAllRows<StaffTxRow>((from, to) =>
-        supabase
+      //
+      // hold_reason が入っている明細（上限超過の承認待ち・講座の割り当て待ち・添付待ち）は
+      // 支給額が確定していないため**提出に含めない**。確定前の金額を会計士へ渡さないこと。
+      // migration 044 未適用の環境では列が無いので、絞り込みなしで取り直す（従来どおり全件）。
+      const selectStaffTx = (withHold: boolean) => (from: number, to: number) => {
+        const q = supabase
           .from("petty_cash_transactions")
           .select("id, amount, staff_member_id, staff_receipt_id, receipt_urls, transaction_date, created_at")
           .eq("category", "staff_refund")
           .not("receipt_urls", "is", null)
-          .order("id", { ascending: true })
-          .range(from, to) as unknown as PromiseLike<{ data: StaffTxRow[] | null; error: { message: string } | null }>
-      )
+        const scoped = withHold ? q.is("hold_reason", null) : q
+        return scoped.order("id", { ascending: true }).range(from, to) as unknown as PromiseLike<{
+          data: StaffTxRow[] | null
+          error: { message: string } | null
+        }>
+      }
+
+      let staffTxRaw: StaffTxRow[]
+      try {
+        staffTxRaw = await fetchAllRows<StaffTxRow>(selectStaffTx(true))
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        if (!/hold_reason|column/i.test(message)) throw e
+        console.warn("[税理士コピー] hold_reason 未適用のため保留の絞り込みなしで取得します:", message)
+        staffTxRaw = await fetchAllRows<StaffTxRow>(selectStaffTx(false))
+      }
 
       {
         // スタッフ情報マップ（名前・テストスタッフ判定）

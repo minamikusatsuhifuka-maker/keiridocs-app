@@ -12,6 +12,35 @@ export type Json =
 export interface Database {
   public: {
     Tables: {
+      courses: {
+        // 044_phase2_courses_and_caps.sql（講座マスタ。30,000円上限の単位と支給区分の判定に使う）
+        Row: {
+          id: string
+          name: string
+          /** apex=頂点への道 / ach_other=その他のアチーブメント講座 / non_ach=アチーブメント以外 */
+          kind: string
+          is_active: boolean
+          note: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          name: string
+          kind: string
+          is_active?: boolean
+          note?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          name?: string
+          kind?: string
+          is_active?: boolean
+          note?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
       documents: {
         Row: {
           id: string
@@ -838,6 +867,15 @@ export interface Database {
           // 042_staff_reimburse_review.sql で追加（受付担当の確認済み記録）
           reviewed_at: string | null
           reviewed_by: string | null
+          // 044_phase2_courses_and_caps.sql（講座・内訳・上限超過の承認・保留理由）
+          course_id: string | null
+          course_pending_name: string | null
+          expense_item: string | null
+          excess_amount: number | null
+          approved_excess: number | null
+          approved_excess_at: string | null
+          approved_excess_by: string | null
+          hold_reason: string | null
         }
         Insert: {
           id?: string
@@ -865,6 +903,14 @@ export interface Database {
           expense_detail?: string | null
           reviewed_at?: string | null
           reviewed_by?: string | null
+          course_id?: string | null
+          course_pending_name?: string | null
+          expense_item?: string | null
+          excess_amount?: number | null
+          approved_excess?: number | null
+          approved_excess_at?: string | null
+          approved_excess_by?: string | null
+          hold_reason?: string | null
         }
         Update: {
           id?: string
@@ -892,6 +938,14 @@ export interface Database {
           expense_detail?: string | null
           reviewed_at?: string | null
           reviewed_by?: string | null
+          course_id?: string | null
+          course_pending_name?: string | null
+          expense_item?: string | null
+          excess_amount?: number | null
+          approved_excess?: number | null
+          approved_excess_at?: string | null
+          approved_excess_by?: string | null
+          hold_reason?: string | null
         }
         Relationships: []
       }

@@ -1,6 +1,8 @@
 import { createClient } from "@supabase/supabase-js"
 import type { Database, Json } from "@/types/database"
 import { normalizeSubsidyCategory, type SubsidyCategory } from "@/lib/subsidy"
+import { assessSubsidy } from "@/lib/subsidy-assess"
+import type { CourseKind, ExpenseItem } from "@/lib/subsidy-rules"
 
 /**
  * スタッフ立替領収書（staff_receipts）の精算確定を行う共通ロジック。
@@ -68,6 +70,17 @@ export async function settleStaffReceipt(params: {
   expenseDetail?: string | null
   registeredBy?: string
   client?: ServiceClient
+  /**
+   * フェーズ2の区分。指定されたときだけ新しい上限判定（subsidy-rules）を適用する。
+   * 未指定の場合は従来どおり subsidyCategory だけで支給率を決める（後方互換）。
+   */
+  phase2?: {
+    item: ExpenseItem
+    courseId?: string | null
+    courseKind?: CourseKind | null
+    pendingCourseName?: string | null
+    awaitingAttachment?: boolean
+  }
 }): Promise<SettleResult> {
   const supabase = params.client ?? createServiceClient()
   const { staffReceiptId, settlementMethod } = params
@@ -149,13 +162,44 @@ export async function settleStaffReceipt(params: {
     subsidy_category: subsidyCategory,
   }
 
+  // 4b. フェーズ2の区分が指定されていれば、上限（交通費+宿泊費 30,000円/講座、
+  //     書籍代・診療費 5,000円/月）と支給率を規程どおり判定して一緒に保存する。
+  //     上限を超えた分は拒否せず excess_amount に入れ、hold_reason="excess" で
+  //     担当の承認待ちにする（確定するまで税理士提出・支給集計に含めない）。
+  let phase2Payload: Record<string, unknown> = {}
+  if (params.phase2) {
+    const assessed = await assessSubsidy({
+      supabase,
+      staffMemberId: r.staff_member_id as string,
+      amount,
+      item: params.phase2.item,
+      courseId: params.phase2.courseId ?? null,
+      courseKind: params.phase2.courseKind ?? null,
+      pendingCourseName: params.phase2.pendingCourseName ?? null,
+      awaitingAttachment: params.phase2.awaitingAttachment,
+      submittedAt: new Date((r.created_at as string | null) ?? Date.now()),
+      manualSubmissionMonthRaw: r.ai_raw,
+    })
+    phase2Payload = {
+      course_id: params.phase2.courseId ?? null,
+      course_pending_name: params.phase2.pendingCourseName ?? null,
+      expense_item: params.phase2.item,
+      excess_amount: assessed.excess > 0 ? assessed.excess : null,
+      hold_reason: assessed.holdReason,
+      // 支給率は subsidy_category で表す（一覧・CSVが保存値から支給額を組み立てるため）。
+      // 頂点への道の2回目以降だけ半額。弁当代は calcStoredSubsidy 側で全額に戻す
+      subsidy_category:
+        params.phase2.courseKind === "apex" && assessed.isRepeat ? "achievement_repeat" : "other",
+    }
+  }
+
   const expenseDetail = params.expenseDetail?.trim() || null
   // expense_detail カラムは migration 029 で追加される。未適用の環境でも精算を
   // 止めないよう、列が存在しない（PostgRESTスキーマ未認識）エラー時は列なしで再登録する。
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const insertPayload: any = expenseDetail
-    ? { ...basePayload, expense_detail: expenseDetail }
-    : basePayload
+    ? { ...basePayload, ...phase2Payload, expense_detail: expenseDetail }
+    : { ...basePayload, ...phase2Payload }
   const { error: insertError } = await supabase
     .from("petty_cash_transactions")
     .insert(insertPayload)

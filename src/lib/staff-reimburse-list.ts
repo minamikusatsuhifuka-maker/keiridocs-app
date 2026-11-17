@@ -19,7 +19,8 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { Database } from "@/types/database"
-import { calcSubsidy, subsidyRate, STAFF_EXPENSE_DETAILS } from "@/lib/subsidy"
+import { subsidyRate, STAFF_EXPENSE_DETAILS } from "@/lib/subsidy"
+import { calcStoredSubsidy } from "@/lib/subsidy-rules"
 import { getSplitGroupInfo, parseAiRawObject } from "@/lib/staff-receipt-split"
 import { resolveStaffSubmissionMonth, formatYearMonth } from "@/lib/submission-month"
 import { extractIssueDate } from "@/lib/staff-reimburse"
@@ -66,6 +67,16 @@ export interface StaffReimburseRow {
   fileName: string
   /** 資料のDropboxパス（Dropboxウェブを開くリンク用。資料なしは ""） */
   dropboxPath: string
+  /** 内訳（tuition/transport/lodging/bento/books/medical/exam/commute/other）。フェーズ1までの明細は "" */
+  expenseItem: string
+  /** 上限を超えた立替額（0 なら超過なし） */
+  excessAmount: number
+  /** 担当が承認した追加支給額。null は未対応、0 は「承認しない」で確定 */
+  approvedExcess: number | null
+  /** 確定していない理由。null は確定済み */
+  holdReason: "excess" | "course" | "attach" | null
+  /** 講座マスタに無い講座名で申請された場合の入力値 */
+  coursePendingName: string
   /** 受付担当が確認した日時（ISO文字列）。未確認は "" */
   reviewedAt: string
   /** 確認した担当者。未確認は "" */
@@ -133,6 +144,13 @@ interface TxRow {
   reviewed_at?: string | null
   /** 確認した担当者。migration 042 未適用の環境では undefined */
   reviewed_by?: string | null
+  /* 以下 migration 044（フェーズ2）。未適用の環境では undefined */
+  course_id?: string | null
+  course_pending_name?: string | null
+  expense_item?: string | null
+  excess_amount?: number | null
+  approved_excess?: number | null
+  hold_reason?: string | null
 }
 
 interface ReceiptRow {
@@ -202,7 +220,10 @@ export async function buildStaffReimburseList(params: {
   //    まず確認列つきで取得し、列が無いというエラーが返ったら確認列なしで取り直す。
   const TX_COLUMNS_BASE =
     "id, staff_member_id, amount, expense_detail, subsidy_category, created_at, transaction_date, description, note, registered_by, staff_receipt_id"
-  const TX_COLUMNS_WITH_REVIEW = `${TX_COLUMNS_BASE}, reviewed_at, reviewed_by`
+  // 042（確認済み）と044（講座・上限超過の承認）で追加した列。未適用の環境では列なしで取り直す
+  const TX_COLUMNS_WITH_REVIEW =
+    `${TX_COLUMNS_BASE}, reviewed_at, reviewed_by, ` +
+    `course_id, course_pending_name, expense_item, excess_amount, approved_excess, hold_reason`
 
   const selectTx = (columns: string) => (from: number, to: number) =>
     supabase
@@ -218,7 +239,9 @@ export async function buildStaffReimburseList(params: {
   } catch (e) {
     // 列が無い場合のみフォールバックする（それ以外のエラーはそのまま投げる）
     const message = e instanceof Error ? e.message : String(e)
-    if (!/reviewed_at|reviewed_by|column/i.test(message)) throw e
+    if (!/reviewed_at|reviewed_by|course_id|expense_item|excess_amount|hold_reason|column/i.test(message)) {
+      throw e
+    }
     console.warn("[スタッフ立替] 確認列が未適用のため確認なしで取得します:", message)
     txRows = await fetchAllRows<TxRow>(selectTx(TX_COLUMNS_BASE))
   }
@@ -295,7 +318,20 @@ export async function buildStaffReimburseList(params: {
       detailKey,
       amount,
       isHalf: subsidyRate(t.subsidy_category) < 1,
-      subsidy: calcSubsidy(amount, t.subsidy_category),
+      // 支給額は保存値から組み立てる（上限超過分を差し引き、承認された追加支給額を足す）。
+      // フェーズ1までの明細は excess_amount が無いので従来どおり 立替額 × 支給率になる
+      subsidy: calcStoredSubsidy({
+        amount,
+        subsidy_category: t.subsidy_category,
+        expense_item: t.expense_item,
+        excess_amount: t.excess_amount,
+        approved_excess: t.approved_excess,
+      }),
+      expenseItem: t.expense_item ?? "",
+      excessAmount: t.excess_amount ?? 0,
+      approvedExcess: t.approved_excess ?? null,
+      holdReason: (t.hold_reason as StaffReimburseRow["holdReason"]) ?? null,
+      coursePendingName: t.course_pending_name ?? "",
       source: detectSource(t.registered_by, aiRaw, !!receipt),
       registeredBy: t.registered_by ?? "",
       reviewedAt: t.reviewed_at ?? "",
