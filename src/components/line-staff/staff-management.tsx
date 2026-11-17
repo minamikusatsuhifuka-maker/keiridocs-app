@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
+import { NotifyStaffDialog } from "@/components/mkadmin/notify-staff-dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   Users,
@@ -119,6 +120,8 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const [isBulkLegalName, setIsBulkLegalName] = useState(false)
   // 一時休止・再開の処理中のID
   const [togglingSuspendId, setTogglingSuspendId] = useState<string | null>(null)
+  // LINEで連絡する相手（null のときはダイアログを閉じる）
+  const [notifyTarget, setNotifyTarget] = useState<{ id: string; name: string } | null>(null)
   const [editHomeStation, setEditHomeStation] = useState("")
   const [editHomeStationPref, setEditHomeStationPref] = useState("")
   const [isSaving, setIsSaving] = useState(false)
@@ -703,6 +706,17 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                             {isSuspended(member.line_profile) ? "利用を再開" : "一時休止"}
                           </Button>
                         )}
+                        {/* LINE登録済みの方には、ここから直接連絡できる */}
+                        {member.line_user_id && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setNotifyTarget({ id: member.id, name: member.name })}
+                          >
+                            <MessageCircle className="h-4 w-4" />
+                            連絡
+                          </Button>
+                        )}
                         <Button variant="outline" size="sm" onClick={() => openEditDialog(member)}>
                           <Pencil className="h-4 w-4" />
                           編集
@@ -868,6 +882,14 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
           )}
         </CardContent>
       </Card>
+
+      {/* 担当からスタッフへのLINE連絡 */}
+      <NotifyStaffDialog
+        open={!!notifyTarget}
+        onOpenChange={(v) => !v && setNotifyTarget(null)}
+        staffMemberId={notifyTarget?.id ?? null}
+        staffName={notifyTarget?.name ?? ""}
+      />
 
       {/* 追加ダイアログ */}
       <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>

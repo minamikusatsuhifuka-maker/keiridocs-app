@@ -14,6 +14,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { NotifyStaffDialog } from "@/components/mkadmin/notify-staff-dialog"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
@@ -43,6 +44,7 @@ import {
 } from "@/components/ui/dialog"
 import {
   AlertTriangle,
+  MessageCircle,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
@@ -118,6 +120,8 @@ interface Row {
 interface PendingItem {
   id: string
   kind: "excess" | "course" | "attach" | "pass" | "term" | "detail" | "incomplete"
+  /** 連絡（LINE）に使う staff_members.id */
+  staffMemberId: string | null
   staffName: string
   courseName: string
   itemLabel: string
@@ -269,6 +273,8 @@ export default function StaffReimbursePage() {
   // 金額を指定して承認する対象（null は入力なしのワンクリック承認）
   const [customAmountFor, setCustomAmountFor] = useState<PendingItem | null>(null)
   const [customAmount, setCustomAmount] = useState("")
+  // LINEで連絡する相手（null のときはダイアログを閉じる）
+  const [notifyTarget, setNotifyTarget] = useState<{ id: string; name: string } | null>(null)
 
   const query = useMemo(() => {
     const p = new URLSearchParams()
@@ -866,6 +872,21 @@ export default function StaffReimbursePage() {
                         {PENDING_HELP[p.kind]}
                         {p.kind === "excess" && p.isRepeat && "（2回目以降のため超過分も半額が規程どおりです）"}
                       </p>
+
+                      {/* 本人に聞かないと進まないことが多いため、ここから直接連絡できるようにする */}
+                      {p.staffMemberId && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="mt-1.5 h-7 px-2 text-xs"
+                          onClick={() =>
+                            setNotifyTarget({ id: p.staffMemberId!, name: p.staffName })
+                          }
+                        >
+                          <MessageCircle className="mr-1 size-3.5" />
+                          {p.staffName}さんにLINEで連絡
+                        </Button>
+                      )}
                     </div>
 
                     {/* 定期券区間の確認。含まれていなければそのまま確定できる */}
@@ -1390,6 +1411,13 @@ export default function StaffReimbursePage() {
       <FilePreviewModal target={previewTarget} onClose={() => setPreviewTarget(null)} />
       <EditDialog row={editRow} onClose={() => setEditRow(null)} onSaved={fetchData} />
       <DeleteDialog row={deleteRow} onClose={() => setDeleteRow(null)} onDeleted={fetchData} />
+      {/* 担当からスタッフへのLINE連絡（要対応の行から開く） */}
+      <NotifyStaffDialog
+        open={!!notifyTarget}
+        onOpenChange={(v) => !v && setNotifyTarget(null)}
+        staffMemberId={notifyTarget?.id ?? null}
+        staffName={notifyTarget?.name ?? ""}
+      />
     </div>
   )
 }

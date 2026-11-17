@@ -53,6 +53,8 @@ export interface PendingItem {
   /** petty_cash_transactions.id（excess/course/attach）または staff_receipts.id（incomplete） */
   id: string
   kind: HoldReason | "incomplete"
+  /** 連絡（LINE）に使う staff_members.id */
+  staffMemberId: string | null
   staffName: string
   /** 講座名（無い場合は空） */
   courseName: string
@@ -116,6 +118,7 @@ export async function GET() {
         return {
           id: t.id,
           kind: (t.hold_reason ?? "excess") as HoldReason,
+          staffMemberId: t.staff_member_id,
           staffName: (t.staff_member_id && staffName.get(t.staff_member_id)) || "不明なスタッフ",
           courseName:
             (t.course_id && courses.get(t.course_id)) || t.course_pending_name || "",
@@ -251,6 +254,7 @@ async function fetchIncomplete(
     .map((r) => ({
       id: r.id,
       kind: "incomplete" as const,
+      staffMemberId: r.staff_member_id,
       staffName: (r.staff_member_id && staffName.get(r.staff_member_id)) || "不明なスタッフ",
       courseName: "",
       itemLabel: r.store_name?.trim() || "不明",
