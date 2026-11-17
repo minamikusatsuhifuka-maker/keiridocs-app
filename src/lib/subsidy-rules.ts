@@ -179,15 +179,17 @@ export function availableItems(kind: CourseKind): ExpenseItem[] {
 }
 
 /**
- * 講座の内訳で「その他」を選んだか。
+ * 内容を担当が確認してから確定する内訳か。
  *
- * 講座に紐づく「その他」は規程に当てはめられないため、自動では確定させず
- * 担当が内容を見て判断する。講座に紐づかない「その他（買い物など）」は
- * これまでどおり全額支給で確定する。
+ * 「その他」は規程のどれにも当てはまらないため、金額を自動で決められない。
+ * 講座に紐づくかどうかに関わらず、担当が内容を読んで判断する。
  */
-export function isCourseOtherItem(item: ExpenseItem, courseId: string | null | undefined): boolean {
-  return item === "other" && !!courseId
+export function needsDetailReview(item: ExpenseItem): boolean {
+  return item === "other"
 }
+
+/** 「その他」に書いてもらう内容の文字数の上限 */
+export const DETAIL_NOTE_MAX_LENGTH = 30
 
 /**
  * ATC方式で、その回の支給率を決める。

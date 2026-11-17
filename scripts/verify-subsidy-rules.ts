@@ -17,7 +17,7 @@ import {
   availableItems,
   academyTermEnd,
   computeSubsidy,
-  isCourseOtherItem,
+  needsDetailReview,
   isWithinAcademyTerm,
   type CourseKind,
   type CourseRule,
@@ -277,10 +277,10 @@ check("アチーブメント以外の内訳に弁当代が出ない", availableI
   "other",
 ])
 
-/* ---------- 講座の「その他」は担当の確認待ちにする ---------- */
-check("講座を選んだ「その他」は確認待ち", isCourseOtherItem("other", "course-1"), true)
-check("講座に紐づかない「その他」は確認待ちにしない", isCourseOtherItem("other", null), false)
-check("「その他」以外は確認待ちにしない", isCourseOtherItem("tuition", "course-1"), false)
+/* ---------- 「その他」はすべて担当の確認待ちにする ---------- */
+check("講座を選んだ「その他」は確認待ち", needsDetailReview("other"), true)
+check("講座に紐づかない「その他」も確認待ち", needsDetailReview("other"), true)
+check("「その他」以外は確認待ちにしない", needsDetailReview("tuition"), false)
 
 /* ---------- 書籍代・診療費（月上限・別枠） ---------- */
 

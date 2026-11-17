@@ -26,8 +26,8 @@ import { academyStartDate, parseLineProfile } from "@/lib/line-staff-profile"
 import { formatYearMonth, resolveStaffSubmissionMonth } from "@/lib/submission-month"
 import {
   computeSubsidy,
-  isCourseOtherItem,
   isTravelItem,
+  needsDetailReview,
   type CourseKind,
   type CourseRule,
   type ExpenseItem,
@@ -186,8 +186,8 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
   // 定期券区間が金額に含まれている可能性があるものは、院が払う通勤手当との
   // 二重払いになるため自動で確定させない（差し引く額は担当が判断する）。
   if (input.commuterPassIncluded) holdReason = "pass"
-  // 講座に紐づく「その他」は規程に当てはめられないため担当が判断する
-  else if (isCourseOtherItem(item, input.courseId)) holdReason = "detail"
+  // 「その他」は規程に当てはめられないため、必ず担当が内容を見て判断する
+  else if (needsDetailReview(item)) holdReason = "detail"
   else if (academyOutOfTerm) holdReason = "term"
   else if (input.awaitingAttachment) holdReason = "attach"
   else if (input.pendingCourseName && !input.courseId) holdReason = "course"

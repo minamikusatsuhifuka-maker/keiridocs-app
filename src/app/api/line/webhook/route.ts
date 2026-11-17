@@ -68,6 +68,7 @@ import {
   type CourseChoice,
 } from "@/lib/line-phase2-flow"
 import {
+  DETAIL_NOTE_MAX_LENGTH,
   EXPENSE_ITEM_LABELS,
   academyTermEnd,
   availableItems,
@@ -1599,13 +1600,12 @@ async function askOtherDetailNote(
   await sendLineMessage(
     replyToken,
     source.userId,
-    courseId
-      ? "何の費用ですか？\n短く1行で送ってください。\n\n" +
-        "（例）教材費\n（例）認定料\n（例）会場までのバス代\n\n" +
-        "※規程に当てはまらない費用のため、担当が内容を確認してから支給額が決まります。"
-      : "何を立て替えましたか？\n短く1行で送ってください。\n\n" +
-        "（例）事務用品の買い物\n（例）院内で使う文房具\n（例）スタッフ用の備品\n\n" +
-        "※入力が難しいときは「なし」と送ってください。"
+    "何の費用ですか？\n\n" +
+      (courseId
+        ? "（例）教材費\n（例）認定料\n（例）会場までのバス代\n\n"
+        : "（例）事務用品の買い物\n（例）院内で使う文房具\n（例）スタッフ用の備品\n\n") +
+      `${DETAIL_NOTE_MAX_LENGTH}文字以内でお願いします。\n` +
+      "※担当が内容を確認してから支給額が決まります。"
   )
 }
 
@@ -3139,7 +3139,21 @@ async function handleTransitText(
         await sendTransitExpired(replyToken, source.userId)
         return
       }
-      const purpose = /^(なし|無し|スキップ|skip)$/i.test(inputText) ? "" : inputText.trim().slice(0, 60)
+      const purpose = inputText.trim()
+      if (!purpose) {
+        await sendLineMessage(replyToken, source.userId, "何の費用か、短くご入力ください。")
+        return
+      }
+      if (purpose.length > DETAIL_NOTE_MAX_LENGTH) {
+        await sendLineMessage(
+          replyToken,
+          source.userId,
+          `${DETAIL_NOTE_MAX_LENGTH}文字以内でお願いします。\n` +
+            `（いまは${purpose.length}文字です）\n\n` +
+            "詳しい事情は「問い合わせ」から担当にお伝えください。"
+        )
+        return
+      }
       await saveExpensePurpose(supabase, receiptId, purpose)
       await clearTransitSession(supabase, source.userId)
       // 内容の入力は済んだので、そのまま確認画面へ進む（再度聞かない）
