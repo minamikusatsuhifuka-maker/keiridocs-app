@@ -501,6 +501,8 @@ export function applicationConfirmCard(params: {
   applicant: string
   course?: string
   category: string
+  /** 何に使ったか（「その他」の立替で本人が入力した内容）。空なら行を出さない */
+  purpose?: string
   breakdown?: { label: string; amount: number | null; sub?: string }[]
   receiptTotal: number
   subsidy: number
@@ -513,6 +515,7 @@ export function applicationConfirmCard(params: {
   const rows: FlexComponent[] = [infoRow("申請者", params.applicant)]
   if (params.course) rows.push(infoRow("講座", params.course))
   rows.push(infoRow("区分", params.category))
+  if (params.purpose) rows.push(infoRow("内容", params.purpose))
   const body: FlexComponent[] = [panel(rows, "none")]
   if (params.breakdown && params.breakdown.length > 0) {
     const bd: FlexComponent[] = [text("内訳", { size: "xs", weight: "bold", color: FLEX_COLORS.textSub })]

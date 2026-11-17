@@ -724,7 +724,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
           </DialogHeader>
           <div className="space-y-4 pt-2">
             <div className="space-y-2">
-              <Label htmlFor="edit-name">名前（仕事上の氏名）</Label>
+              <Label htmlFor="edit-name">① 院内で使っているお名前</Label>
               <Input
                 id="edit-name"
                 placeholder="例: 南 ひふ子"
@@ -735,7 +735,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                 }}
               />
               <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                LINEの表示・書類登録スタッフ・画面表示に使う氏名です。フルネームで入れてください。
+                普段、クリニックで使っているお名前をフルネームでご入力ください。
               </p>
             </div>
             {/*
@@ -745,18 +745,18 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
               LINEの氏名照合はどちらの氏名でも通るので、スタッフが取り違えても申請できる。
             */}
             <div className="space-y-2">
-              <Label htmlFor="edit-legal-name">給与・行政上の氏名（任意）</Label>
+              <Label htmlFor="edit-legal-name">② 給与や手続きに使うお名前（任意）</Label>
               <Input
                 id="edit-legal-name"
-                placeholder="仕事上の氏名と同じなら空欄のまま"
+                placeholder="同じ場合は空欄のまま"
                 value={editLegalName}
                 onChange={(e) => setEditLegalName(e.target.value)}
               />
               <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                結婚などで戸籍の氏名が変わり、職場では旧姓で勤務している場合に入れます。
-                給与・社会保険・源泉徴収の氏名です。
+                院内で使っているお名前と異なる場合のみ、フルネームでご入力ください。
+                同じ場合は空欄で大丈夫です。
                 <br />
-                登録すると、スタッフがLINEで<strong>どちらの氏名を送っても</strong>ご本人と判定します。
+                ご入力いただくと、LINEで<strong>どちらのお名前を送っても</strong>ご本人と判定します。
               </p>
             </div>
             {/* 自宅最寄り駅（領収書なし交通費の電車運賃AI推定の出発駅。県は同名駅の特定用） */}

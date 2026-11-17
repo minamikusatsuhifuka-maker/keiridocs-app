@@ -3,6 +3,7 @@ import type { Database, Json } from "@/types/database"
 import { normalizeSubsidyCategory, type SubsidyCategory } from "@/lib/subsidy"
 import { assessSubsidy } from "@/lib/subsidy-assess"
 import type { CourseKind, CourseRule, ExpenseItem } from "@/lib/subsidy-rules"
+import { parseAiRawObject } from "@/lib/staff-receipt-split"
 
 /**
  * スタッフ立替領収書（staff_receipts）の精算確定を行う共通ロジック。
@@ -138,7 +139,13 @@ export async function settleStaffReceipt(params: {
   const registeredBy = params.registeredBy ?? `${staffName}（LINE）`
   const dropboxPath = (r.dropbox_path as string | null) ?? null
   const txDate = (r.date as string | null) || new Date().toISOString().slice(0, 10)
-  const description = `${staffName}/${storeName || "不明"}`
+  // 「その他」の立替（買い物など）は本人が入力した内容を摘要に残す。
+  // 支払先だけでは担当・会計士さんが何の支出か判断できないため。
+  const purposeRaw = parseAiRawObject(r.ai_raw)?.expense_purpose
+  const purpose = typeof purposeRaw === "string" ? purposeRaw.trim().slice(0, 60) : ""
+  const description = purpose
+    ? `${staffName}/${storeName || "不明"}（${purpose}）`
+    : `${staffName}/${storeName || "不明"}`
 
   // 4. 取引登録
   // 共通のinsertペイロード（expense_detailは下で条件付きに付与する）

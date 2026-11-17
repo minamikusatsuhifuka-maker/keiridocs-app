@@ -804,7 +804,7 @@ async function handleTier1Postback(
       ? "アチーブメント関連のどれですか？\n\n・セミナー2回目以降（ATC再受講、ATC以外のコース）" + travelNote
       : "アチーブメント関連のどれですか？\n\n・初回ATC＋アカデミー会員費\n・セミナー2回目以降（ATC再受講、ATC以外のコース）" + travelNote
   } else {
-    text = "種類を選んでください。"
+    text = "種類を選んでください。\n\n※買い物の立替（事務用品など）は「その他（買い物など）」を選び、内容を入力してください。"
   }
 
   await sendLineQuickReply(replyToken, source.userId, text, items)
@@ -863,6 +863,13 @@ async function handleTier2Postback(
     return
   }
 
+  // 「その他」は何を立て替えたのか分からないため、内容を1行入力してもらう。
+  // 買い物の立替（事務用品など）が担当・会計士さんの側で判別できるようにする。
+  if (detail.key === "other" && params.get("note") !== "1") {
+    await askOtherDetailNote(event, receiptId, detail.key)
+    return
+  }
+
   try {
     const supabase = createServiceClient()
     const fetched = await fetchReceiptWithSiblings(supabase, receiptId)
@@ -872,6 +879,8 @@ async function handleTier2Postback(
     }
     const { receipt, siblings } = fetched
     const staffName = receipt.staffName
+    // 「その他」で入力された内容（ai_raw に保存している）
+    const expensePurpose = readExpensePurpose(receipt.ai_raw)
     const isHalf = detail.subsidyCategory === "achievement_repeat"
     // 申請日 = アップロード日（領収書の登録日）をJSTで表示
     const applicationDate = toJstDateString(new Date(receipt.created_at))
@@ -881,6 +890,7 @@ async function handleTier2Postback(
     const targetMonth = month ? `${labelYearMonth(month)}分` : "不明"
     const rateLabel = isHalf ? "半額支給" : "全額支給"
     const okData = `action=ok&rid=${receiptId}&d=${detail.key}`
+    // 「修正」からやり直したときは内容を再入力してもらうため、fixData には note を付けない
     const fixData = `action=fix&rid=${receiptId}`
 
     // 複数領収証（分割兄弟）の場合: 各件の内訳と合計・支給額合計で確認する
@@ -899,6 +909,7 @@ async function handleTier2Postback(
       const card = applicationConfirmCard({
         applicant: staffName,
         category: detail.fullLabel,
+        purpose: expensePurpose,
         breakdown: siblings.map((s, i) => ({
           label: `${i + 1}件目`,
           amount: s.amount,
@@ -938,6 +949,7 @@ async function handleTier2Postback(
     const card = applicationConfirmCard({
       applicant: staffName,
       category: detail.fullLabel,
+      purpose: expensePurpose,
       breakdown: [{ label: "支払先", amount, sub: storeName.slice(0, 30) }],
       receiptTotal: amount,
       subsidy,
@@ -955,6 +967,71 @@ async function handleTier2Postback(
     console.error("[LINE Bot] 確認画面生成エラー:", error)
     await sendLineMessage(replyToken, source.userId, "⚠️ 処理中にエラーが発生しました。経理にご相談ください。")
   }
+}
+
+/* ---------- 「その他」の立替の内容（買い物など） ---------- */
+
+/** ai_raw に保存した「内容」を読み出す（未入力なら空文字） */
+function readExpensePurpose(aiRaw: unknown): string {
+  const obj = parseAiRawObject(aiRaw)
+  const v = obj?.expense_purpose
+  return typeof v === "string" ? v.trim() : ""
+}
+
+/**
+ * 「その他」を選んだときに、何を立て替えたのかを1行入力してもらう。
+ *
+ * 「その他」のままでは担当も会計士さんも内容が分からず、問い合わせが発生する。
+ * 買い物の立替（事務用品など）があるため、支払先だけでは足りない。
+ */
+async function askOtherDetailNote(
+  event: LineEvent,
+  receiptId: string,
+  detailKey: string
+): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+  // セッションに紐づけるスタッフは領収書の持ち主（LINEの紐づけを再照合する必要がない）
+  const { data: row } = await supabase
+    .from("staff_receipts")
+    .select("staff_member_id")
+    .eq("id", receiptId)
+    .maybeSingle()
+  const staffMemberId = (row as { staff_member_id?: string | null } | null)?.staff_member_id
+  if (!staffMemberId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 対象の領収書が見つかりませんでした。")
+    return
+  }
+  const ok = await setTransitSession(supabase, source.userId, staffMemberId, "detail_note", {
+    noteReceiptId: receiptId,
+    noteDetailKey: detailKey,
+  })
+  if (!ok) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理中にエラーが発生しました。もう一度お試しください。")
+    return
+  }
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    "何を立て替えましたか？\n短く1行で送ってください。\n\n" +
+      "（例）事務用品の買い物\n（例）院内で使う文房具\n（例）スタッフ用の備品\n\n" +
+      "※入力が難しいときは「なし」と送ってください。"
+  )
+}
+
+/** 入力された内容を領収書に保存する（ai_raw にマージ。列の追加は不要） */
+async function saveExpensePurpose(
+  supabase: ReturnType<typeof createServiceClient>,
+  receiptId: string,
+  purpose: string
+): Promise<void> {
+  const { data } = await supabase.from("staff_receipts").select("ai_raw").eq("id", receiptId).maybeSingle()
+  const current = parseAiRawObject((data as { ai_raw?: unknown } | null)?.ai_raw) ?? {}
+  const next = { ...current, expense_purpose: purpose }
+  await supabase
+    .from("staff_receipts")
+    .update({ ai_raw: JSON.parse(JSON.stringify(next)) })
+    .eq("id", receiptId)
 }
 
 /** 提出月の表示（例「2026年11月」）。申請日（JST）の20日締めの既存判定をそのまま使う */
@@ -2383,6 +2460,24 @@ async function handleTransitText(
         source.userId,
         "用途・支払先があれば入力してください（例：○○バス）。\n無ければ「なし」と送ってください。",
         [transitCancelItem()]
+      )
+      return
+    }
+    case "detail_note": {
+      // 「その他」の立替の内容。担当・会計士さんが見るので空のままにはしない
+      const receiptId = session.data.noteReceiptId
+      const detailKey = session.data.noteDetailKey || "other"
+      if (!receiptId) {
+        await sendTransitExpired(replyToken, source.userId)
+        return
+      }
+      const purpose = /^(なし|無し|スキップ|skip)$/i.test(inputText) ? "" : inputText.trim().slice(0, 60)
+      await saveExpensePurpose(supabase, receiptId, purpose)
+      await clearTransitSession(supabase, source.userId)
+      // 内容の入力は済んだので note=1 を付けて確認画面へ進む（再度聞かない）
+      await handleTier2Postback(
+        event,
+        new URLSearchParams({ rid: receiptId, d: detailKey, note: "1" })
       )
       return
     }
@@ -4493,6 +4588,19 @@ async function settleMultiReceipts(
   let alreadyCount = 0
 
   try {
+    // 「その他」の内容は代表の領収書に保存されているため、兄弟（同一ファイルの複数領収証）にも写す。
+    // こうしないと2件目以降の摘要に内容が入らず、会計士さん側で何の支出か分からなくなる。
+    const first = siblings[0]
+    const { data: firstRow } = first
+      ? await supabase.from("staff_receipts").select("ai_raw").eq("id", first.id).maybeSingle()
+      : { data: null }
+    const sharedPurpose = readExpensePurpose((firstRow as { ai_raw?: unknown } | null)?.ai_raw)
+    if (sharedPurpose) {
+      for (const sib of siblings.slice(1)) {
+        await saveExpensePurpose(supabase, sib.id, sharedPurpose)
+      }
+    }
+
     for (const sib of siblings) {
       const result = await settleStaffReceipt({
         staffReceiptId: sib.id,

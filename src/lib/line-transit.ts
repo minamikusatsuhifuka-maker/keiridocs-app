@@ -32,6 +32,8 @@ export type TransitStep =
   | "other_purpose" // 用途・支払先の入力待ち（任意）
   | "other_date" // 利用日の入力待ち
   | "other_confirm" // 確認待ち（OK）
+  // 「その他」の立替（買い物など）: 何に使ったかの入力待ち
+  | "detail_note"
   // 自宅最寄り駅 自己登録フロー（同じセッションテーブルを流用）
   | "home_input" // 駅名の入力待ち
   | "home_confirm" // 一意判定の確認待ち（OK/修正）
@@ -79,6 +81,11 @@ export interface TransitData {
   legLocalTo?: number | null
   // その他
   otherPurpose?: string
+  /* --- 「その他」の立替の内容入力（買い物など） --- */
+  /** 内容の入力対象の staff_receipts.id */
+  noteReceiptId?: string
+  /** 入力後に確認画面へ進むときの詳細区分キー */
+  noteDetailKey?: string
   // 共通
   useDate?: string // 利用日 YYYY-MM-DD
   amount?: number // 確定額（確認後）

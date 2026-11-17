@@ -132,7 +132,8 @@ export const STAFF_EXPENSE_DETAILS: ExpenseDetailDef[] = [
     buttonLabel: "当院での保険診療代",
     subsidyCategory: "other",
   },
-  { key: "other", group: "other", fullLabel: "その他", buttonLabel: "その他", subsidyCategory: "other" },
+  // 買い物の立替（事務用品など）はここ。選ぶと内容を1行入力してもらう
+  { key: "other", group: "other", fullLabel: "その他", buttonLabel: "その他（買い物など）", subsidyCategory: "other" },
 ]
 
 /** detailKey から詳細区分定義を取得（不正値は undefined） */
