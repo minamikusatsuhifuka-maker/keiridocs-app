@@ -197,3 +197,57 @@ export async function POST(request: NextRequest) {
     )
   }
 }
+
+/**
+ * スタッフ領収書を削除する。
+ *
+ * DELETE /api/staff-receipts?id=<staff_receipts.id>
+ *
+ * 読み取りに失敗して残った記録や、テストで作った記録を消すためのもの。
+ * 同じ画像を送り直すと「登録済み」として弾かれるため、消せる手段が要る。
+ *
+ * すでに精算済み（petty_cash_transactions がある）ものは消さない。
+ * 会計の記録と食い違うため、その場合は「スタッフ立替」の画面から操作する。
+ * Dropboxの画像は残す（保存済みの記録を消さないほうが安全なため）。
+ */
+export async function DELETE(request: NextRequest) {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) {
+    return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
+  }
+
+  const id = request.nextUrl.searchParams.get("id")
+  if (!id) {
+    return NextResponse.json({ error: "IDが指定されていません" }, { status: 400 })
+  }
+
+  try {
+    const { data: settled, error: settledError } = await supabase
+      .from("petty_cash_transactions")
+      .select("id")
+      .eq("staff_receipt_id", id)
+      .limit(1)
+    if (settledError) throw new Error(settledError.message)
+    if (settled && settled.length > 0) {
+      return NextResponse.json(
+        {
+          error:
+            "この領収書はすでに精算済みのため、ここでは削除できません。「スタッフ立替」の画面から操作してください。",
+        },
+        { status: 400 }
+      )
+    }
+
+    const { error } = await supabase.from("staff_receipts").delete().eq("id", id)
+    if (error) throw new Error(error.message)
+    return NextResponse.json({ ok: true })
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "削除できませんでした" },
+      { status: 500 }
+    )
+  }
+}

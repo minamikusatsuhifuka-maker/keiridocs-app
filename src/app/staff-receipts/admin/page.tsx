@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useCallback } from "react"
 import Link from "next/link"
 import {
   Select,
@@ -119,6 +119,8 @@ export default function StaffReceiptsAdminPage() {
   // 小口現金連携（staff_receipt_id → 精算情報）
   const [settlementInfo, setSettlementInfo] = useState<Map<string, SettleInfo>>(new Map())
   const [pettyCashTarget, setPettyCashTarget] = useState<StaffReceipt | null>(null)
+  // 削除処理中の領収書ID
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const [isRegisteringPettyCash, setIsRegisteringPettyCash] = useState(false)
   const [pettyCashBalance, setPettyCashBalance] = useState<number>(0)
 
@@ -141,28 +143,29 @@ export default function StaffReceiptsAdminPage() {
     fetchStaff()
   }, [])
 
-  // 領収書一覧取得
-  useEffect(() => {
-    async function fetchReceipts() {
-      setIsLoading(true)
-      try {
-        const params = new URLSearchParams()
-        if (selectedStaffId !== "all") params.set("staff_member_id", selectedStaffId)
-        if (selectedYear) params.set("year", selectedYear)
-        if (selectedMonth) params.set("month", selectedMonth)
+  // 領収書一覧取得（削除後の再読み込みにも使う）
+  const fetchReceipts = useCallback(async () => {
+    setIsLoading(true)
+    try {
+      const params = new URLSearchParams()
+      if (selectedStaffId !== "all") params.set("staff_member_id", selectedStaffId)
+      if (selectedYear) params.set("year", selectedYear)
+      if (selectedMonth) params.set("month", selectedMonth)
 
-        const res = await fetch(`/api/staff-receipts?${params.toString()}`)
-        if (!res.ok) throw new Error("取得失敗")
-        const json = await res.json() as { data: StaffReceipt[] }
-        setReceipts(json.data || [])
-      } catch {
-        toast.error("領収書一覧の取得に失敗しました")
-      } finally {
-        setIsLoading(false)
-      }
+      const res = await fetch(`/api/staff-receipts?${params.toString()}`)
+      if (!res.ok) throw new Error("取得失敗")
+      const json = (await res.json()) as { data: StaffReceipt[] }
+      setReceipts(json.data || [])
+    } catch {
+      toast.error("領収書一覧の取得に失敗しました")
+    } finally {
+      setIsLoading(false)
     }
-    fetchReceipts()
   }, [selectedStaffId, selectedYear, selectedMonth])
+
+  useEffect(() => {
+    fetchReceipts()
+  }, [fetchReceipts])
 
   // 小口現金登録済み情報を取得
   useEffect(() => {
@@ -273,6 +276,36 @@ export default function StaffReceiptsAdminPage() {
   // 重複している領収書のIDセット（画像ハッシュ一致 or 同一スタッフの店名+金額+日付一致）
   // 表示中（絞り込み後）のデータから検出する
   const duplicateIds = useMemo(() => findDuplicateIds(receipts), [receipts])
+
+  /**
+   * 読み取れなかった記録を削除する。
+   *
+   * 同じ画像を送り直すと「登録済み」として弾かれるため、消せる手段が要る。
+   * 精算済みのものはAPI側で弾く（会計の記録と食い違うため）。
+   */
+  async function handleDeleteReceipt(r: { id: string; file_name?: string | null }) {
+    if (
+      !confirm(
+        `この記録を削除します。\n\n${r.file_name ?? ""}\n\n` +
+          "・Dropboxの画像は残ります\n" +
+          "・削除すると、同じ写真をLINEから送り直せます\n\nよろしいですか？"
+      )
+    ) {
+      return
+    }
+    setDeletingId(r.id)
+    try {
+      const res = await fetch(`/api/staff-receipts?id=${r.id}`, { method: "DELETE" })
+      const json = (await res.json().catch(() => ({}))) as { error?: string }
+      if (!res.ok) throw new Error(json.error || "削除できませんでした")
+      toast.success("削除しました。同じ写真を送り直せます")
+      fetchReceipts()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "削除できませんでした")
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   // サマリー（件数・精算済み/未精算の内訳）
   const summary = useMemo(() => {
@@ -659,7 +692,21 @@ export default function StaffReceiptsAdminPage() {
                             </Button>
                           </div>
                         ) : (
-                          <span className="text-muted-foreground text-xs">—</span>
+                          // 金額が読み取れていない記録。同じ画像を送り直せるよう削除できるようにする
+                          <div className="flex flex-col items-center gap-1">
+                            <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">
+                              金額なし
+                            </Badge>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-xs text-destructive hover:text-destructive"
+                              disabled={deletingId === r.id}
+                              onClick={() => handleDeleteReceipt(r)}
+                            >
+                              {deletingId === r.id ? "削除中…" : "🗑 削除"}
+                            </Button>
+                          </div>
                         )}
                       </td>
                       <td className="px-4 py-3 text-sm">
