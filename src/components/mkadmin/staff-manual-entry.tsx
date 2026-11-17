@@ -1,6 +1,12 @@
 "use client"
 
 import { useState, useEffect, useCallback, useMemo } from "react"
+import {
+  EXPENSE_ITEM_LABELS,
+  availableItems,
+  type CourseKind,
+  type ExpenseItem,
+} from "@/lib/subsidy-rules"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -46,6 +52,15 @@ interface StaffMember {
   name: string
   is_test?: boolean | null
   seminar_repeat_claimed_at?: string | null
+}
+
+/** 講座マスタの選択肢 */
+interface CourseOption {
+  id: string
+  name: string
+  kind: string
+  kindLabel: string
+  rule: string
 }
 
 interface ManualEntry {
@@ -114,6 +129,10 @@ export function StaffManualEntry() {
   const [detailKey, setDetailKey] = useState("")
   const [submitDate, setSubmitDate] = useState(todayJst())
   const [note, setNote] = useState("")
+  // フェーズ2：講座と内訳（選ぶと新しい上限・支給率の判定が働く）
+  const [courses, setCourses] = useState<CourseOption[]>([])
+  const [courseId, setCourseId] = useState("")
+  const [expenseItem, setExpenseItem] = useState("")
   const [file, setFile] = useState<{ base64: string; mimeType: string; fileName: string } | null>(null)
   const [fileLabel, setFileLabel] = useState("")
 
@@ -158,6 +177,34 @@ export function StaffManualEntry() {
       setLoading(false)
     })()
   }, [loadStaff, loadEntries])
+
+  /* 選択中の講座と、その講座で選べる内訳 */
+  const selectedCourse = useMemo(() => courses.find((c) => c.id === courseId) ?? null, [courses, courseId])
+  const itemOptions = useMemo<ExpenseItem[]>(() => {
+    // 講座を選んだら研修の内訳（弁当代とアカデミー会費は分類で出し分ける）
+    if (selectedCourse) return availableItems(selectedCourse.kind as CourseKind)
+    // 講座に紐づかない区分
+    return ["books", "medical", "exam", "commute", "other"]
+  }, [selectedCourse])
+
+  /* 講座マスタを取得（選択肢に出す講座のみ） */
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const res = await fetch("/api/courses")
+        if (!res.ok) return
+        const json = (await res.json()) as { courses?: CourseOption[] }
+        setCourses(json.courses ?? [])
+      } catch {
+        // 取得できなくても従来どおり登録できる（講座の指定が任意のため）
+      }
+    })()
+  }, [])
+
+  /* 講座を変えたら内訳をクリア（選べる内訳が講座の分類で変わる） */
+  useEffect(() => {
+    setExpenseItem("")
+  }, [courseId])
 
   /* 初回ATCがセミナー2回目登録済みで選ばれていたら区分をリセット */
   useEffect(() => {
@@ -238,6 +285,7 @@ export function StaffManualEntry() {
   async function submit(force: boolean) {
     if (!staffMemberId) return toast.error("対象スタッフを選んでください")
     if (!detail) return toast.error("費用区分を選んでください")
+    if (courseId && !expenseItem) return toast.error("講座を選んだ場合は内訳も選んでください")
     if (!Number.isFinite(amountNum) || amountNum <= 0) return toast.error("金額を正しく入力してください")
     if (!paymentDate) return toast.error("支払年月日を入力してください")
 
@@ -485,6 +533,54 @@ export function StaffManualEntry() {
                   このスタッフはセミナー2回目以降を登録済みのため「初回ATC」は選べません。
                 </p>
               )}
+            </div>
+
+            {/* フェーズ2：講座と内訳。選ぶと上限（交通費＋宿泊費 合計30,000円/講座、
+                書籍代・診療費 月5,000円）と支給率（ATC方式・常に半額など）が自動で適用される */}
+            <div className="space-y-2">
+              <Label>講座（新しい支給ルールを使う場合）</Label>
+              <Select value={courseId} onValueChange={setCourseId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="講座を選択（任意）" />
+                </SelectTrigger>
+                <SelectContent>
+                  {courses.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name}（{c.kindLabel}）
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {courses.length === 0 && (
+                <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+                  講座マスタが未登録です。「講座マスタ」タブで登録すると選べます。
+                </p>
+              )}
+              {selectedCourse?.rule === "undecided" && (
+                <p className="text-xs text-amber-600">
+                  この講座は支給率が未定のため、登録後に「要対応」へ上がり、河村さんが金額を決めます。
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label>内訳{courseId ? " *" : ""}</Label>
+              <Select value={expenseItem} onValueChange={setExpenseItem}>
+                <SelectTrigger>
+                  <SelectValue placeholder="内訳を選択（任意）" />
+                </SelectTrigger>
+                <SelectContent>
+                  {itemOptions.map((it) => (
+                    <SelectItem key={it} value={it}>
+                      {EXPENSE_ITEM_LABELS[it]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+                講座と内訳を選ぶと、上限（交通費＋宿泊費 合計30,000円／書籍代・診療費 月5,000円）と
+                支給率が自動で適用されます。空欄のままなら従来どおりの計算です。
+              </p>
             </div>
 
             {/* 摘要 */}

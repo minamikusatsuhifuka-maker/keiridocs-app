@@ -203,6 +203,10 @@ export async function POST(request: NextRequest) {
       note?: string
       file?: { base64?: string; mimeType?: string; fileName?: string } | null
       force?: boolean
+      /** フェーズ2：講座マスタの講座ID（研修・セミナーのとき） */
+      courseId?: string | null
+      /** フェーズ2：内訳（tuition/transport/lodging/bento/membership/books/medical/exam/commute/other） */
+      expenseItem?: string | null
     }
 
     const staffMemberId = body.staffMemberId?.trim()
@@ -346,6 +350,30 @@ export async function POST(request: NextRequest) {
     }
 
     // 給与支給で精算確定（区分＝detail.subsidyCategory・詳細＝detail.fullLabel）。LINEと同一経路
+    // フェーズ2：講座と内訳が指定されていれば、新しい上限・支給率の判定を使う。
+    // 指定が無ければ従来どおり（後方互換）。
+    let phase2: Parameters<typeof settleStaffReceipt>[0]["phase2"] | undefined
+    if (body.courseId && body.expenseItem) {
+      const { data: course } = await service
+        .from("courses")
+        .select("kind, rule")
+        .eq("id", body.courseId)
+        .single()
+      if (!course) {
+        await service.from("staff_receipts").delete().eq("id", receiptId)
+        return NextResponse.json({ error: "指定された講座が見つかりません" }, { status: 400 })
+      }
+      phase2 = {
+        item: body.expenseItem as NonNullable<typeof phase2>["item"],
+        courseId: body.courseId,
+        courseKind: course.kind as NonNullable<typeof phase2>["courseKind"],
+        courseRule: course.rule as NonNullable<typeof phase2>["courseRule"],
+      }
+    } else if (body.expenseItem) {
+      // 講座に紐づかない区分（書籍代・診療費・受験料・通常業務の交通費など）
+      phase2 = { item: body.expenseItem as NonNullable<typeof phase2>["item"] }
+    }
+
     const result = await settleStaffReceipt({
       staffReceiptId: receiptId,
       settlementMethod: "payroll",
@@ -353,6 +381,7 @@ export async function POST(request: NextRequest) {
       expenseDetail: detail.fullLabel,
       registeredBy: MANUAL_TAG,
       client: service,
+      phase2,
     })
     if (result.status !== "ok") {
       // 精算に失敗したら作成した領収書を巻き戻す（孤児を残さない）

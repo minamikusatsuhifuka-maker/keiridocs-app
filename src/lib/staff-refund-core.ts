@@ -2,7 +2,7 @@ import { createClient } from "@supabase/supabase-js"
 import type { Database, Json } from "@/types/database"
 import { normalizeSubsidyCategory, type SubsidyCategory } from "@/lib/subsidy"
 import { assessSubsidy } from "@/lib/subsidy-assess"
-import type { CourseKind, ExpenseItem } from "@/lib/subsidy-rules"
+import type { CourseKind, CourseRule, ExpenseItem } from "@/lib/subsidy-rules"
 
 /**
  * スタッフ立替領収書（staff_receipts）の精算確定を行う共通ロジック。
@@ -78,6 +78,8 @@ export async function settleStaffReceipt(params: {
     item: ExpenseItem
     courseId?: string | null
     courseKind?: CourseKind | null
+    /** 講座の支給率の方式（courses.rule）。undecided なら担当の判断待ちになる */
+    courseRule?: CourseRule | null
     pendingCourseName?: string | null
     awaitingAttachment?: boolean
   }
@@ -175,6 +177,7 @@ export async function settleStaffReceipt(params: {
       item: params.phase2.item,
       courseId: params.phase2.courseId ?? null,
       courseKind: params.phase2.courseKind ?? null,
+      courseRule: params.phase2.courseRule ?? null,
       pendingCourseName: params.phase2.pendingCourseName ?? null,
       awaitingAttachment: params.phase2.awaitingAttachment,
       submittedAt: new Date((r.created_at as string | null) ?? Date.now()),
