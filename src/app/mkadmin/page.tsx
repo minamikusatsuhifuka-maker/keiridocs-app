@@ -134,7 +134,11 @@ export default function MkadminPage() {
       <h1 className="text-2xl font-bold">管理画面</h1>
 
       <Tabs defaultValue="senders" className="space-y-6">
-        <TabsList className="flex w-full flex-wrap">
+        {/*
+          タブが19個あり折り返すため、高さの固定（h-9）を h-auto で解除する。
+          解除しないと2段目以降が下の内容に重なって文字が読めなくなる。
+        */}
+        <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
           <TabsTrigger value="senders" className="flex items-center gap-1.5">
             <Mail className="size-4" />
             送信元管理
