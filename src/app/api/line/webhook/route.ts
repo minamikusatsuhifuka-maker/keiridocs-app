@@ -3,7 +3,6 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { uploadFile } from "@/lib/dropbox"
 import {
   analyzeDocument,
-  DEFAULT_GEMINI_MODEL,
   normalizeAmount,
   STAFF_RECEIPT_ANALYSIS_EXTRA_HINT,
   type OcrResult,
@@ -591,6 +590,17 @@ async function handlePostback(event: LineEvent): Promise<void> {
         "メニューを閉じました。\n「申請」と送るといつでも表示できます。"
       )
       return
+    // 交通費のうち領収書が出ないもの（金額と用途を入力してもらう）
+    case "noreceipt": {
+      const supabase = createServiceClient()
+      const staffMembers = await fetchStaffMembers(supabase)
+      if (!staffMembers) {
+        await sendLineMessage(event.replyToken, event.source.userId, "⚠️ 処理できませんでした。")
+        return
+      }
+      await startOtherTransit(event, supabase, staffMembers)
+      return
+    }
     // フェーズ2の申請フロー（講座・内訳・確認）
     case "p2g": // 第1階層（講座・研修／それ以外）
       await handlePhase2GroupPostback(event, params)
@@ -774,6 +784,34 @@ async function sendTier1(
       displayText: g.label,
     }))
   )
+}
+
+/**
+ * 交通費の案内を送る（「領収書がない」で手入力の申請へ進めるボタン付き）。
+ *
+ * 写真を送る道と、領収書が出ない区間を手で入力する道の2つを
+ * 1つの案内にまとめる。どちらから入っても同じ申請として登録される。
+ */
+async function sendTransitGuide(
+  event: LineEvent,
+  supabase: ServiceClient,
+  staffMembers: StaffRow[]
+): Promise<void> {
+  const { replyToken, source } = event
+  const staff = resolveStaffForUser(staffMembers, source.userId)
+  if (!staff) {
+    await sendLineMessage(replyToken, source.userId, NOT_REGISTERED_TEXT)
+    return
+  }
+  void supabase
+  await sendLineQuickReply(replyToken, source.userId, TRANSIT_GUIDE_TEXT, [
+    {
+      type: "postback",
+      label: "領収書がない",
+      data: "action=noreceipt",
+      displayText: "領収書がないので入力します",
+    },
+  ])
 }
 
 /* ---------- フェーズ2の申請フロー（講座・内訳・確認） ---------- */
@@ -1827,6 +1865,41 @@ interface ApplicationMenuItem {
 /** 申請メニューに並べる項目（Quick Reply は最大13個。キャンセルの1枠を除き12件まで） */
 const APPLICATION_MENU: ApplicationMenuItem[] = [
   {
+    key: "receipt",
+    label: "🧾 領収書を送る",
+    triggers: [
+      "領収書",
+      "領収書を送る",
+      "領収書送る",
+      "領収書の送り方",
+      "領収書提出",
+      "領収書を提出",
+      "レシート",
+      "りょうしゅうしょ",
+    ],
+    start: async (event) => {
+      await sendLineMessage(event.replyToken, event.source.userId, RECEIPT_GUIDE_TEXT)
+    },
+  },
+  {
+    // 物品購入・備品の立替。送るものが領収書だけなので案内は共通
+    key: "goods",
+    label: "🛒 物品購入・備品",
+    triggers: ["物品購入", "物品", "備品", "買い物", "買物", "購入"],
+    start: async (event) => {
+      await sendLineMessage(event.replyToken, event.source.userId, GOODS_GUIDE_TEXT)
+    },
+  },
+  {
+    // 研修・講座の立替（受講料・交通費・宿泊費・弁当代・会費）
+    key: "training",
+    label: "📚 研修費・講座",
+    triggers: ["研修", "研修費", "講座", "セミナー", "受講料", "受講費"],
+    start: async (event) => {
+      await sendLineMessage(event.replyToken, event.source.userId, TRAINING_GUIDE_TEXT)
+    },
+  },
+  {
     // 交通費はすべてここに集約する。
     // 電車・地下鉄・バス・飛行機を区別せず「交通費」1つにまとめ、
     // ICカードの履歴・切符・領収書の写真から申請してもらう。
@@ -1838,6 +1911,7 @@ const APPLICATION_MENU: ApplicationMenuItem[] = [
       "交通費申請",
       "交通費の申請",
       "交通費を申請",
+      "交通費申請する",
       "こうつうひ",
       "電車代",
       "電車",
@@ -1861,25 +1935,8 @@ const APPLICATION_MENU: ApplicationMenuItem[] = [
       "航空券",
       "新幹線",
     ],
-    start: async (event) => {
-      await sendLineMessage(event.replyToken, event.source.userId, TRANSIT_GUIDE_TEXT)
-    },
-  },
-  {
-    key: "receipt",
-    label: "🧾 領収書を送る",
-    triggers: [
-      "領収書",
-      "領収書を送る",
-      "領収書送る",
-      "領収書の送り方",
-      "領収書提出",
-      "領収書を提出",
-      "レシート",
-      "りょうしゅうしょ",
-    ],
-    start: async (event) => {
-      await sendLineMessage(event.replyToken, event.source.userId, RECEIPT_GUIDE_TEXT)
+    start: async (event, supabase, staffMembers) => {
+      await sendTransitGuide(event, supabase, staffMembers)
     },
   },
   {
@@ -1920,6 +1977,8 @@ const MENU_TRIGGER_INDEX: Map<string, ApplicationMenuItem> = (() => {
 const APPLICATION_MENU_TRIGGERS = new Set([
   "申請",
   "申請する",
+  "経費を申請",
+  "けいひを申請",
   "申請したい",
   "申請メニュー",
   "しんせい",
@@ -1941,7 +2000,8 @@ type RichMenuCommand = "settings" | "history" | "usage" | "contact"
 const RICH_MENU_COMMANDS: Record<RichMenuCommand, string[]> = {
   settings: ["設定", "設定変更", "登録内容", "せってい"],
   history: ["申請履歴", "履歴", "申請一覧", "りれき"],
-  usage: ["使い方", "つかいかた", "ヘルプ", "へるぷ", "help"],
+  // 「マニュアル」も使い方へ。以前は答えられずエラーのように見えていた
+  usage: ["使い方", "つかいかた", "ヘルプ", "へるぷ", "help", "マニュアル", "まにゅある", "manual"],
   contact: ["問い合わせ", "問合せ", "お問い合わせ", "といあわせ"],
 }
 const RICH_MENU_COMMAND_INDEX: Map<string, RichMenuCommand> = (() => {
@@ -1986,18 +2046,19 @@ const USAGE_TEXT =
   "　その場合は担当からご連絡します。\n" +
   "　いまどうなっているかは、メニューの「申請履歴」でいつでも確認できます\n\n" +
   "【メニューの使い分け】\n" +
-  "・申請する … 領収書の写真から申請\n" +
-  "・交通費 … ICカードの履歴や切符の写真から申請\n" +
+  "・経費を申請 … 物品購入・研修費・交通費から選んで申請\n" +
+  "・交通費を申請 … 交通費の申請へ直接進む\n" +
   "・申請履歴 … これまでの申請と支給額の確認\n" +
   "・設定 … お名前・最寄り駅・通勤手段・定期券・アカデミー会員\n" +
-  "・問い合わせ … 担当への連絡（内容を書くと担当に届きます）"
+  "・問い合わせ … 担当への連絡（内容を書くと担当に届きます）\n\n" +
+  "分からないことは「問い合わせ」からご連絡ください。担当がお答えします。"
 
 /** 問い合わせ（リッチメニュー「問い合わせ」） */
 const CONTACT_TEXT =
   "💬 問い合わせ\n" +
   "申請内容の間違いや、分からないことがあれば担当に直接お声がけください。\n" +
   "間違いを伝えるときは「日付・支払先・金額」を添えていただくとスムーズです。\n\n" +
-  "仕事の手順の質問（例「受付の手順は？」）は、このトークに送るとマニュアルから自動で回答します。"
+  "下のメニューの「経費を申請」「交通費を申請」からいつでも申請できます。"
 
 /** 氏名登録が終わったあとの案内（3行） */
 const ONBOARDING_DONE_TEXT =
@@ -2029,16 +2090,47 @@ const FOLLOW_TEXT =
 const TRANSIT_GUIDE_TEXT =
   "🚃 交通費の申請\n" +
   "─────────────\n" +
-  "次のどれかの写真を、このトークに送ってください。\n\n" +
+  "電車・地下鉄・バス・新幹線・飛行機は、すべてここから申請できます。\n\n" +
+  "【領収書・記録がある場合】\n" +
+  "次のどれかの<写真>をこのトークに送ってください。\n" +
   "・ICカード（ICOCA・PiTaPaなど）の利用履歴の画面\n" +
   "・切符や領収書\n" +
-  "・新幹線や飛行機のチケット・予約画面\n\n" +
-  "電車・地下鉄・バス・飛行機は、どれも「交通費」で申請できます。\n" +
+  "・新幹線や飛行機のチケット・予約画面\n" +
   "写真を送ると、区分を選ぶボタンが出ます。\n\n" +
-  "※ICカードで定期券区間を通ったときは、その分はもともと引き落とされません。\n" +
+  "【領収書がない場合】\n" +
+  "下の「領収書がない」を押してください。\n" +
+  "電車・バスなど、領収書の出ない区間はこちらです。\n" +
+  "次の2つをお聞きします。\n" +
+  "　① 金額（円）\n" +
+  "　② 用途・支払先（例：京都駅まで往復、○○バス）\n\n" +
+  "※ICカードで定期券の区間を通った分は、もともと引き落とされません。\n" +
   "　履歴の金額をそのまま申請してください。\n" +
-  "※切符を買って定期券区間が含まれるときは、申請のときにお尋ねします。\n" +
   "※金額が読み取りにくいときは、金額の部分がはっきり写るように撮ってください。"
+
+/** 物品購入・備品の案内（何の写真を送るのかを明記する） */
+const GOODS_GUIDE_TEXT =
+  "🛒 物品購入・備品の申請\n" +
+  "─────────────\n" +
+  "お店の<領収書（レシート）の写真>をこのトークに送ってください。\n\n" +
+  "写真を送ると、区分を選ぶボタンが出ます。\n" +
+  "「それ以外」→「その他（買い物など）」を選び、\n" +
+  "何を買ったかを短くご入力ください（30文字以内）。\n\n" +
+  "※金額と日付がはっきり写るように撮ってください。\n" +
+  "※複数枚ある場合は、まとめて送っても1枚ずつでも大丈夫です。"
+
+/** 研修費・講座の案内（何の写真を送るのかを明記する） */
+const TRAINING_GUIDE_TEXT =
+  "📚 研修費・講座の申請\n" +
+  "─────────────\n" +
+  "<領収書の写真>をこのトークに送ってください。\n" +
+  "受講料・交通費・宿泊費・弁当代・アカデミー会費は、\n" +
+  "それぞれ別々に申請してください（1枚ずつ送ります）。\n\n" +
+  "写真を送ると、次の順でボタンが出ます。\n" +
+  "　① 講座・研修\n" +
+  "　② 講座を選ぶ\n" +
+  "　③ 内訳（受講料・交通費・宿泊費など）を選ぶ\n\n" +
+  "初回の受講か再受講かは自動で判定しますので、お申し出は不要です。\n\n" +
+  "※受験料は合格通知・修了通知の写真もあわせてお送りください。"
 
 const RECEIPT_GUIDE_TEXT =
   "🧾 領収書の送り方\n" +
@@ -2071,9 +2163,13 @@ async function sendApplicationMenu(replyToken: string, userId: string, lead = ""
     replyToken,
     userId,
     lead +
-      "📋 申請メニュー\n下のボタンから選んでください。\n" +
-      "領収書がある場合は、写真をこのトークに送るだけで申請できます。\n\n" +
-      "💬 マニュアル検索（例「受付の手順は？」）や名刺検索（例「田中さんの連絡先」）は、そのまま質問を送ってください。",
+      "📋 経費を申請\n" +
+      "─────────────\n" +
+      "どの費用を申請しますか？下のボタンからお選びください。\n\n" +
+      "・物品購入・備品 … 事務用品や院内で使うものの立替\n" +
+      "・研修費・講座 … 受講料・交通費・宿泊費・弁当代・会費\n" +
+      "・交通費 … 電車・バス・新幹線・飛行機\n\n" +
+      "領収書の写真がお手元にあれば、このトークに送るだけでも申請できます。",
     items
   )
 }
@@ -2763,7 +2859,14 @@ async function askOtherAmount(replyToken: string, userId: string, lead = ""): Pr
   await sendLineQuickReply(
     replyToken,
     userId,
-    lead + "🚌 バス・自家用車などの交通費ですね。\n金額（円）をテキストで送ってください。\n例：1200" + TIMEOUT_NOTE,
+    lead +
+      "🚃 領収書がない交通費の申請\n" +
+      "─────────────\n" +
+      "電車・バスなど、領収書の出ない区間はこちらです。\n\n" +
+      "まず【金額（円）】を数字で送ってください。\n" +
+      "例：1200\n\n" +
+      "このあと【用途・支払先】をお聞きします。" +
+      TIMEOUT_NOTE,
     [transitCancelItem()]
   )
 }
@@ -2783,7 +2886,7 @@ async function startOtherTransit(
     await sendLineMessage(
       replyToken,
       source.userId,
-      "🚌 交通費（領収書なし）の申請を始めます。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子 ／ 南ひふ子）\n※姓と名の間のスペースは、あってもなくても大丈夫です"
+      "🚃 領収書がない交通費の申請を始めます。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子 ／ 南ひふ子）\n※姓と名の間のスペースは、あってもなくても大丈夫です"
     )
     return
   }
@@ -2817,7 +2920,7 @@ async function startTrainTransit(
     await sendLineMessage(
       replyToken,
       source.userId,
-      "🚃 電車代（領収書なし）の申請を始めます。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子 ／ 南ひふ子）\n※姓と名の間のスペースは、あってもなくても大丈夫です"
+      "🚃 領収書がない交通費の申請を始めます。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子 ／ 南ひふ子）\n※姓と名の間のスペースは、あってもなくても大丈夫です"
     )
     return
   }
@@ -3111,7 +3214,11 @@ async function handleTransitText(
       await sendLineQuickReply(
         replyToken,
         source.userId,
-        "用途・支払先があれば入力してください（例：○○バス）。\n無ければ「なし」と送ってください。",
+        "次に【用途・支払先】を送ってください。\n" +
+          "どこへ何のために行ったかが分かるようにご入力ください。\n\n" +
+          "（例）京都駅まで往復・研修参加\n" +
+          "（例）○○バス・備品の受け取り\n\n" +
+          "分からない場合は「なし」と送ってください。",
         [transitCancelItem()]
       )
       return
@@ -3729,133 +3836,7 @@ async function handleBusinessCardQuery(
   }
 }
 
-/** マニュアル検索Bot: Gemini AIがマニュアルを参照して回答 */
-async function handleManualQuery(
-  replyToken: string,
-  userId: string,
-  query: string
-): Promise<void> {
-  try {
-    const supabase = createServiceClient()
-
-    // キーワードで部分一致検索（助詞・記号を除去してキーワード抽出）
-    const keywords = query
-      .replace(/[？?！!。、・\s]+/g, " ")
-      .split(/\s+/)
-      .filter((kw) => kw.length >= 2)
-    console.log("[LINE Bot] マニュアル検索クエリ:", query, "キーワード:", keywords)
-
-    let manuals: { id: string; category_id: string | null; title: string; content: string }[] = []
-
-    if (keywords.length > 0) {
-      // キーワードでOR検索
-      const orConditions = keywords
-        .map((kw) => `title.ilike.%${kw}%,content.ilike.%${kw}%`)
-        .join(",")
-      const { data: rawManuals, error: searchError } = await supabase
-        .from("manuals")
-        .select("*")
-        .or(orConditions)
-        .limit(10)
-
-      if (searchError) {
-        console.error("[LINE Bot] マニュアル検索エラー:", searchError)
-      }
-      manuals = (rawManuals || []) as typeof manuals
-      console.log("[LINE Bot] キーワード検索ヒット数:", manuals.length)
-    }
-
-    // キーワード検索で0件の場合、全件取得してGeminiに判断を委ねる
-    if (manuals.length === 0) {
-      console.log("[LINE Bot] キーワード検索0件 → 全件取得してGeminiに委ねます")
-      const { data: allManuals } = await supabase
-        .from("manuals")
-        .select("*")
-        .order("created_at", { ascending: true })
-      manuals = (allManuals || []) as typeof manuals
-      console.log("[LINE Bot] マニュアル全件数:", manuals.length)
-    }
-
-    // カテゴリ取得
-    const { data: rawCategories } = await supabase.from("manual_categories").select("*")
-    const categories = (rawCategories || []) as { id: string; name: string; emoji: string }[]
-    const categoryMap = new Map(categories.map((c) => [c.id, c]))
-
-    // Gemini AIで回答生成
-    const apiKey = process.env.GEMINI_API_KEY
-    if (!apiKey) {
-      if (manuals.length === 0) {
-        await sendLineMessage(replyToken, userId, "📖 マニュアルが登録されていません。管理者にお問い合わせください。")
-        return
-      }
-      const top = manuals[0]
-      const cat = top.category_id ? categoryMap.get(top.category_id) : null
-      await sendLineMessage(replyToken, userId, `${cat?.emoji || "📄"} ${top.title}\n\n${top.content.slice(0, 400)}`)
-      return
-    }
-
-    const { GoogleGenerativeAI } = await import("@google/generative-ai")
-    const genAI = new GoogleGenerativeAI(apiKey)
-    const model = genAI.getGenerativeModel({ model: DEFAULT_GEMINI_MODEL })
-
-    // マニュアルが0件の場合は一般知識でフォールバック
-    if (manuals.length === 0) {
-      console.log("[LINE Bot] マニュアル0件 → 一般知識フォールバック")
-      const fallbackPrompt = `あなたは皮膚科・美容皮膚科クリニック「南草津皮フ科」のAIアシスタントです。
-マニュアルが登録されていないため、皮膚科・美容皮膚科クリニックの一般的な知識として回答してください。
-
-【スタッフからの質問】
-${query}
-
-【回答ルール】
-- 皮膚科クリニックの一般的な知識に基づいて回答する
-- 「一般的な対応としては」と前置きして回答する
-- LINEメッセージとして読みやすいように改行を入れる
-- 箇条書きを活用して見やすくする
-- 回答は400文字以内に収める
-- 最後に「詳細は管理者にご確認ください」と付け加える`
-
-      const result = await model.generateContent(fallbackPrompt)
-      const answer = result.response.text()
-      await sendLineMessage(replyToken, userId, `📖 ${answer}`)
-      return
-    }
-
-    const context = manuals
-      .map((m) => {
-        const cat = m.category_id ? categoryMap.get(m.category_id) : null
-        return `【${cat?.emoji || "📄"} ${cat?.name || "未分類"}】${m.title}\n${m.content}`
-      })
-      .join("\n\n---\n\n")
-
-    const prompt = `あなたは皮膚科・美容皮膚科クリニック「南草津皮フ科」のAIアシスタントです。
-スタッフからの質問に、以下のマニュアル内容を参照して簡潔に回答してください。
-
-【マニュアル内容】
-${context}
-
-【スタッフからの質問】
-${query}
-
-【回答ルール】
-- マニュアルの内容に基づいて正確に回答する
-- LINEメッセージとして読みやすいように改行を入れる
-- 箇条書きを活用して見やすくする
-- 回答は400文字以内に収める
-- マニュアルに直接の記載がなくても、関連する内容から推測して回答する
-- どうしても回答できない場合のみ「該当するマニュアルが見つかりませんでした」と伝える`
-
-    const result = await model.generateContent(prompt)
-    const answer = result.response.text()
-
-    await sendLineMessage(replyToken, userId, `📖 ${answer}`)
-  } catch (error) {
-    console.error("[LINE Bot] マニュアル検索エラー:", error)
-    await sendLineMessage(replyToken, userId, "⚠️ マニュアル検索中にエラーが発生しました。")
-  }
-}
-
-/** テキストメッセージ処理: リッチメニュー / 申請 / 氏名登録 / マニュアル検索 / その他 */
+/** テキストメッセージ処理: リッチメニュー / 申請 / 氏名登録 / 名刺検索 / その他 */
 async function handleTextMessage(event: LineEvent): Promise<void> {
   const { replyToken, source, message } = event
   const inputText = message?.text?.trim()
@@ -3993,21 +3974,27 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
     return
   }
 
-  // c. 質問キーワードを含む → マニュアル検索Bot
-  if (isQuestionText(inputText)) {
-    await handleManualQuery(replyToken, source.userId, inputText)
-    return
-  }
-
-  // d. その他 → 無反応にせず、申請メニューへ誘導する短い案内
-  await sendLineMessage(
-    replyToken,
-    source.userId,
-    "🤔 操作として認識できませんでした。\n" +
-      "下のメニューの「申請する」から申請できます。\n\n" +
-      "📎 領収書はこのトークに写真を送るだけで登録できます。"
-  )
+  // c. その他 → 無反応にせず、いま使える操作だけを案内する。
+  //    （マニュアルの自動回答は案内しない。使えない機能を見せると迷わせるため）
+  await sendLineMessage(replyToken, source.userId, UNKNOWN_INPUT_TEXT)
 }
+
+/**
+ * 操作として読み取れなかったときの案内。
+ *
+ * 使える操作だけを挙げる。以前は「マニュアル検索」を案内していたが、
+ * 実際には答えられず「操作として認識できませんでした」と返っていたため外した。
+ */
+const UNKNOWN_INPUT_TEXT =
+  "ご入力の内容を操作として読み取れませんでした。\n" +
+  "下のメニューからお選びください。\n\n" +
+  "・経費を申請 … 物品購入・研修費・交通費など\n" +
+  "・交通費を申請 … 電車・バスなどの交通費\n" +
+  "・申請履歴 … これまでの申請と支給額\n" +
+  "・設定 … お名前・最寄り駅・通勤手段・定期券\n" +
+  "・使い方 … 申請の進め方\n" +
+  "・問い合わせ … 担当への連絡\n\n" +
+  "📎 領収書は、写真をこのトークに送るだけで申請できます。"
 
 /* ========== 氏名登録・初回設定・設定メニュー・申請履歴・定期券（フェーズ1） ========== */
 
@@ -4591,8 +4578,7 @@ async function startContact(event: LineEvent, supabase: ServiceClient): Promise<
       "お伝えする内容を、このまま送ってください。\n" +
       "担当に転送し、確認のうえこのトークでご連絡します。\n\n" +
       "申請の間違いを伝えるときは「日付・支払先・金額」を添えていただくとスムーズです。\n\n" +
-      "※仕事の手順の質問（例「受付の手順は？」）は、\n" +
-      "　メニューを使わずそのまま送ると自動で回答します。"
+      "※申請のやり方は、メニューの「使い方」でご確認いただけます。"
   )
 }
 

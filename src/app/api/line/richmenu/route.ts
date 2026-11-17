@@ -40,8 +40,8 @@ const HEIGHT = 1686
  * public/line/richmenu.jpg の見た目と一致させること。
  */
 const AREAS = [
-  { col: 0, row: 0, text: "申請" },
-  { col: 1, row: 0, text: "交通費" },
+  { col: 0, row: 0, text: "経費を申請" },
+  { col: 1, row: 0, text: "交通費を申請" },
   { col: 2, row: 0, text: "申請履歴" },
   { col: 0, row: 1, text: "設定" },
   { col: 1, row: 1, text: "使い方" },
