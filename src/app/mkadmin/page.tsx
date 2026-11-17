@@ -22,6 +22,7 @@ import { RegistrantList } from "@/components/settings/registrant-list"
 import { DocumentStaffList } from "@/components/settings/document-staff-list"
 import { StaffManagement } from "@/components/line-staff/staff-management"
 import { CourseMaster } from "@/components/courses/course-master"
+import { PriorCourseRegistration } from "@/components/courses/prior-course-registration"
 import { PaymentMemo } from "@/components/mkadmin/payment-memo"
 import { StaffReimburseList } from "@/components/mkadmin/staff-reimburse-list"
 import { StaffManualEntry } from "@/components/mkadmin/staff-manual-entry"
@@ -304,7 +305,11 @@ export default function MkadminPage() {
 
         <TabsContent value="courses">
           {/* 講座マスタ（スタッフが申請時に選ぶ講座。支給率と30,000円上限の判定に使う） */}
-          <CourseMaster showHeader={false} />
+          <div className="flex flex-col gap-4">
+            <CourseMaster showHeader={false} />
+            {/* 既受講の登録（アプリ導入前の受講回数。未登録だと既受講者に全額支給してしまう） */}
+            <PriorCourseRegistration />
+          </div>
         </TabsContent>
         <TabsContent value="line-staff">
           {/* LINEスタッフ管理（タブ内なので見出しは非表示） */}

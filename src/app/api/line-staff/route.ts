@@ -205,12 +205,66 @@ export async function PATCH(request: NextRequest) {
       seminar_repeat_claimed?: boolean
       is_test?: boolean
       retired?: boolean
+      /** 既受講の登録（アプリ導入前に受講した回数）。count=null で登録を取り消す */
+      priorCourse?: { courseId?: string; count?: number | null }
     }
     if (!body.id) {
       return NextResponse.json({ error: "IDは必須です" }, { status: 400 })
     }
 
     const service = createServiceClient()
+
+    // 既受講の登録（アプリ導入前・旧LINEでの受講回数）。
+    // 登録しないと既受講者が「初受講＝全額支給」と判定され過大支給になるため、
+    // 未登録のままATCの受講料が申請されたら要対応に上がる仕組みと対になっている。
+    if (body.priorCourse) {
+      const courseId = body.priorCourse.courseId
+      if (!courseId) {
+        return NextResponse.json({ error: "講座が指定されていません" }, { status: 400 })
+      }
+      const raw = body.priorCourse.count
+      const count = raw === null || raw === undefined ? null : Math.max(0, Math.floor(raw))
+      if (count !== null && count > 99) {
+        return NextResponse.json({ error: "回数は0〜99で指定してください" }, { status: 400 })
+      }
+
+      const { data: member, error: readError } = await service
+        .from("staff_members")
+        .select("line_profile")
+        .eq("id", body.id)
+        .single()
+      if (readError || !member) {
+        return NextResponse.json({ error: "スタッフが見つかりません" }, { status: 404 })
+      }
+
+      const profile = parseLineProfile(member.line_profile)
+      const others = (profile.prior_courses ?? []).filter((p) => p.course_id !== courseId)
+      const next =
+        count === null
+          ? others
+          : [
+              ...others,
+              {
+                course_id: courseId,
+                count,
+                updated_at: new Date().toISOString(),
+                updated_by: user.email ?? undefined,
+              },
+            ]
+
+      const { data, error } = await service
+        .from("staff_members")
+        // Json 型へ渡すため、構造化した値を一度プレーンなJSONに落とす
+        .update({ line_profile: JSON.parse(JSON.stringify({ ...profile, prior_courses: next })) })
+        .eq("id", body.id)
+        .select("*")
+        .single()
+      if (error) {
+        console.error("既受講登録エラー:", error.message, error.code)
+        throw error
+      }
+      return NextResponse.json({ data })
+    }
 
     // 退職の切替（論理削除）。退職者は一覧から隠し、LINEからの申請も受け付けないが、
     // 過去の申請記録は残す（削除すると領収書レコードがCASCADEで消えてしまうため）。

@@ -22,6 +22,7 @@
  */
 
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
+import { parseLineProfile } from "@/lib/line-staff-profile"
 import { formatYearMonth, resolveStaffSubmissionMonth } from "@/lib/submission-month"
 import {
   computeSubsidy,
@@ -113,11 +114,22 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
 
   // 3. ATC方式の再受講の回数。
   //    同じ講座を繰り返し受講するため、講座の違いではなく
-  //    「その講座の受講料を何回申請したか」で数える。
-  const priorTuitionCount =
+  //    「その講座の受講料を何回受講したか」で数える。
+  //
+  //    アプリ導入前の受講や旧LINEからの申請は講座の情報を持たないため自動では数えられない。
+  //    登録しないと既受講者が「初受講＝全額支給」と判定され過大支給になるので、
+  //    担当が登録した既受講回数（line_profile.prior_courses）を足す。
+  const registered =
+    input.courseRule === "atc" && input.courseId
+      ? await fetchRegisteredPriorCount(supabase, staffMemberId, input.courseId)
+      : { count: 0, registered: true }
+
+  const inApp =
     input.courseRule === "atc" && input.courseId
       ? priors.filter((p) => p.course_id === input.courseId && p.expense_item === "tuition").length
       : 0
+
+  const priorTuitionCount = registered.count + inApp
 
   // 交通費・宿泊費も半額の回は半額にするため、受講料の実績から半額かどうかを引き継ぐ
   const isRepeat =
@@ -140,12 +152,14 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
     monthlyCapUsed: item === "books" || item === "medical" ? capUsed : undefined,
   })
 
-  // 5. 保留の理由（優先順：添付待ち → 講座の割り当て → 支給率が未定 → 上限超過）
-  //    支給率が未定のものを上限超過より先に見るのは、どちらも担当判断だが
-  //    「金額の決め方そのものが未定」のほうが先に解決すべきだから。
+  // 5. 保留の理由
+  //    優先順：添付待ち → 講座の割り当て → 既受講回数が未登録 → 支給率が未定 → 上限超過
+  //    既受講回数が未登録のまま確定させると、既受講者に全額を支給してしまうため保留する。
+  //    入力漏れでも過大支給にならないよう、登録が無い＝保留とする（0回の登録とは区別する）。
   let holdReason: HoldReason | null = null
   if (input.awaitingAttachment) holdReason = "attach"
   else if (input.pendingCourseName && !input.courseId) holdReason = "course"
+  else if (!registered.registered && item === "tuition") holdReason = "history"
   else if (result.needsDecision) holdReason = "undecided"
   else if (result.excess > 0) holdReason = "excess"
 
@@ -214,4 +228,28 @@ function targetSubmissionMonth(input: AssessInput): string | null {
   const submitDate = (input.submittedAt ?? new Date()).toISOString()
   const resolved = resolveStaffSubmissionMonth(input.manualSubmissionMonthRaw, submitDate).month
   return resolved ? formatYearMonth(resolved) : null
+}
+
+/**
+ * 担当が登録した既受講回数を読む。
+ *
+ * @returns count=登録された回数／registered=登録そのものがあるか
+ *          （未登録と「0回」を区別する。未登録は保留にして過大支給を防ぐ）
+ */
+async function fetchRegisteredPriorCount(
+  supabase: ServiceClient,
+  staffMemberId: string,
+  courseId: string
+): Promise<{ count: number; registered: boolean }> {
+  const { data, error } = await supabase
+    .from("staff_members")
+    .select("line_profile")
+    .eq("id", staffMemberId)
+    .single()
+  if (error || !data) return { count: 0, registered: false }
+
+  const profile = parseLineProfile(data.line_profile)
+  const entry = (profile.prior_courses ?? []).find((p) => p.course_id === courseId)
+  if (!entry) return { count: 0, registered: false }
+  return { count: Math.max(0, Math.floor(entry.count)), registered: true }
 }

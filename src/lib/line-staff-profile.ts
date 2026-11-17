@@ -60,7 +60,27 @@ export interface NameChangeRequest {
   resolved_at?: string
 }
 
+/**
+ * 既受講の登録（アプリ導入前に受講した分）。
+ *
+ * ATC方式は「これまでの受講料申請の回数」で支給率を決める。アプリ導入前の受講や
+ * 旧LINEからの申請は講座の情報を持たないため自動では数えられず、
+ * 登録しないと既受講者が「初受講＝全額支給」と判定されて過大支給になる。
+ * そこで担当がスタッフ×講座ごとに回数を登録する。
+ *
+ * count は「アプリ導入前に受講した回数」。初受講だけ済んでいるなら 1。
+ * エントリが無い（未登録）と 0回（本当に初受講）は区別する。
+ */
+export interface PriorCourse {
+  course_id: string
+  count: number
+  updated_at: string
+  updated_by?: string
+}
+
 export interface LineProfile {
+  /** 既受講の登録（講座ごと）。キーが無い＝1件も登録していない */
+  prior_courses?: PriorCourse[]
   /** 通勤手段。キーが無い＝未回答 */
   commute_method?: CommuteMethod
   /** 通勤手段を登録・更新した日時 */

@@ -353,13 +353,14 @@ export function calcStoredSubsidy(row: {
 /* ---------- 保留の理由 ---------- */
 
 /** 確定していない理由。NULL（確定済み）以外は税理士提出・支給集計に含めない */
-export type HoldReason = "excess" | "course" | "attach" | "undecided"
+export type HoldReason = "excess" | "course" | "attach" | "undecided" | "history"
 
 export const HOLD_REASON_LABELS: Record<HoldReason, string> = {
   excess: "上限超過の承認待ち",
   course: "講座の割り当て待ち",
   attach: "合格通知の添付待ち",
   undecided: "支給率が未定（担当の判断待ち）",
+  history: "既受講回数が未登録（担当の登録待ち）",
 }
 
 /** スタッフに見せる保留の説明 */
@@ -368,4 +369,5 @@ export const HOLD_REASON_STAFF_TEXT: Record<HoldReason, string> = {
   course: "講座の確認が必要なため、担当が確認のうえご連絡します。",
   attach: "合格通知または修了通知の写真を送っていただくと確定します。",
   undecided: "支給額の確認が必要なため、担当が確認のうえご連絡します。",
+  history: "受講回数の確認が必要なため、担当が確認のうえご連絡します。",
 }
