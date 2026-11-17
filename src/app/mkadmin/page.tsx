@@ -20,12 +20,13 @@ import { AccountantSettings } from "@/components/settings/accountant-settings"
 import { FloatingButtonSettings } from "@/components/settings/floating-button-settings"
 import { StaffManagement } from "@/components/line-staff/staff-management"
 import { StaffAdminGuide } from "@/components/line-staff/staff-admin-guide"
+import { RichMenuSetup } from "@/components/line-staff/rich-menu-setup"
 import { CourseMaster } from "@/components/courses/course-master"
 import { PriorCourseRegistration } from "@/components/courses/prior-course-registration"
 import { PaymentMemo } from "@/components/mkadmin/payment-memo"
 import { StaffReimburseList } from "@/components/mkadmin/staff-reimburse-list"
 import { StaffManualEntry } from "@/components/mkadmin/staff-manual-entry"
-import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, Users, Wallet, Loader2, Receipt, ArrowRight, ClipboardList, HandCoins, GraduationCap } from "lucide-react"
+import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, Users, Wallet, Loader2, Receipt, ArrowRight, ClipboardList, HandCoins, GraduationCap, MessageCircle } from "lucide-react"
 
 // 管理画面（/mkadmin）認証用 sessionStorage キー
 const SESSION_KEY = "mkadmin-auth"
@@ -55,6 +56,7 @@ const TAB_GROUPS: {
     label: "スタッフ・経費申請",
     tabs: [
       { value: "staff", label: "スタッフ", icon: Users },
+      { value: "line-menu", label: "LINEのメニュー", icon: MessageCircle },
       { value: "courses", label: "講座マスタ", icon: GraduationCap },
       { value: "staff-reimburse", label: "立替まとめ", icon: ClipboardList },
       { value: "staff-manual-entry", label: "立替手動登録", icon: HandCoins },
@@ -307,6 +309,11 @@ export default function MkadminPage() {
               </Button>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="line-menu">
+          {/* リッチメニューの作成・テスト表示・全員公開 */}
+          <RichMenuSetup />
         </TabsContent>
 
         <TabsContent value="courses">
