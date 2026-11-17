@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -116,6 +116,8 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const [togglingId, setTogglingId] = useState<string | null>(null)
   // テストスタッフ ON/OFFトグル処理中のID
   const [togglingTestId, setTogglingTestId] = useState<string | null>(null)
+  // 書類登録スタッフ（書類の登録者マスタ）の氏名。2つのマスタで表記を揃えるため比較する
+  const [documentStaffNames, setDocumentStaffNames] = useState<string[]>([])
   // 退職 ON/OFFトグル処理中のID
   const [togglingRetiredId, setTogglingRetiredId] = useState<string | null>(null)
   // 退職者も一覧に表示するか（既定は在籍者のみ）
@@ -125,6 +127,19 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const activeStaff = staff.filter((m) => !m.retired_at)
   const retiredCount = staff.length - activeStaff.length
   const visibleStaff = showRetired ? staff : activeStaff
+
+  // 書類登録スタッフとの表記のずれ。
+  // 2つのマスタで氏名の表記が違うと、書類とスタッフ立替で同じ人が別名で並んでしまう。
+  // 比較は正規化するため、スペースや全角半角の違いは「ずれ」としない。
+  const nameGaps = useMemo(() => {
+    const norm = (v: string) => v.replace(/[\s\u3000]/g, "").normalize("NFKC")
+    const lineNames = new Set(activeStaff.map((m) => norm(m.name)))
+    const docNames = new Set(documentStaffNames.map(norm))
+    return {
+      onlyInDocument: documentStaffNames.filter((n) => !lineNames.has(norm(n))),
+      onlyInLine: activeStaff.filter((m) => !docNames.has(norm(m.name))).map((m) => m.name),
+    }
+  }, [activeStaff, documentStaffNames])
 
   // 同姓・同名の警告（LINEの氏名登録で候補提示が必要になる組み合わせ）
   // 退職者は氏名照合の対象外なので、在籍者だけで判定する
@@ -254,6 +269,20 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
       setTogglingId(null)
     }
   }
+
+  /* 書類登録スタッフの氏名を取得（表記を揃えるための比較用） */
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const res = await fetch("/api/document-staff")
+        if (!res.ok) return
+        const json = (await res.json()) as { data?: { name: string }[] }
+        setDocumentStaffNames((json.data ?? []).map((d) => d.name))
+      } catch {
+        // 取得できなくてもスタッフ一覧は使える
+      }
+    })()
+  }, [])
 
   /* ---------- 退職 ON/OFFトグル（論理削除。記録は残す） ---------- */
   async function handleToggleRetired(member: StaffMember, next: boolean) {
@@ -408,6 +437,27 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
             退職にすると一覧から隠れ、LINEからの申請も受け付けませんが、過去の申請記録は残ります。
             <br />
             「削除」は登録ミスの行を消すためのものです。申請があるスタッフは削除できません。
+            {(nameGaps.onlyInDocument.length > 0 || nameGaps.onlyInLine.length > 0) && (
+              <>
+                <br />
+                <span className="text-amber-700 dark:text-amber-400">
+                  <strong>書類登録スタッフとの表記のずれ：</strong>
+                  {nameGaps.onlyInDocument.length > 0 && (
+                    <>
+                      書類登録スタッフにのみ（{nameGaps.onlyInDocument.join("・")}）
+                    </>
+                  )}
+                  {nameGaps.onlyInDocument.length > 0 && nameGaps.onlyInLine.length > 0 && " ／ "}
+                  {nameGaps.onlyInLine.length > 0 && (
+                    <>
+                      こちらにのみ（{nameGaps.onlyInLine.join("・")}）
+                    </>
+                  )}
+                  。同じ方なら表記を揃えてください（「書類種別」などと同じ /mkadmin の
+                  「書類登録スタッフ」タブで編集できます）。スペースや全角半角の違いはずれとして扱いません。
+                </span>
+              </>
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent>

@@ -303,6 +303,29 @@ export function matchStaffCandidates<T extends { id: string; name: string }>(sta
   })
 }
 
+/**
+ * 氏名の照合（フルネームの完全一致のみ）。
+ *
+ * 候補を複数提示すると、申請者に**他のスタッフの氏名が見えてしまう**。
+ * 個人情報の観点からそれは避けたいので、部分一致や姓だけの一致は受け付けず、
+ * フルネームが完全に一致した場合だけ本人と判定する。
+ *
+ * 比較は normalizePersonName で正規化するため、
+ * **姓と名の間のスペースの有無や全角・半角の違いは問わない**
+ * （「南ひふ子」「南 ひふ子」「南　ひふ子」はすべて同じ扱い）。
+ *
+ * 同姓同名が2名いる場合はここでは区別できないので、呼び出し側で担当への確認を案内する。
+ * /mkadmin 側には同姓同名の警告を出しており、担当が区別できる氏名に直せる。
+ */
+export function matchStaffByFullName<T extends { id: string; name: string }>(
+  staff: T[],
+  input: string
+): T[] {
+  const q = normalizePersonName(input.replace(/(さん|様)$/, ""))
+  if (!q) return []
+  return staff.filter((s) => normalizePersonName(s.name) === q)
+}
+
 /** 同姓・同名のスタッフがいるかの判定（/mkadmin の警告用） */
 export function findNameConflicts<T extends { id: string; name: string }>(
   staff: T[]

@@ -41,7 +41,7 @@ import {
   isLongAbsence,
   isSetupComplete,
   loadStaffLineState,
-  matchStaffCandidates,
+  matchStaffByFullName,
   mayHaveCommuterPass,
   normalizePersonName,
   stripStationSuffix,
@@ -615,7 +615,7 @@ async function handlePostback(event: LineEvent): Promise<void> {
       await sendLineMessage(
         event.replyToken,
         event.source.userId,
-        "お名前をフルネームで送信してください。\n（例：南 ひふ子）"
+        "お名前をフルネームで送信してください。\n（例：南 ひふ子 ／ 南ひふ子）\n※姓と名の間のスペースは、あってもなくても大丈夫です"
       )
       return
     // 初回設定（全員に1回だけ）
@@ -1294,7 +1294,7 @@ const FOLLOW_TEXT =
   "① お名前の登録\n" +
   "② 自宅の最寄り駅の登録（電車代の計算に使います）\n\n" +
   "まず、お名前をフルネームで送信してください。\n" +
-  "（例：南 ひふ子）"
+  "（例：南 ひふ子 ／ 南ひふ子）\n※姓と名の間のスペースは、あってもなくても大丈夫です"
 
 /** 領収書の送り方の案内文 */
 const RECEIPT_GUIDE_TEXT =
@@ -1997,7 +1997,7 @@ async function handleTransitEntry(
     await sendLineMessage(
       replyToken,
       source.userId,
-      "🚃 交通費（領収書なし）の申請を始めます。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子）"
+      "🚃 交通費（領収書なし）の申請を始めます。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子 ／ 南ひふ子）\n※姓と名の間のスペースは、あってもなくても大丈夫です"
     )
     return
   }
@@ -2040,7 +2040,7 @@ async function startOtherTransit(
     await sendLineMessage(
       replyToken,
       source.userId,
-      "🚌 交通費（領収書なし）の申請を始めます。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子）"
+      "🚌 交通費（領収書なし）の申請を始めます。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子 ／ 南ひふ子）\n※姓と名の間のスペースは、あってもなくても大丈夫です"
     )
     return
   }
@@ -2074,7 +2074,7 @@ async function startTrainTransit(
     await sendLineMessage(
       replyToken,
       source.userId,
-      "🚃 電車代（領収書なし）の申請を始めます。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子）"
+      "🚃 電車代（領収書なし）の申請を始めます。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子 ／ 南ひふ子）\n※姓と名の間のスペースは、あってもなくても大丈夫です"
     )
     return
   }
@@ -2457,7 +2457,7 @@ async function handleHomeStationEntry(
     await sendLineMessage(
       replyToken,
       source.userId,
-      "🏠 自宅最寄り駅を登録します。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子）"
+      "🏠 自宅最寄り駅を登録します。\nまずお名前をフルネームで送信して登録してください。\n（例：南 ひふ子 ／ 南ひふ子）\n※姓と名の間のスペースは、あってもなくても大丈夫です"
     )
     return
   }
@@ -3114,7 +3114,7 @@ type ServiceClient = ReturnType<typeof createServiceClient>
 
 /** 未登録のLINEからメニュー操作が来たときの案内 */
 const NOT_REGISTERED_TEXT =
-  "まだお名前が登録されていません。\n" + "お名前をフルネームで送信してください。\n（例：南 ひふ子）"
+  "まだお名前が登録されていません。\n" + "お名前をフルネームで送信してください。\n（例：南 ひふ子 ／ 南ひふ子）\n※姓と名の間のスペースは、あってもなくても大丈夫です"
 
 /** 友だち追加（follow）→ 初回オンボーディング */
 async function handleFollow(event: LineEvent): Promise<void> {
@@ -3136,22 +3136,17 @@ async function handleFollow(event: LineEvent): Promise<void> {
 
 /**
  * 未登録のLINEから届いたテキストを氏名として照合する。
- * - 一意に決まれば確認カード、同姓が複数なら候補を選ばせる、0件なら担当への確認を案内（新規作成はしない）。
+ *
+ * **候補は一切提示しない。** 複数の候補を出すと申請者に他のスタッフの氏名が見えてしまうため、
+ * フルネームの完全一致だけを本人と判定する（スペースの有無・全角半角は問わない）。
+ * 一致しなければ担当への確認を案内する（勝手に新規スタッフを作らない）。
  */
 async function handleNameRegistrationText(event: LineEvent, staffMembers: StaffRow[], inputText: string): Promise<void> {
   const { replyToken, source } = event
-  const candidates = matchStaffCandidates(staffMembers, inputText)
-  if (candidates.length === 0) {
-    await sendLineMessage(
-      replyToken,
-      source.userId,
-      `「${inputText.slice(0, 20)}」に一致するお名前が見つかりませんでした。\n` +
-        "お名前をフルネームで送り直すか、担当に確認してください。\n（例：南 ひふ子）"
-    )
-    return
-  }
-  if (candidates.length === 1) {
-    const c = candidates[0]
+  const matches = matchStaffByFullName(staffMembers, inputText)
+
+  if (matches.length === 1) {
+    const c = matches[0]
     await sendFlexCard(
       replyToken,
       source.userId,
@@ -3160,17 +3155,36 @@ async function handleNameRegistrationText(event: LineEvent, staffMembers: StaffR
     )
     return
   }
-  // 同姓・同名が複数 → 本人に選ばせる（先頭1件に紐づけない）
-  const actions: ActionDef[] = candidates
-    .slice(0, 12)
-    .map((c) => flexPostback(c.name, `action=nmpick&sid=${c.id}`, c.name))
-  actions.push(flexPostback("この中にいない", "action=nmre", "この中にいない"))
-  await sendLineMessages(replyToken, source.userId, [
-    textWithQuickReply(
-      "同じお名前（姓）の方が複数登録されています。\nご自身のお名前を下から選んでください。\n見つからない場合は、フルネームで送り直してください。",
-      actions
-    ),
-  ])
+
+  if (matches.length === 0) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "お名前を確認できませんでした。\n" +
+        "姓と名の両方を続けて送ってください。\n\n" +
+        "（例）南 ひふ子\n" +
+        "※姓と名の間のスペースは、あってもなくても大丈夫です\n\n" +
+        "何度か試してもうまくいかない場合は、担当にご連絡ください。"
+    )
+    return
+  }
+
+  // 同姓同名が複数登録されている場合。氏名だけでは本人を特定できないが、
+  // 候補を出すと他のスタッフの氏名が見えてしまうため、担当に引き取ってもらう。
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    "恐れ入りますが、お名前の確認が必要です。\n担当にご連絡ください。"
+  )
+  const adminId = process.env.ADMIN_LINE_USER_ID
+  if (adminId) {
+    await pushMessage(
+      adminId,
+      `⚠️ 氏名の照合ができませんでした（同姓同名が複数登録されています）\n` +
+        `入力：${inputText.slice(0, 20)}\n` +
+        `/mkadmin の「LINEスタッフ管理」で、区別できる氏名に修正してください。`
+    )
+  }
 }
 
 /** 候補から選択 → 確認カード */
@@ -4570,7 +4584,7 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
       replyToken,
       source.userId,
       "まだお名前が登録されていません。\n" +
-        "お名前をフルネームで送信してください。\n（例：南 ひふ子）\n\n" +
+        "お名前をフルネームで送信してください。\n（例：南 ひふ子 ／ 南ひふ子）\n※姓と名の間のスペースは、あってもなくても大丈夫です\n\n" +
         "登録が終わったら、もう一度写真を送ってください。"
     )
     return
