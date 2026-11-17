@@ -357,6 +357,43 @@ export default function StaffReimbursePage() {
   )
 
   /**
+   * 未完了の申請を「対応済み」にして要対応から外す。
+   *
+   * 未完了には承認・却下のような確定操作が無いため、
+   * 本人に確認して処理し終えたものを担当が自分で消せるようにする。
+   * 支給は作られないので、支給が必要なら「立替手動登録」で登録する。
+   */
+  const dismissIncomplete = useCallback(
+    async (items: PendingItem[]) => {
+      if (items.length === 0) return
+      const names = Array.from(new Set(items.map((i) => i.staffName))).join("・")
+      const message =
+        items.length === 1
+          ? `${items[0].staffName}さんの未完了の申請（${yen(items[0].amount)}）を対応済みにして、要対応から外します。\n\n支給は作られません。支給が必要な場合は「立替手動登録」で登録してください。\n\nよろしいですか？`
+          : `未完了の申請 ${items.length}件（${names}）をまとめて対応済みにして、要対応から外します。\n\n支給は作られません。支給が必要な分は「立替手動登録」で登録してください。\n\nよろしいですか？`
+      if (!confirm(message)) return
+
+      setApprovingId(items.length === 1 ? items[0].id : "__bulk__")
+      try {
+        const res = await fetch("/api/staff-reimburse/dismiss", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: items.map((i) => i.id) }),
+        })
+        const json = (await res.json().catch(() => ({}))) as { error?: string; updated?: number }
+        if (!res.ok) throw new Error(json.error || "処理に失敗しました")
+        toast.success(`${json.updated ?? items.length}件を対応済みにしました`)
+        fetchPending()
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "処理に失敗しました")
+      } finally {
+        setApprovingId(null)
+      }
+    },
+    [fetchPending]
+  )
+
+  /**
    * 明細の「確認済み」を切り替える。
    * 対象は petty_cash_transactions.id（分割登録は行ごとに確認する）。
    */
@@ -685,12 +722,29 @@ export default function StaffReimbursePage() {
             <CardDescription>
               支給額が確定していない申請です。<strong>確定するまで税理士提出リストに載りません。</strong>
               放置するとスタッフへの支給が遅れます。
+              <br />
+              「未完了」は承認・却下がないため、本人に確認して処理し終えたものは
+              <strong>「対応済みにして隠す」</strong>で画面から外せます（支給は作られません）。
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button variant="outline" size="sm" onClick={() => setShowPending((v) => !v)}>
-              {showPending ? "閉じる" : "一覧を見る"}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={() => setShowPending((v) => !v)}>
+                {showPending ? "閉じる" : "一覧を見る"}
+              </Button>
+              {/* 未完了は確定操作が無いため、処理し終えたものをまとめて外せるようにする */}
+              {pending.filter((p) => p.kind === "incomplete").length > 1 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={approvingId === "__bulk__"}
+                  onClick={() => dismissIncomplete(pending.filter((p) => p.kind === "incomplete"))}
+                >
+                  {approvingId === "__bulk__" && <Loader2 className="mr-1 size-3.5 animate-spin" />}
+                  未完了 {pending.filter((p) => p.kind === "incomplete").length}件をまとめて対応済みにする
+                </Button>
+              )}
+            </div>
             {showPending && (
               <div className="mt-3 flex flex-col gap-3">
                 {pending.map((p) => (
@@ -742,6 +796,25 @@ export default function StaffReimbursePage() {
                         {p.kind === "excess" && p.isRepeat && "（2回目以降のため超過分も半額が規程どおりです）"}
                       </p>
                     </div>
+
+                    {/* 未完了は承認・却下が無いため、対応済みにして画面から外せるようにする */}
+                    {p.kind === "incomplete" && (
+                      <div className="flex flex-col gap-2 sm:w-64 sm:shrink-0">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={approvingId === p.id}
+                          onClick={() => dismissIncomplete([p])}
+                        >
+                          {approvingId === p.id ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <Check className="size-3.5" />
+                          )}
+                          対応済みにして隠す
+                        </Button>
+                      </div>
+                    )}
 
                     {/* 上限超過だけがこの画面で確定できる。既定はワンクリック（入力なし） */}
                     {p.kind === "excess" && (

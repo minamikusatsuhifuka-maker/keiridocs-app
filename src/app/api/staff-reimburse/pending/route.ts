@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { createClient as createAuthClient } from "@/lib/supabase/server"
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
+import { parseAiRawObject } from "@/lib/staff-receipt-split"
 import { EXPENSE_ITEM_LABELS, type ExpenseItem, type HoldReason } from "@/lib/subsidy-rules"
 import type { Database } from "@/types/database"
 
@@ -219,10 +220,11 @@ async function fetchIncomplete(
     store_name: string | null
     amount: number | null
     created_at: string
+    ai_raw?: unknown
   }>((from, to) =>
     supabase
       .from("staff_receipts")
-      .select("id, staff_member_id, store_name, amount, created_at")
+      .select("id, staff_member_id, store_name, amount, created_at, ai_raw")
       .lt("created_at", cutoff)
       .order("id", { ascending: true })
       .range(from, to) as unknown as PromiseLike<{
@@ -232,6 +234,7 @@ async function fetchIncomplete(
           store_name: string | null
           amount: number | null
           created_at: string
+          ai_raw?: unknown
         }[] | null
         error: { message: string } | null
       }>
@@ -240,6 +243,8 @@ async function fetchIncomplete(
   return receipts
     .filter((r) => !settled.has(r.id))
     .filter((r) => !(r.staff_member_id && testStaff.has(r.staff_member_id)))
+    // 担当が「対応済み」にしたものは要対応から外す（/api/staff-reimburse/dismiss）
+    .filter((r) => !parseAiRawObject(r.ai_raw)?.pending_dismissed_at)
     .map((r) => ({
       id: r.id,
       kind: "incomplete" as const,
