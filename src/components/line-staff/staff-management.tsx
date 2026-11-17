@@ -12,14 +12,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -32,6 +24,8 @@ import {
   AlertTriangle,
   MessageCircle,
   ArrowRight,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react"
 import { toast } from "sonner"
 import {
@@ -106,6 +100,8 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [newName, setNewName] = useState("")
   const [newLegalName, setNewLegalName] = useState("")
+  // 「詳細」を開いているスタッフ（1人ずつ。ふだん触らない設定を隠して1画面に収める）
+  const [expandedId, setExpandedId] = useState<string | null>(null)
   const [isAdding, setIsAdding] = useState(false)
 
   // 編集ダイアログ
@@ -419,14 +415,14 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
           <CardTitle className="text-lg">スタッフ一覧</CardTitle>
           {/* どの操作がどこにあるか分かるようにする（アイコンだけでは探せない） */}
           <CardDescription>
-            <strong>氏名の変更（フルネームへの修正・改姓）</strong>は右端の「編集」から。
+            <strong>氏名の変更（フルネームへの修正・改姓）</strong>は各行の「編集」から。
             自宅の最寄り駅も同じ画面で登録できます。
             <br />
             <strong>入職</strong>は上の「スタッフを追加」、
-            <strong>退職</strong>は「在籍」スイッチをOFFにしてください。
+            <strong>退職</strong>は各行の「在籍」スイッチをOFFにしてください。
             退職にすると一覧から隠れ、LINEからの申請も受け付けませんが、過去の申請記録は残ります。
             <br />
-            「削除」は登録ミスの行を消すためのものです。申請があるスタッフは削除できません。
+            テスト・初回ATC・削除は「詳細」を開くと出てきます。
             <br />
             <strong>「初回ATCの表示」</strong>は、LINEの申請画面に「初回ATC＋アカデミー会員費」を出すかどうかです。
             初回の全額支給を2回受けられないようにするためのもので、次のどちらかで<strong>自動的に「非表示」</strong>になります。
@@ -452,64 +448,85 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
               <p className="mt-1 text-sm">「スタッフを追加」ボタンから登録してください</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    {/* 氏名と在籍は最初に置く。横に長い表では右端の列が画面外になり、
-                        退職のスイッチが「無い」ように見えてしまうため */}
-                    <TableHead className="whitespace-nowrap">名前</TableHead>
-                    <TableHead className="whitespace-nowrap">在籍</TableHead>
-                    <TableHead className="whitespace-nowrap">LINE登録状況</TableHead>
-                    <TableHead className="whitespace-nowrap">自宅最寄り駅</TableHead>
-                    <TableHead className="whitespace-nowrap">LINE初回設定・定期券</TableHead>
-                    <TableHead className="whitespace-nowrap">初回ATCの表示</TableHead>
-                    <TableHead className="whitespace-nowrap">テスト</TableHead>
-                    <TableHead className="whitespace-nowrap text-right">操作</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {visibleStaff.map((member) => (
-                    <TableRow key={member.id}>
-                      <TableCell className="font-medium">
-                        <div className="flex flex-col gap-0.5">
-                          <span>{member.name}</span>
-                          {/* 改姓して院内では旧姓のまま、という状態がひと目で分かるようにする */}
+            /*
+              横に長い表はスクロールが必要で、行を目で追う間に別のスタッフを
+              操作してしまう危険があった。1人1枚のカードにして横スクロールを無くす。
+              よく使う「氏名・在籍・編集」は常に見え、細かい設定は「詳細」で開く。
+            */
+            <div className="flex flex-col gap-3">
+              {visibleStaff.map((member) => {
+                const st = setupStatus(member)
+                const profile = parseLineProfile(member.line_profile)
+                const atcHidden =
+                  !!member.seminar_repeat_claimed_at || hasPriorCourseRecord(member.line_profile)
+                const isOpen = expandedId === member.id
+                return (
+                  <div
+                    key={member.id}
+                    className="rounded-lg border p-3"
+                    style={{
+                      borderColor: "var(--dusk-border)",
+                      background: member.retired_at ? "var(--muted)" : undefined,
+                    }}
+                  >
+                    {/* 1段目: 氏名と、よく使う操作 */}
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-semibold">{member.name}</span>
+                          {member.retired_at && (
+                            <Badge variant="outline" style={{ color: "var(--dusk-text-muted)" }}>
+                              退職
+                            </Badge>
+                          )}
+                          {/* 改姓して院内では旧姓のまま、という状態をひと目で分かるようにする */}
                           {hasSeparateLegalName(member) && (
-                            <span className="flex flex-wrap items-center gap-1.5">
-                              <Badge
-                                variant="outline"
-                                className="border-violet-500 text-[10px] text-violet-700 dark:text-violet-300"
-                              >
-                                院内は旧姓
-                              </Badge>
-                              <span className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                                給与・手続き：{payrollName(member)}
-                              </span>
-                            </span>
+                            <Badge
+                              variant="outline"
+                              className="border-violet-500 text-violet-700 dark:text-violet-300"
+                            >
+                              院内は旧姓
+                            </Badge>
                           )}
-                          {/* フルネームでないと氏名照合が通らないため、姓だけの登録を警告する */}
-                          {!member.name.trim().includes(" ") &&
-                            !member.name.trim().includes("　") &&
-                            member.name.trim().length <= 3 && (
-                              <span className="text-xs text-amber-700 dark:text-amber-400">
-                                フルネームで登録してください
-                              </span>
-                            )}
-                          {nameConflicts.get(member.id) && (
-                            <span className="inline-flex items-center gap-1 text-xs text-amber-600">
-                              <AlertTriangle className="h-3 w-3" />
-                              {nameConflicts.get(member.id) === "same_name" ? "同名のスタッフがいます" : "同姓のスタッフがいます（フルネーム推奨）"}
-                            </span>
-                          )}
-                          {hasPendingNameChange(parseLineProfile(member.line_profile)) && (
-                            <span className="text-xs text-amber-600">お名前の変更依頼あり（編集から変更すると完了）</span>
+                          {member.is_test && (
+                            <Badge variant="outline" className="border-amber-500 text-amber-700 dark:text-amber-400">
+                              テスト
+                            </Badge>
                           )}
                         </div>
-                      </TableCell>
-                      {/* 在籍/退職。退職＝一覧から隠し、LINEからの申請も受け付けない。記録は残る */}
-                      <TableCell>
-                        <div className="flex items-center gap-2">
+
+                        {hasSeparateLegalName(member) && (
+                          <p className="mt-0.5 text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                            給与・手続き：{payrollName(member)}
+                          </p>
+                        )}
+
+                        {/* 直してほしいことだけを並べる（LINEの照合は完全一致のため） */}
+                        {!member.name.trim().includes(" ") &&
+                          !member.name.trim().includes("　") &&
+                          member.name.trim().length <= 3 && (
+                            <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-400">
+                              フルネームで登録してください
+                            </p>
+                          )}
+                        {nameConflicts.get(member.id) && (
+                          <p className="mt-0.5 inline-flex items-center gap-1 text-xs text-amber-600">
+                            <AlertTriangle className="h-3 w-3" />
+                            {nameConflicts.get(member.id) === "same_name"
+                              ? "同名のスタッフがいます"
+                              : "同姓のスタッフがいます（フルネーム推奨）"}
+                          </p>
+                        )}
+                        {hasPendingNameChange(profile) && (
+                          <p className="mt-0.5 text-xs text-amber-600">
+                            お名前の変更依頼あり（「編集」から変更すると完了）
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        {/* 在籍/退職。退職＝一覧から隠し、LINEからの申請も受け付けない。記録は残る */}
+                        <div className="flex items-center gap-2 rounded-md border px-2 py-1">
                           <Switch
                             checked={!member.retired_at}
                             onCheckedChange={(checked) => handleToggleRetired(member, !checked)}
@@ -524,66 +541,84 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                             {member.retired_at ? "退職" : "在籍"}
                           </span>
                         </div>
-                      </TableCell>
-                      <TableCell>
+                        <Button variant="outline" size="sm" onClick={() => openEditDialog(member)}>
+                          <Pencil className="h-4 w-4" />
+                          編集
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setExpandedId(isOpen ? null : member.id)}
+                        >
+                          {isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                          詳細
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* 2段目: 状態のまとめ（文字だけ・折り返す） */}
+                    <div
+                      className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm"
+                      style={{ color: "var(--dusk-text-muted)" }}
+                    >
+                      <span className="inline-flex items-center gap-1">
                         {member.line_user_id ? (
-                          <span className="inline-flex items-center gap-1.5 text-sm text-green-600">
-                            <CheckCircle2 className="h-4 w-4" />
-                            登録済み
-                          </span>
+                          <>
+                            <CheckCircle2 className="h-4 w-4 text-green-600" />
+                            LINE登録済み
+                          </>
                         ) : (
-                          <span className="inline-flex items-center gap-1.5 text-sm text-amber-600">
-                            <AlertTriangle className="h-4 w-4" />
-                            未登録
-                          </span>
+                          <>
+                            <AlertTriangle className="h-4 w-4 text-amber-600" />
+                            LINE未登録
+                          </>
                         )}
-                      </TableCell>
-                      {/* 自宅最寄り駅（領収書なし交通費の電車運賃AI推定の出発駅）。編集ダイアログで登録 */}
-                      <TableCell>
-                        {member.home_station ? (
-                          <span className="text-sm">
-                            {member.home_station}
-                            {member.home_station_pref && (
-                              <span className="ml-1 text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                                （{member.home_station_pref}）
-                              </span>
-                            )}
-                          </span>
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        {st.done ? (
+                          <>
+                            <CheckCircle2 className="h-4 w-4 text-green-600" />
+                            初回設定ずみ
+                          </>
                         ) : (
-                          <span className="text-sm" style={{ color: "var(--dusk-text-muted)" }}>
-                            未登録
-                          </span>
+                          <>
+                            <AlertTriangle className="h-4 w-4 text-amber-600" />
+                            初回設定が未完了
+                            {st.issues.length > 0 && `（${st.issues.join("・")}）`}
+                          </>
                         )}
-                      </TableCell>
-                      {/* LINE初回設定（氏名確認・最寄り駅・定期券）の状態と定期券の区間 */}
-                      <TableCell>
-                        {(() => {
-                          const st = setupStatus(member)
-                          return (
-                            <div className="flex flex-col gap-0.5 text-sm">
-                              {st.done ? (
-                                <span className="inline-flex items-center gap-1 text-green-600">
-                                  <CheckCircle2 className="h-4 w-4" />
-                                  設定完了
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 text-amber-600">
-                                  <AlertTriangle className="h-4 w-4" />
-                                  未完了{st.issues.length > 0 ? `（${st.issues.join("・")}）` : ""}
-                                </span>
-                              )}
-                              <span className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                                通勤：{commuteMethodLabel(parseLineProfile(member.line_profile))}
-                                {mayHaveCommuterPass(parseLineProfile(member.line_profile).commute_method ?? "other") &&
-                                  `／定期券：${commuterPassLabel(parseLineProfile(member.line_profile))}`}
-                              </span>
-                            </div>
-                          )
-                        })()}
-                      </TableCell>
-                      {/* セミナー2回目以降の登録状態。ON=初回ATC非表示 / OFF=初回ATC再表示。手動トグル可（訂正用） */}
-                      <TableCell>
-                        <div className="flex flex-col gap-1">
+                      </span>
+                      <span>
+                        最寄り駅：
+                        {member.home_station
+                          ? `${member.home_station}${member.home_station_pref ? `（${member.home_station_pref}）` : ""}`
+                          : "未登録"}
+                      </span>
+                      <span>通勤：{commuteMethodLabel(profile)}</span>
+                      {mayHaveCommuterPass(profile.commute_method ?? "other") && (
+                        <span>定期券：{commuterPassLabel(profile)}</span>
+                      )}
+                      <span>初回ATC：{atcHidden ? "非表示" : "表示"}</span>
+                    </div>
+
+                    {/* 3段目（詳細）: ふだんは触らない設定 */}
+                    {isOpen && (
+                      <div
+                        className="mt-3 flex flex-col gap-3 border-t pt-3"
+                        style={{ borderColor: "var(--dusk-border)" }}
+                      >
+                        {/* 初回ATCの表示。既受講の登録があればスイッチに関係なく非表示 */}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium">初回ATCの表示</p>
+                            <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                              {!member.seminar_repeat_claimed_at && hasPriorCourseRecord(member.line_profile)
+                                ? "既受講の登録により非表示になっています（スイッチは不要です）"
+                                : member.seminar_repeat_claimed_at
+                                  ? `本人の申請により非表示（${formatClaimedAt(member.seminar_repeat_claimed_at)}）`
+                                  : "LINEに「初回ATC＋アカデミー会員費」が表示されます"}
+                            </p>
+                          </div>
                           <div className="flex items-center gap-2">
                             <Switch
                               checked={!!member.seminar_repeat_claimed_at}
@@ -593,63 +628,54 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                             />
                             <span
                               className="inline-flex items-center gap-1 text-sm font-medium"
-                              style={{
-                                color: member.seminar_repeat_claimed_at
-                                  ? "var(--dusk-primary)"
-                                  : "var(--dusk-text-muted)",
-                              }}
+                              style={{ color: atcHidden ? "var(--dusk-primary)" : "var(--dusk-text-muted)" }}
                             >
                               {togglingId === member.id && <Loader2 className="h-3 w-3 animate-spin" />}
-                              {member.seminar_repeat_claimed_at || hasPriorCourseRecord(member.line_profile)
-                                ? "非表示（初回は済み）"
-                                : "表示（初回を選べる）"}
+                              {atcHidden ? "非表示" : "表示"}
                             </span>
                           </div>
-                          {/* 既受講の登録があれば、このスイッチに関係なく非表示になる（記録1つで決める） */}
-                          {!member.seminar_repeat_claimed_at && hasPriorCourseRecord(member.line_profile) && (
-                            <span className="text-xs" style={{ color: "var(--dusk-primary)" }}>
-                              既受講の登録により非表示
-                            </span>
-                          )}
-                          {member.seminar_repeat_claimed_at && (
-                            <span className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                              {formatClaimedAt(member.seminar_repeat_claimed_at)}
-                            </span>
-                          )}
                         </div>
-                      </TableCell>
-                      {/* テストスタッフ。ON=テストフォルダ保存＋会計士CSV/集計/院長通知から除外 */}
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Switch
-                            checked={!!member.is_test}
-                            onCheckedChange={(checked) => handleToggleTest(member, checked)}
-                            disabled={togglingTestId === member.id}
-                            aria-label="テストスタッフの切り替え"
-                          />
-                          <span
-                            className="inline-flex items-center gap-1 text-sm font-medium"
-                            style={{ color: member.is_test ? "#d97706" : "var(--dusk-text-muted)" }}
-                          >
-                            {togglingTestId === member.id && <Loader2 className="h-3 w-3 animate-spin" />}
-                            {member.is_test ? "テスト(ON)" : "本番(OFF)"}
-                          </span>
+
+                        {/* テストスタッフ。ON=テストフォルダ保存＋会計士CSV/集計/院長通知から除外 */}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium">テストスタッフ</p>
+                            <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                              ONにすると、会計士さんへの提出・集計・通知から除外されます。
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Switch
+                              checked={!!member.is_test}
+                              onCheckedChange={(checked) => handleToggleTest(member, checked)}
+                              disabled={togglingTestId === member.id}
+                              aria-label="テストスタッフの切り替え"
+                            />
+                            <span
+                              className="inline-flex items-center gap-1 text-sm font-medium"
+                              style={{ color: member.is_test ? "#d97706" : "var(--dusk-text-muted)" }}
+                            >
+                              {togglingTestId === member.id && <Loader2 className="h-3 w-3 animate-spin" />}
+                              {member.is_test ? "テスト(ON)" : "本番(OFF)"}
+                            </span>
+                          </div>
                         </div>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          {/* アイコンだけでは見つけられないため文字を添える */}
-                          <Button variant="outline" size="sm" onClick={() => openEditDialog(member)}>
-                            <Pencil className="h-4 w-4" />
-                            編集
-                          </Button>
+
+                        {/* 削除は誤操作が怖いので詳細の中に置く（退職は在籍スイッチ） */}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium">この行を削除</p>
+                            <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                              登録ミスの行を消すためのものです。退職は上の「在籍」スイッチで切り替えてください。
+                              申請があるスタッフは削除できません。
+                            </p>
+                          </div>
                           <Button
                             variant="ghost"
                             size="sm"
                             className="text-destructive hover:text-destructive"
                             onClick={() => handleDelete(member.id, member.name)}
                             disabled={deletingId === member.id}
-                            title="登録ミスの行を消すためのボタンです。退職は「在籍」スイッチで切り替えてください"
                           >
                             {deletingId === member.id ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
@@ -659,11 +685,11 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                             削除
                           </Button>
                         </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           )}
         </CardContent>
