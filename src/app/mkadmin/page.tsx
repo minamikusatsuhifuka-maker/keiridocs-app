@@ -12,6 +12,7 @@ import { NotifyList } from "@/components/settings/notify-list"
 import { FolderSettings } from "@/components/settings/folder-settings"
 import { NotificationSettings } from "@/components/settings/notification-settings"
 import { AccountSettings } from "@/components/settings/account-settings"
+import { AllowedEmails } from "@/components/settings/allowed-emails"
 import { AiSettings } from "@/components/settings/ai-settings"
 import { DocumentTypeSettings } from "@/components/settings/document-type-settings"
 import { AutoClassifySettings } from "@/components/settings/auto-classify-settings"
@@ -26,7 +27,7 @@ import { PriorCourseRegistration } from "@/components/courses/prior-course-regis
 import { PaymentMemo } from "@/components/mkadmin/payment-memo"
 import { StaffReimburseList } from "@/components/mkadmin/staff-reimburse-list"
 import { StaffManualEntry } from "@/components/mkadmin/staff-manual-entry"
-import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, Users, Wallet, Loader2, Receipt, ArrowRight, ClipboardList, HandCoins, GraduationCap, MessageCircle } from "lucide-react"
+import { Mail, Bell, FolderOpen, BellRing, UserCog, Sparkles, FileType, SlidersHorizontal, Download, Briefcase, MousePointerClick, Users, Wallet, Loader2, Receipt, ArrowRight, ClipboardList, HandCoins, GraduationCap, MessageCircle, ShieldCheck } from "lucide-react"
 
 // 管理画面（/mkadmin）認証用 sessionStorage キー
 const SESSION_KEY = "mkadmin-auth"
@@ -92,6 +93,7 @@ const TAB_GROUPS: {
     tabs: [
       { value: "ai", label: "AI設定", icon: Sparkles },
       { value: "floating-button", label: "フローティングボタン", icon: MousePointerClick },
+      { value: "allowed-emails", label: "ログイン許可", icon: ShieldCheck },
       { value: "account", label: "アカウント", icon: UserCog },
     ],
   },
@@ -334,6 +336,11 @@ export default function MkadminPage() {
             {/* 既受講の登録（アプリ導入前の受講回数。未登録だと既受講者に全額支給してしまう） */}
             <PriorCourseRegistration />
           </div>
+        </TabsContent>
+
+        <TabsContent value="allowed-emails">
+          {/* ログインできるメールアドレスの管理（許可制） */}
+          <AllowedEmails />
         </TabsContent>
 
         <TabsContent value="account">

@@ -42,6 +42,46 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
+  // ログインできるのは許可リスト（allowed_emails）にあるアドレスだけ。
+  //
+  // これが無いと、Googleアカウントを持っている人なら誰でもログインでき、
+  // 取引先名・金額・スタッフの氏名と立替額が見えてしまう。
+  //
+  // RLSで「自分のアドレスの行」しか読めないため、1件でも返れば許可されている。
+  // migration 047 未適用の環境ではテーブルが無く、従来どおり全員が使える
+  // （適用前に全員が締め出されるのを防ぐため）。
+  if (user && !request.nextUrl.pathname.startsWith("/denied")) {
+    const email = user.email?.toLowerCase() ?? ""
+    // allowed_emails は型定義の再生成前のため、型チェックを通すために any 経由で呼ぶ
+    const { data: allowed, error: allowedError } = await (
+      supabase as unknown as {
+        from: (t: string) => {
+          select: (c: string) => {
+            eq: (k: string, v: string) => {
+              maybeSingle: () => Promise<{
+                data: { id: string } | null
+                error: { code?: string; message?: string } | null
+              }>
+            }
+          }
+        }
+      }
+    )
+      .from("allowed_emails")
+      .select("id")
+      .eq("email", email)
+      .maybeSingle()
+
+    const tableMissing =
+      allowedError?.code === "42P01" || /allowed_emails/.test(allowedError?.message || "")
+    if (!tableMissing && !allowed) {
+      const url = request.nextUrl.clone()
+      url.pathname = "/denied"
+      url.search = ""
+      return NextResponse.redirect(url)
+    }
+  }
+
   // 認証済みユーザーが /login にアクセスした場合はトップへ
   if (user && request.nextUrl.pathname.startsWith("/login")) {
     const url = request.nextUrl.clone()
