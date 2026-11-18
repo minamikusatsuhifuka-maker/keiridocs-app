@@ -32,6 +32,13 @@ import {
   hasUnknownYear,
 } from "../src/lib/transit-history"
 import { resolveTravelWindow } from "../src/lib/subsidy-assess"
+import {
+  payEasyBadgeLabel,
+  payEasyDueDate,
+  payEasyState,
+  withPayEasyPaid,
+} from "../src/lib/payeasy"
+import { groupDigits, isPayEasyComplete } from "../src/lib/gemini-shared"
 
 let passed = 0
 const failures: string[] = []
@@ -852,6 +859,81 @@ check(
     "範囲外の番号は無視する",
     ids(assignRegisteredTrips(trips, [], [99, -1, 3], key)),
     [3]
+  )
+}
+
+
+/* ---------- Pay-easy（ペイジー）納付 ----------
+ *
+ * 納付書は「税金分」と「手数料分」の2枚で、1回ずつ分けて納付する。
+ * 片方だけ納付済みの状態を正しく追えること、番号が揃わない組を
+ * 納付できる扱いにしないことを確かめる。
+ */
+{
+  // 実物の構成（番号は例に置き換え）
+  const raw = {
+    payeasy: [
+      {
+        kind: "税金分",
+        institution_code: "00120",
+        customer_number: "03379900000",
+        confirmation_number: "700000",
+        amount: 31700,
+        due_date: "2026-12-25",
+        declaration_number: "41604659560",
+        note: "消費・地方消費税",
+      },
+      {
+        kind: "手数料分",
+        institution_code: "58082",
+        customer_number: "02600260000000",
+        confirmation_number: "100000",
+        amount: 6600,
+        due_date: "2027-01-21",
+        declaration_number: "41604659560",
+        note: "輸入申告代行手数料",
+      },
+    ],
+  }
+
+  check("未納付の表示", payEasyBadgeLabel(raw), "💳 Pay-easy")
+  check("未納付の状態", payEasyState(raw).status, "unpaid")
+
+  const one = withPayEasyPaid(raw, 0, true)
+  check("1枚だけ納付すると 1/2 と出る", payEasyBadgeLabel(one), "💳 Pay-easy 1/2")
+  check("1枚だけ納付は partial", payEasyState(one).status, "partial")
+
+  const both = withPayEasyPaid(one, 1, true)
+  check("2枚とも納付すると納付済み", payEasyBadgeLabel(both), "✓ 納付済み")
+
+  const back = withPayEasyPaid(both, 1, false)
+  check("未納付に戻せる", payEasyBadgeLabel(back), "💳 Pay-easy 1/2")
+
+  // 期限は未納付のうち最も早いもの。完納したら知らせない
+  check("期限は未納付のうち最も早いもの", payEasyDueDate(raw), "2026-12-25")
+  check("1枚納付後は残りの期限", payEasyDueDate(one), "2027-01-21")
+  check("完納後は期限を出さない", payEasyDueDate(both), null)
+
+  // 番号が揃っていない組は納付できる扱いにしない
+  const broken = { payeasy: [{ ...raw.payeasy[0], confirmation_number: "" }] }
+  check("番号が足りなければ要確認", payEasyBadgeLabel(broken), "💳 要確認")
+  check("番号が足りない組は未完", isPayEasyComplete(broken.payeasy[0]), false)
+  check("確認番号が5桁なら未完", isPayEasyComplete({ ...raw.payeasy[0], confirmation_number: "70000" }), false)
+  check("収納機関番号が4桁なら未完", isPayEasyComplete({ ...raw.payeasy[0], institution_code: "0012" }), false)
+  check("揃っていれば納付できる", isPayEasyComplete(raw.payeasy[0]), true)
+
+  check("納付書でなければ印を出さない", payEasyBadgeLabel({ vendor_name: "セブンイレブン" }), null)
+  check("解析結果が無くても落ちない", payEasyBadgeLabel(null), null)
+
+  // 表示は4桁区切り、コピーする値は区切らない
+  check("表示は4桁区切り", groupDigits("02600260000000"), "0260 0260 0000 00")
+  check("5桁の収納機関番号", groupDigits("00120"), "0012 0")
+
+  // 2枚を1件に紐づける申告番号
+  check(
+    "申告番号が2枚に共通で入る",
+    raw.payeasy[0].declaration_number === raw.payeasy[1].declaration_number,
+    true
   )
 }
 

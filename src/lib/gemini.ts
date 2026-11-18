@@ -12,6 +12,7 @@ import {
   type BankInfo,
   type OcrItem,
   type OcrResult,
+  type PayEasyEntry,
   type PaymentMethod,
   type SplitPayment,
   type VendorIdentifiers,
@@ -211,6 +212,45 @@ const MULTI_PAYMENT_JSON_FIELD = `  "payments": [
     }
   ],`
 
+/** Pay-easy（ペイジー）納付番号のJSON項目（プロンプトのJSONテンプレートに差し込む） */
+const PAYEASY_JSON_FIELD = `  "payeasy": [
+    {
+      "kind": "何の納付か（例: 税金分／手数料分）",
+      "institution_code": "収納機関番号・収納機関コード（5桁の数字のみ）",
+      "customer_number": "お客様番号・納付番号（数字のみ。ハイフンや空白は除く）",
+      "confirmation_number": "確認番号（6桁の数字のみ）",
+      "amount": 納付金額（数値。円）,
+      "due_date": "納期限・MPN有効期限（YYYY-MM-DD形式。無ければnull）",
+      "declaration_number": "輸入申告番号・申告番号（無ければnull）",
+      "note": "受入科目名・払込内容など内容が分かる文字列（無ければnull）"
+    }
+  ],`
+
+/** Pay-easy（ペイジー）納付番号の抽出ルール（プロンプト末尾に差し込む） */
+const PAYEASY_RULES = `【payeasy（Pay-easy納付番号）の抽出 — 重要】
+銀行のPay-easy画面で入力する番号を抜き出す。入力を代わりに済ませるための項目なので、
+1文字でも違うと納付できない。読み取れない項目は推測せず空文字にすること。
+
+- 次の表題がある書類は、必ず payeasy を返すこと。
+  「納付番号通知情報」「輸入申告代行手数料納付番号通知情報」
+  「納付書」「払込票」など、収納機関番号と確認番号が印字されている書類も対象。
+- 項目の呼び名は書類によって違うが、同じものとして扱うこと。
+    収納機関番号 ＝ 収納機関コード      → institution_code
+    お客様番号   ＝ 納付番号            → customer_number
+    確認番号                            → confirmation_number
+- **1つのファイルに2組ある場合は2件返すこと**（税金分と手数料分で1回ずつ納付するため）。
+  ページごと・表題ごとに1件とする。
+    表題に「手数料」が含まれる     → kind は「手数料分」
+    それ以外の納付番号通知情報     → kind は「税金分」
+- institution_code・customer_number・confirmation_number は**数字だけ**を返すこと
+  （ハイフン・空白・全角数字は半角の数字に直す）。先頭の0も省略しないこと。
+- due_date には「納期限」を入れる。空欄なら「MPN有効期限」を使う。どちらも無ければ null。
+- declaration_number には「輸入申告番号」または「申告番号」を入れる。
+  2枚の納付書を1件に紐づけるために使うので、両方の組に同じ番号を入れること。
+- note には「受入科目名」（例: 消費・地方消費税）や「払込内容」（例: 輸入申告代行手数料）を入れる。
+- Pay-easyの納付書でなければ payeasy は空配列 [] を返すこと。
+- この payeasy の判定は【追加指示】の有無にかかわらず必ず行うこと。`
+
 /** 複数支払いの分割判定ルール（プロンプト末尾に差し込む） */
 const MULTI_PAYMENT_RULES = `【payments（複数支払いの分割候補）の判定基準 — 重要】
 1つのファイルに「独立した支払い」が複数含まれる場合のみ、payments に各支払いを配列で返す。
@@ -387,6 +427,7 @@ ${CURRENCY_JSON_FIELDS}
   "account_title": "勘定科目（下記参照）",
 ${PAYMENT_JSON_FIELDS}
 ${MULTI_PAYMENT_JSON_FIELD}
+${PAYEASY_JSON_FIELD}
   "items": [
     {
       "item_name": "品目名",
@@ -431,7 +472,9 @@ ${CURRENCY_RULES}
 
 ${PAYMENT_EXTRACTION_RULES}
 
-${MULTI_PAYMENT_RULES}`
+${MULTI_PAYMENT_RULES}
+
+${PAYEASY_RULES}`
 
   // 429（レート制限）対策: 最大4回まで指数バックオフでリトライ（5秒・10秒・20秒・40秒）
   const maxRetries = 4
@@ -767,6 +810,7 @@ ${CURRENCY_JSON_FIELDS}
   "account_title": "勘定科目（下記参照）",
 ${PAYMENT_JSON_FIELDS}
 ${MULTI_PAYMENT_JSON_FIELD}
+${PAYEASY_JSON_FIELD}
   "items": [
     {
       "item_name": "品目名",
@@ -812,6 +856,8 @@ ${CURRENCY_RULES}
 ${PAYMENT_EXTRACTION_RULES}
 
 ${MULTI_PAYMENT_RULES}
+
+${PAYEASY_RULES}
 
 --- テキストデータ ---
 ${text}`
@@ -982,6 +1028,63 @@ export function normalizeBankInfo(raw: unknown): BankInfo | null {
  * Geminiの応答テキストからJSONをパースする
  * 失敗時はフォールバック値を返す
  */
+/**
+ * Pay-easy（ペイジー）の納付番号を整える。
+ *
+ * 銀行の入力欄にそのまま貼れる形にするため、**数字だけ**にして保存する。
+ * ハイフン・空白・全角数字が混ざると、コピーしても弾かれてしまう。
+ *
+ * 番号が揃っていない組（3項目のどれかが読めなかった組）も捨てずに残す。
+ * 担当が手で補えるようにするため（捨てると書類が納付書だったことも分からなくなる）。
+ */
+function normalizePayEasy(value: unknown): PayEasyEntry[] {
+  if (!Array.isArray(value)) return []
+
+  /** 全角を半角に直し、数字だけを取り出す */
+  const digits = (v: unknown): string =>
+    typeof v === "string" || typeof v === "number"
+      ? String(v)
+          .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+          .replace(/\D/g, "")
+      : ""
+  const text = (v: unknown): string => (typeof v === "string" ? v.trim() : "")
+
+  const entries: PayEasyEntry[] = []
+  for (const row of value) {
+    if (!row || typeof row !== "object") continue
+    const r = row as Record<string, unknown>
+    const institution = digits(r.institution_code)
+    const customer = digits(r.customer_number)
+    const confirmation = digits(r.confirmation_number)
+    // 3項目すべてが空なら納付書ではない
+    if (!institution && !customer && !confirmation) continue
+
+    entries.push({
+      kind: text(r.kind) || (/手数料/.test(text(r.note)) ? "手数料分" : "税金分"),
+      institution_code: institution,
+      customer_number: customer,
+      confirmation_number: confirmation,
+      amount: typeof r.amount === "number" && r.amount > 0 ? r.amount : null,
+      due_date: normalizeDateString(r.due_date),
+      declaration_number: digits(r.declaration_number) || null,
+      note: text(r.note) || null,
+      paid_at: null,
+    })
+  }
+
+  // 税金分を先に出す（銀行では金額の大きい税金分から納付することが多い）
+  return entries.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "税金分" ? -1 : 1))
+}
+
+/** YYYY-MM-DD だけを受け取る（それ以外の書き方は null にして推測しない） */
+function normalizeDateString(value: unknown): string | null {
+  if (typeof value !== "string") return null
+  const m = value.trim().match(/^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})/)
+  if (!m) return null
+  const [, y, mo, d] = m
+  return `${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`
+}
+
 function parseOcrResponse(responseText: string): OcrResult {
   try {
     // マークダウンのコードブロックを除去
@@ -1050,6 +1153,7 @@ function parseOcrResponse(responseText: string): OcrResult {
       bank_info: normalizeBankInfo(parsed.bank_info),
       items,
       payments: payments.length >= 2 ? payments : [],
+      payeasy: normalizePayEasy(parsed.payeasy),
       warnings: [],
       vendor_registration_number: str(parsed.vendor_registration_number),
       vendor_address: str(parsed.vendor_address),

@@ -124,6 +124,39 @@ export interface VendorIdentifiers {
 export type VendorResolvedBy = "registration_number" | "phone" | "address"
 
 /** AI解析結果の型 */
+/**
+ * Pay-easy（ペイジー）の納付に必要な1組の番号。
+ *
+ * 納付書は「税金分」と「手数料分」の2枚に分かれ、銀行の画面では
+ * **1回ずつ分けて**操作する。そのため1組ずつ別々に持つ。
+ *
+ * 項目の呼び名は書類によって違う（同じ意味）。
+ *   納付番号通知情報               … 収納機関コード／納付番号／確認番号
+ *   輸入申告代行手数料納付番号通知情報 … 収納機関番号／お客様番号／確認番号
+ */
+export interface PayEasyEntry {
+  /** 「税金分」「手数料分」など、何の納付か */
+  kind: string
+  /** 収納機関番号（収納機関コード）。5桁 */
+  institution_code: string
+  /** お客様番号（納付番号）。桁数は書類により異なる */
+  customer_number: string
+  /** 確認番号。6桁 */
+  confirmation_number: string
+  /** 納付金額（円） */
+  amount: number | null
+  /** 納期限・MPN有効期限（YYYY-MM-DD）。無ければ null */
+  due_date: string | null
+  /** 申告番号。2枚を1件に紐づけるために使う */
+  declaration_number: string | null
+  /** 画面に出す補足（受入科目名・払込内容など） */
+  note: string | null
+  /** 担当が手で入力したものか（読み取れなかったとき） */
+  manual?: boolean
+  /** 納付済みにした日時（ISO8601）。未納付は null */
+  paid_at?: string | null
+}
+
 export interface OcrResult extends VendorIdentifiers {
   vendor_name: string
   amount: number | null
@@ -156,6 +189,30 @@ export interface OcrResult extends VendorIdentifiers {
    * 外貨のとき amount は円換算額（換算できなければ null）で、原通貨額・レート・換算方法はここに残す。
    */
   foreign_currency?: ForeignCurrencyInfo | null
+  /**
+   * Pay-easy（ペイジー）で納付する書類のとき、納付に必要な番号。
+   * 「税金分」「手数料分」のように2組ある書類が多いため配列で持つ。
+   * 納付書でなければ空配列。
+   */
+  payeasy?: PayEasyEntry[]
+}
+
+/** Pay-easyの番号が揃っているか（この3つが無いと納付できない） */
+export function isPayEasyComplete(e: PayEasyEntry | null | undefined): boolean {
+  return (
+    !!e &&
+    /^\d{5}$/.test(e.institution_code ?? "") &&
+    /^\d{6,}$/.test(e.customer_number ?? "") &&
+    /^\d{6}$/.test(e.confirmation_number ?? "")
+  )
+}
+
+/**
+ * 画面に出す桁区切り（4桁ごとに半角スペース）。
+ * コピーする値は区切らない。空白が混ざると銀行の入力欄で弾かれるため。
+ */
+export function groupDigits(value: string): string {
+  return (value ?? "").replace(/\D/g, "").replace(/(.{4})/g, "$1 ").trim()
 }
 
 /** 取引先名を確定できず空欄にしたときの警告文 */

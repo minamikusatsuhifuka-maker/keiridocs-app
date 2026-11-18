@@ -23,6 +23,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import type { Json } from "@/types/database"
+import { PayEasyCard } from "@/components/documents/payeasy-card"
 import { TransferBadgeButton } from "@/components/documents/transfer-badge-button"
 import { SplitPaymentsConfirm } from "@/components/documents/split-payments-confirm"
 import { ArrowLeft, Loader2, Pencil, Trash2, Save, X, RefreshCw, AlertTriangle, Upload } from "lucide-react"
@@ -498,6 +500,15 @@ export default function DocumentDetailPage() {
           </div>
         </div>
       )}
+
+      {/* Pay-easy 納付。支払いのときに最初に見る情報なので一番上に出す */}
+      <PayEasyCard
+        documentId={doc.id}
+        ocrRaw={doc.ocr_raw}
+        onUpdated={(raw) =>
+          setDoc((prev) => (prev ? { ...prev, ocr_raw: raw as Json } : prev))
+        }
+      />
 
       {/* 書類情報 */}
       <Card>

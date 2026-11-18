@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { StatusBadge } from "@/components/documents/status-badge"
+import { PayEasyBadge } from "@/components/documents/payeasy-badge"
 import { TransferBadgeButton } from "@/components/documents/transfer-badge-button"
 import {
   FilePreviewModal,
@@ -525,6 +526,8 @@ export function DocumentTable({
           ) : (
             doc.status === "要振込" && <StatusBadge status="要振込" className="shrink-0" />
           )}
+          {/* Pay-easyで納付する書類の印。納付の進み具合（1/2 など）も出す */}
+          <PayEasyBadge ocrRaw={doc.ocr_raw} className="shrink-0" />
         </span>
         )
       },

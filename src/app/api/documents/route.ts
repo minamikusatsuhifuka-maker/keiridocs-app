@@ -7,6 +7,7 @@ import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/docume
 import type { Database, Json } from "@/types/database"
 import { resolveDocumentSubmissionMonth, parseYearMonth, sameYearMonth } from "@/lib/submission-month"
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
+import { payEasyDueDate } from "@/lib/payeasy"
 
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"]
 type DocumentUpdate = Database["public"]["Tables"]["documents"]["Update"]
@@ -289,7 +290,12 @@ export async function POST(request: NextRequest) {
         vendor_name,
         amount: typeof amount === "number" ? amount : null,
         issue_date: typeof issue_date === "string" ? issue_date : null,
-        due_date: typeof due_date === "string" ? due_date : null,
+        // 納付書は due_date の欄が空で、期限が解析結果（MPN有効期限など）にだけ
+        // 入っていることがある。期限アラートに載せるためここで補う
+        due_date:
+          typeof due_date === "string" && due_date
+            ? due_date
+            : (payEasyDueDate(ocr_raw) ?? null),
         description: typeof description === "string" ? description : null,
         input_method,
         status: autoStatus,
