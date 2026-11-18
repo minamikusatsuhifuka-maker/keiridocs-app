@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
-import { uploadFile } from "@/lib/dropbox"
+import { downloadFile, uploadFile } from "@/lib/dropbox"
 import {
   analyzeDocument,
   normalizeAmount,
-  STAFF_RECEIPT_ANALYSIS_EXTRA_HINT,
+  STAFF_RECEIPT_AUTO_ANALYSIS_EXTRA_HINT,
   TRANSIT_HISTORY_ANALYSIS_EXTRA_HINT,
   type OcrResult,
 } from "@/lib/gemini"
@@ -691,6 +691,9 @@ async function handlePostback(event: LineEvent): Promise<void> {
       return
     case "rfretry":
       await handleRetryPhotoPostback(event, params)
+      return
+    case "rfic": // 保存済みの写真をICカードの利用履歴として読み直す
+      await handleReadAsTransitPostback(event, params)
       return
     case "rfmanual":
       await handleManualInputPostback(event, params)
@@ -1383,6 +1386,122 @@ async function loadActiveTestRunId(
   }
 }
 
+/**
+ * 「ICカードの履歴として読む」→ 保存済みの写真を利用履歴として読み直す。
+ *
+ * 領収書として読んで失敗したとき、写真を送り直してもらわずに済ませる。
+ * スタッフはアルバムから何枚も続けて送るため、1枚ごとに種類を選ぶのは手間で、
+ * 選び忘れると利用履歴が読み取れずに止まってしまう。
+ *
+ * 画像はDropboxに保存済みなので、それを読み直すだけでよい。
+ */
+async function handleReadAsTransitPostback(
+  event: LineEvent,
+  params: URLSearchParams
+): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  if (!receiptId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。")
+    return
+  }
+
+  const supabase = createServiceClient()
+  const { data } = await supabase
+    .from("staff_receipts")
+    .select("dropbox_path, staff_member_id")
+    .eq("id", receiptId)
+    .maybeSingle()
+  const row = data as { dropbox_path: string | null; staff_member_id: string | null } | null
+  if (!row?.dropbox_path) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ 写真が見つかりませんでした。お手数ですが、もう一度送ってください。"
+    )
+    return
+  }
+  if (!(await isMyReceipt(supabase, source.userId, row.staff_member_id))) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ ご自身の申請ではないため操作できません。")
+    return
+  }
+
+  try {
+    const { buffer, mimeType } = await downloadFile(row.dropbox_path)
+    const ocr = await analyzeDocument(buffer.toString("base64"), mimeType || "image/jpeg", {
+      extraHint: TRANSIT_HISTORY_ANALYSIS_EXTRA_HINT,
+    })
+    const trips = deriveTransitTrips(ocr)
+
+    if (trips.length === 0) {
+      await sendLineMessage(
+        replyToken,
+        source.userId,
+        "⚠️ 利用履歴としても読み取れませんでした。\n" +
+          "─────────────\n" +
+          "次のどちらかをお試しください。\n" +
+          "・日付・区間・金額がはっきり写るように撮り直して送る\n" +
+          "・「問い合わせ」から担当にご連絡いただく\n\n" +
+          "履歴が長い場合は、何回かに分けて撮っていただくと読み取りやすくなります。"
+      )
+      return
+    }
+
+    // 読み直した結果を記録に反映してから、移動の選択に進む
+    await supabase
+      .from("staff_receipts")
+      .update({
+        document_type: "交通系ICカード利用履歴",
+        store_name: ocr.vendor_name || "交通系ICカード利用履歴",
+        amount: ocr.amount,
+      })
+      .eq("id", receiptId)
+    await saveTripState(supabase, receiptId, { trips })
+
+    if (hasUnknownYear(trips)) {
+      await askTransitYear(event, receiptId, trips)
+      return
+    }
+    await sendTransitTripPicker(
+      event,
+      receiptId,
+      trips,
+      "ICカードの利用履歴として読み直しました。\n\n"
+    )
+  } catch (error) {
+    console.error("[LINE Bot] 利用履歴としての読み直しに失敗:", error)
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ 読み直せませんでした。お手数ですが、もう一度写真を送ってください。"
+    )
+  }
+}
+
+/**
+ * 読み取り結果が「交通系ICカードの利用履歴」か。
+ *
+ * スタッフはアルバムから何枚も続けて送るため、1枚ごとに種類を選ばせない。
+ * 読み取りの指示（STAFF_RECEIPT_AUTO_ANALYSIS_EXTRA_HINT）で
+ * type に「交通系ICカード利用履歴」と入れてもらい、それで振り分ける。
+ *
+ * 書き方が揺れることがあるため、次のどれかで判定する。
+ *  - type / vendor_name に「利用履歴」や「ICカード」が含まれる
+ *  - 「駅 → 駅」の形の移動が2件以上読み取れている
+ *    （領収書で「→」が2件以上並ぶことはまず無い）
+ */
+function looksLikeTransitHistory(ocr: {
+  type?: string | null
+  vendor_name?: string | null
+  payments?: { vendor_name?: string | null }[]
+}): boolean {
+  const text = `${ocr.type ?? ""} ${ocr.vendor_name ?? ""}`
+  if (/利用履歴|ＩＣカード|ICカード|icoca|ICOCA|PiTaPa|Suica|PASMO/i.test(text)) return true
+
+  const arrows = (ocr.payments ?? []).filter((p) => /[→⇒>]/.test(p?.vendor_name ?? "")).length
+  return arrows >= 2
+}
+
 /* ---------- 交通系ICカードの利用履歴 ---------- */
 
 /**
@@ -2067,10 +2186,25 @@ async function sendReadFailureChoices(
         : "金額または日付を読み取れませんでした。\n") +
       "写真はDropboxに保存しています。\n\n" +
       "どうされますか？\n\n" +
+      (isTransit
+        ? ""
+        : "・ICカードの履歴として読む … ICOCAなどの利用履歴の画面だった場合\n") +
       "・写真を送り直す … 明るい場所で撮り直して送ります\n" +
       "・自分で入力する … 金額と日付をご自身で入力します\n" +
       "・担当に相談する … 担当にこの申請を引き継ぎます",
     [
+      // 領収書として読んで失敗した場合、利用履歴として読み直せるようにする。
+      // 送り直してもらわずに済むため、アルバムから続けて送る使い方でも止まらない
+      ...(isTransit
+        ? []
+        : [
+            {
+              type: "postback" as const,
+              label: "ICカードの履歴として読む",
+              data: `action=rfic&rid=${receiptId}`,
+              displayText: "ICカードの利用履歴として読み取ります",
+            },
+          ]),
       {
         type: "postback",
         label: "写真を送り直す",
@@ -3288,7 +3422,7 @@ const APPLICATION_MENU: ApplicationMenuItem[] = [
    */
   {
     key: "photo",
-    label: "📷 領収書の写真を送る",
+    label: "📷 写真を送る（領収書・履歴）",
     triggers: ["写真", "写真を送る", "領収書の写真", "レシートを送る"],
     start: async (event, supabase) => {
       // 直前に「ICカードの利用履歴」を選んでいた場合の印を消す。
@@ -3618,15 +3752,16 @@ const TRAINING_GUIDE_TEXT =
   "※受験料は合格通知・修了通知の写真もあわせてお送りください。"
 
 const RECEIPT_GUIDE_TEXT =
-  "📷 領収書の写真を送ってください\n" +
+  "📷 写真を送ってください\n" +
   "─────────────\n" +
   "次のものは、すべてこのまま写真を送るだけです。\n" +
   "・お店の領収書・レシート（物品・書籍など）\n" +
   "・研修や講座の受講料・宿泊費の領収書\n" +
-  "・切符、新幹線・飛行機のチケットや予約画面\n\n" +
-  "写真を送ると内容を読み取り、区分を選ぶボタンが出ます。\n\n" +
-  "※ ICカードの利用履歴は読み方が違います。\n" +
-  "　メニューの「申請する」→「ICカードの利用履歴」からお願いします。\n" +
+  "・切符、新幹線・飛行機のチケットや予約画面\n" +
+  "・ICカード（ICOCAなど）の利用履歴の画面\n\n" +
+  "どちらかを選んでいただく必要はありません。\n" +
+  "送られた写真から自動で見分けて読み取ります。\n" +
+  "アルバムから続けて何枚でも送っていただけます。\n\n" +
   "※ PDFファイルはLINEでは受け付けていません。経理担当にお渡しください。"
 
 /** 「申請」系の開始キーワードか */
@@ -3657,9 +3792,9 @@ async function sendApplicationMenu(replyToken: string, userId: string, lead = ""
       "お手元にあるものを選んでください。\n" +
       "費用の種類（物品・研修費・交通費など）は、\n" +
       "このあと自動で選んでいただきます。\n\n" +
-      "・📷 領収書の写真を送る\n" +
-      "　　お店の領収書・レシート、切符、新幹線や飛行機の\n" +
-      "　　チケット、研修の受講料や宿泊費の領収書\n\n" +
+      "・📷 写真を送る（領収書・ICカードの履歴）\n" +
+      "　　領収書・レシート・切符・チケット・ICカードの利用履歴。\n" +
+      "　　どれかを選ぶ必要はありません。自動で見分けます\n\n" +
       "・🚃 ICカードの利用履歴\n" +
       "　　ICOCA・PiTaPa・Suicaなどの利用履歴の画面\n\n" +
       "・🚶 領収書がない交通費\n" +
@@ -7416,17 +7551,24 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     console.log("[LINE Bot] Gemini AI解析開始")
     const base64Data = imageBuffer.toString("base64")
     const mimeType = "image/jpeg" // LINEの画像はJPEG
+    // 「ICカードの利用履歴」から入った場合は履歴として読む。
+    // それ以外は、領収書か利用履歴かを**画像から見分けて**読む。
+    // スタッフはアルバムから何枚も続けて送るため、1枚ごとに種類を
+    // 選ばせない（選び忘れると利用履歴が読み取れずに止まってしまう）。
     const ocrResult = await analyzeDocument(base64Data, mimeType, {
       extraHint: isTransitHistory
         ? TRANSIT_HISTORY_ANALYSIS_EXTRA_HINT
-        : STAFF_RECEIPT_ANALYSIS_EXTRA_HINT,
+        : STAFF_RECEIPT_AUTO_ANALYSIS_EXTRA_HINT,
     })
     if (isTransitHistory) await clearTransitSession(supabase, source.userId)
+
+    // 自動で見分けた結果、利用履歴だった場合は履歴の流れに合流する
+    const treatAsTransitHistory = isTransitHistory || looksLikeTransitHistory(ocrResult)
     console.log(`[LINE Bot] Gemini AI解析完了: vendor=${ocrResult.vendor_name}, amount=${ocrResult.amount}, payments=${ocrResult.payments.length}`)
 
     // 5.2 1ファイルに複数の領収証が含まれる場合の分割候補（2件以上・全件金額ありのときのみ）
     //     ICカードの利用履歴は「全件を登録」ではなく本人に選んでもらうため、ここでは分割しない。
-    const splitCandidates = isTransitHistory ? [] : deriveReceiptCandidates(ocrResult)
+    const splitCandidates = treatAsTransitHistory ? [] : deriveReceiptCandidates(ocrResult)
 
     // 5.5 内容（店名+金額+日付）で重複チェック（同一スタッフ内。別画像での再申請をブロック）
     // 分割候補があれば各件を、なければ書類全体を1回照合する（分割兄弟同士はDB未登録なので互いにブロックしない）
@@ -7435,7 +7577,7 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     // 1枚に何件もの移動が並び、全体の店名・金額は移動1件の内容と一致しないため、
     // 1件でも申請済みだと履歴全体が登録できなくなってしまう。
     // 申請済みの移動は選択の段階で除く（findRegisteredTrips）。
-    const dupTargets = isTransitHistory
+    const dupTargets = treatAsTransitHistory
       ? []
       : splitCandidates.length >= 2
         ? splitCandidates.map((c) => ({
@@ -7547,7 +7689,7 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
 
     // ICカードの利用履歴は、読み取れた移動を一覧で出して本人に選んでもらう。
     // 全件まとめて登録すると、私用の移動や定期券区間まで申請されてしまう。
-    if (isTransitHistory) {
+    if (treatAsTransitHistory) {
       const trips = deriveTransitTrips(ocrResult)
       if (trips.length > 0) {
         // 年が写っていない履歴は多い。推測で補うと対象月がずれるので必ず確認する
