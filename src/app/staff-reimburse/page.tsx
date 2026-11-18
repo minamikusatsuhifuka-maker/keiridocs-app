@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { NotifyStaffDialog } from "@/components/mkadmin/notify-staff-dialog"
+import { InquiryList } from "@/components/line-staff/inquiry-list"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
@@ -611,6 +612,9 @@ export default function StaffReimbursePage() {
           </Button>
         </div>
       </div>
+
+      {/* スタッフからの問い合わせ（LINEを見落としてもここから追えるようにする） */}
+      <InquiryList />
 
       {/* 絞り込み */}
       <Card>

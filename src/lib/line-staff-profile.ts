@@ -208,7 +208,29 @@ export interface TestRun {
   ended_at?: string
 }
 
+/**
+ * スタッフからの問い合わせ1件。
+ *
+ * これまでは担当のLINEへ送るだけで、アプリには何も残らなかった。
+ * 担当が見落とすとどこにも残らず消えてしまうため、記録して
+ * 「未対応／対応済み」を追えるようにする。
+ */
+export interface StaffInquiry {
+  /** 受け付けた日時（ISO8601）。一覧の並び順と識別に使う */
+  at: string
+  /** 本文 */
+  text: string
+  /** 対応済みにした日時。未対応なら未設定 */
+  done_at?: string
+  /** 対応済みにした人（メールアドレス） */
+  done_by?: string
+}
+
 export interface LineProfile {
+  /** スタッフから届いた問い合わせ（新しいものを後ろに。古いものから切り捨てる） */
+  inquiries?: StaffInquiry[]
+  /** 担当からスタッフへ送った連絡の履歴（二重連絡を避けるために残す） */
+  admin_messages?: { at: string; by?: string; text?: string }[]
   /**
    * いま動いているテスト実行。
    * 「新しいテストを開始」で入れ替える（過去のIDは申請側に残る）。

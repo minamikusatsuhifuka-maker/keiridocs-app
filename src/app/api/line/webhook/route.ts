@@ -1497,6 +1497,45 @@ async function handleReadAsTransitPostback(
 }
 
 /**
+ * スタッフからの問い合わせを記録する。
+ *
+ * これまでは担当のLINEへ送るだけで、アプリには何も残らなかった。
+ * 担当が見落とすとどこにも残らず消えてしまうため、記録して
+ * 管理画面の一覧から「未対応／対応済み」を追えるようにする。
+ *
+ * 保存先は line_profile（DBの列を増やさずに済ませるため）。
+ * 件数が増えすぎないよう、古いものから切り捨てる。
+ */
+async function saveInquiry(
+  supabase: ServiceClient,
+  staffMemberId: string,
+  text: string
+): Promise<void> {
+  try {
+    const { data } = await supabase
+      .from("staff_members")
+      .select("line_profile")
+      .eq("id", staffMemberId)
+      .maybeSingle()
+    const profile = parseLineProfile((data as { line_profile?: unknown } | null)?.line_profile)
+    const next = [
+      ...(profile.inquiries ?? []),
+      { at: new Date().toISOString(), text: text.slice(0, 1500) },
+    ].slice(-INQUIRY_HISTORY_LIMIT)
+    await supabase
+      .from("staff_members")
+      .update({ line_profile: JSON.parse(JSON.stringify({ ...profile, inquiries: next })) })
+      .eq("id", staffMemberId)
+  } catch (error) {
+    // 記録できなくても担当への連絡は済んでいるので、処理は止めない
+    console.error("[LINE Bot] 問い合わせを記録できませんでした:", error)
+  }
+}
+
+/** 1人あたりに残す問い合わせの件数（line_profile が肥大化しないように） */
+const INQUIRY_HISTORY_LIMIT = 50
+
+/**
  * すでに精算済みの申請を、もう一度確定しようとしたときの案内。
  *
  * 「すでに登録済みです」とだけ返すと本人は何もできない。
@@ -5020,13 +5059,20 @@ async function handleTransitText(
       const staffMembers = await fetchStaffMembers(supabase)
       const me = staffMembers ? resolveStaffForUser(staffMembers, source.userId) : null
       const name = me?.name ?? "お名前未登録の方"
+      // 記録に残す。担当がLINEを見落としても、アプリの一覧から追えるようにするため
+      if (me) await saveInquiry(supabase, me.id, body)
+
       const sent = await notifyAdmins(
         supabase as never,
         "【スタッフからの問い合わせ】\n" +
           `${name}さん\n\n` +
           `${body.slice(0, 1500)}\n\n` +
-          "※返信はアプリの「スタッフ立替」または「スタッフ」タブの\n" +
-          "　「連絡」ボタンから送れます。"
+          "──────────\n" +
+          "返信のしかた\n" +
+          "アプリの「スタッフ立替」を開くと、\n" +
+          "一番上に「スタッフからの問い合わせ」が出ます。\n" +
+          "「返信する」を押して入力すると、\n" +
+          "このスタッフのLINEに届き、対応済みになります。"
       )
       await sendLineMessage(
         replyToken,
