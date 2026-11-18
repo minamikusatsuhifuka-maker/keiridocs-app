@@ -21,6 +21,7 @@ import { AccountantSettings } from "@/components/settings/accountant-settings"
 import { FloatingButtonSettings } from "@/components/settings/floating-button-settings"
 import { StaffManagement } from "@/components/line-staff/staff-management"
 import { StaffAdminGuide } from "@/components/line-staff/staff-admin-guide"
+import { LineQrPoster } from "@/components/line-staff/line-qr-poster"
 import { RichMenuSetup } from "@/components/line-staff/rich-menu-setup"
 import { CourseMaster } from "@/components/courses/course-master"
 import { PriorCourseRegistration } from "@/components/courses/prior-course-registration"
@@ -315,8 +316,12 @@ export default function MkadminPage() {
         </TabsContent>
 
         <TabsContent value="line-menu">
-          {/* リッチメニューの作成・テスト表示・全員公開 */}
-          <RichMenuSetup />
+          <div className="flex flex-col gap-6">
+            {/* リッチメニューの作成・テスト表示・全員公開 */}
+            <RichMenuSetup />
+            {/* スタッフに配る友だち追加のQR（印刷してそのまま貼れる） */}
+            <LineQrPoster />
+          </div>
         </TabsContent>
 
         <TabsContent value="courses">
