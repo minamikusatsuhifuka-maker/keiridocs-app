@@ -138,6 +138,8 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const [togglingTestId, setTogglingTestId] = useState<string | null>(null)
   // 退職 ON/OFFトグル処理中のID
   const [togglingRetiredId, setTogglingRetiredId] = useState<string | null>(null)
+  // テスト分の一括削除の処理中のID
+  const [purgingId, setPurgingId] = useState<string | null>(null)
   // 退職者も一覧に表示するか（既定は在籍者のみ）
   const [showRetired, setShowRetired] = useState(false)
 
@@ -459,6 +461,79 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
       toast.error(error instanceof Error ? error.message : "操作に失敗しました")
     } finally {
       setTogglingRetiredId(null)
+    }
+  }
+
+  /**
+   * テストの申請・立替明細・Dropboxの写真をまとめて削除する。
+   *
+   * テストをやり直すときに使う。消し残しがあると、同じ写真を送り直したときに
+   * 重複判定で止まってしまうため、まとめて消せるようにしている。
+   *
+   * 本番のデータを誤って消さないよう、歯止めを3つ置く。
+   *   1. テストスタッフ（is_test）のときだけボタンを出す（APIでも確認する）
+   *   2. 消す前に件数を見せる
+   *   3. 氏名を入力してもらう
+   */
+  async function handlePurgeTest(member: StaffMember) {
+    setPurgingId(member.id)
+    try {
+      // 1. 何件消えるのかを先に見せる
+      const countRes = await fetch(
+        `/api/staff-receipts/purge-test?staffMemberId=${encodeURIComponent(member.id)}`
+      )
+      const counts = (await countRes.json().catch(() => ({}))) as {
+        receipts?: number
+        photos?: number
+        transactions?: number
+        error?: string
+      }
+      if (!countRes.ok) throw new Error(counts.error || "件数を取得できませんでした")
+
+      if (!counts.receipts && !counts.transactions) {
+        toast.info(`${member.name}さんのテストの申請はありません`)
+        return
+      }
+
+      // 2. 氏名の入力で確認する
+      const typed = window.prompt(
+        `${member.name}さんのテストの記録をすべて削除します。\n\n` +
+          `・申請　　${counts.receipts ?? 0}件\n` +
+          `・立替の明細　${counts.transactions ?? 0}件\n` +
+          `・Dropboxの写真　${counts.photos ?? 0}件\n\n` +
+          "元に戻せません。\n" +
+          `実行する場合は、お名前「${member.name}」を入力してください。`
+      )
+      if (typed === null) return
+
+      const res = await fetch("/api/staff-receipts/purge-test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ staffMemberId: member.id, confirmName: typed }),
+      })
+      const json = (await res.json().catch(() => ({}))) as {
+        deletedReceipts?: number
+        deletedPhotos?: number
+        failedPaths?: string[]
+        error?: string
+      }
+      if (!res.ok) throw new Error(json.error || "削除できませんでした")
+
+      toast.success(
+        `${member.name}さんのテストの記録を削除しました` +
+          `（申請${json.deletedReceipts ?? 0}件・写真${json.deletedPhotos ?? 0}件）`
+      )
+      if (json.failedPaths && json.failedPaths.length > 0) {
+        toast.warning(
+          `Dropboxの写真を ${json.failedPaths.length}件 消せませんでした。` +
+            "申請の記録は消えているため、テストはやり直せます。"
+        )
+      }
+      fetchStaff()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "削除できませんでした")
+    } finally {
+      setPurgingId(null)
     }
   }
 
@@ -942,6 +1017,42 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                             </span>
                           </div>
                         </div>
+
+                        {/* テストの申請と画像をまとめて消す。テストスタッフのときだけ出す */}
+                        {member.is_test && (
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium">テストの申請と写真をすべて削除</p>
+                              <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                                <strong>使う場面：</strong>テストをやり直すとき。
+                                この方の<strong>申請・立替の明細・Dropboxの写真</strong>をすべて消します。
+                                <br />
+                                消し残しがあると、同じ写真を送り直したときに
+                                「すでに登録されています」で止まります。まとめて消すとその心配がありません。
+                                <br />
+                                <strong>テストスタッフ（ON）の方にだけ使えます。</strong>
+                                テスト中の申請は会計士さんへの提出・給与の集計から外れているため、
+                                消しても提出済みの資料と食い違いません。
+                                <br />
+                                元に戻せません。実行の前にお名前の入力をお願いします。
+                              </p>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-destructive hover:text-destructive"
+                              onClick={() => handlePurgeTest(member)}
+                              disabled={purgingId === member.id}
+                            >
+                              {purgingId === member.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-4 w-4" />
+                              )}
+                              テスト分を削除
+                            </Button>
+                          </div>
+                        )}
 
                         {/* 削除は誤操作が怖いので詳細の中に置く（退職は在籍スイッチ） */}
                         <div className="flex flex-wrap items-center justify-between gap-2">

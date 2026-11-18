@@ -3026,7 +3026,7 @@ async function askOtherDetailNote(
     source.userId,
     "何の費用ですか？\n\n" +
       (courseId
-        ? "（例）教材費\n（例）認定料\n（例）会場までのバス代\n\n"
+        ? "（例）教材費\n（例）認定料\n（例）会場までのタクシー代\n\n"
         : "（例）事務用品の買い物\n（例）院内で使う文房具\n（例）スタッフ用の備品\n\n") +
       `${DETAIL_NOTE_MAX_LENGTH}文字以内でお願いします。\n` +
       "※担当が内容を確認してから支給額が決まります。"
@@ -3242,7 +3242,7 @@ const APPLICATION_MENU: ApplicationMenuItem[] = [
    * 分かれ目は費用の種類ではなく「手元にあるもの」。
    *   領収書・レシート・切符がある      → 写真を送る
    *   ICカードの利用履歴しかない        → 履歴として読み取る（1枚に何件も並ぶため）
-   *   何も出ない区間（バス・在来線など） → 自分で入力する
+   *   記録も領収書も出ない移動         → 自分で入力する
    */
   {
     key: "photo",
@@ -3335,7 +3335,7 @@ const APPLICATION_MENU: ApplicationMenuItem[] = [
   },
   {
     // 交通費はすべてここに集約する。
-    // 電車・地下鉄・バス・飛行機を区別せず「交通費」1つにまとめ、
+    // 電車・地下鉄・飛行機などを区別せず「交通費」1つにまとめ、
     // ICカードの履歴・切符・領収書の写真から申請してもらう。
     // 金額を推定する方式はやめた（記録が残らず、定期券区間の扱いも曖昧になるため）。
     // 旧「交通費を申請」の言葉。領収書がある場合も履歴の場合もあるため、
@@ -3542,10 +3542,10 @@ const TRANSIT_GUIDE_TEXT =
   "チャージ・残高・お買い物は自動で除きます。\n\n" +
   "【領収書がない場合】\n" +
   "下の「領収書がない」を押してください。\n" +
-  "バスなど、履歴も領収書も出ないものはこちらです。\n" +
+  "ICカードを使わず、領収書も出ない移動はこちらです。\n" +
   "次の2つをお聞きします。\n" +
   "　① 金額（円）\n" +
-  "　② 用途・支払先（例：京都駅まで往復、○○バス）\n\n" +
+  "　② 用途・支払先（例：京都駅まで往復）\n\n" +
   "※定期券の区間を通った分は、もともと引き落とされません。\n" +
   "　履歴の金額をそのまま申請してください。\n" +
   "※金額が読み取りにくいときは、金額の部分がはっきり写るように撮ってください。"
@@ -3621,7 +3621,7 @@ async function sendApplicationMenu(replyToken: string, userId: string, lead = ""
       "・🚃 ICカードの利用履歴\n" +
       "　　ICOCA・PiTaPa・Suicaなどの利用履歴の画面\n\n" +
       "・🚶 領収書がない交通費\n" +
-      "　　バスなど、履歴も領収書も出ないもの（金額を入力）\n\n" +
+      "　　ICカードを使わず領収書も出ない移動（金額を入力）\n\n" +
       "領収書の写真は、ボタンを押さずにこのトークへ送るだけでも申請できます。",
     items
   )
@@ -3692,7 +3692,7 @@ async function sendTransitModeChoice(replyToken: string, userId: string, lead = 
     lead + "🚃 交通費（領収書なし）の申請です。\n交通手段を選んでください。" + TIMEOUT_NOTE,
     [
       { type: "postback", label: "電車", data: "action=trm&m=train", displayText: "電車" },
-      { type: "postback", label: "その他（バス・車など）", data: "action=trm&m=other", displayText: "その他（バス・車など）" },
+      { type: "postback", label: "その他（車・タクシーなど）", data: "action=trm&m=other", displayText: "その他（車・タクシーなど）" },
       transitCancelItem(),
     ]
   )
@@ -4307,7 +4307,7 @@ async function handleTransitEntry(
   await sendTransitModeChoice(replyToken, source.userId, lead + gate.greeting)
 }
 
-/** その他（バス・車など）の金額入力を促す */
+/** その他（車・タクシーなど）の金額入力を促す */
 async function askOtherAmount(replyToken: string, userId: string, lead = ""): Promise<void> {
   await sendLineQuickReply(
     replyToken,
@@ -4315,7 +4315,7 @@ async function askOtherAmount(replyToken: string, userId: string, lead = ""): Pr
     lead +
       "🚃 領収書がない交通費の申請\n" +
       "─────────────\n" +
-      "電車・バスなど、領収書の出ない区間はこちらです。\n\n" +
+      "ICカードを使わず、領収書も出ない移動はこちらです。\n\n" +
       "まず【金額（円）】を数字で送ってください。\n" +
       "例：1200\n\n" +
       "このあと【用途・支払先】をお聞きします。" +
@@ -4325,7 +4325,7 @@ async function askOtherAmount(replyToken: string, userId: string, lead = ""): Pr
 }
 
 /**
- * 申請メニューの「交通費（バス・車など）」→ 交通手段の選択をスキップして手動金額入力から開始する。
+ * 申請メニューの「領収書がない交通費」→ 交通手段の選択をスキップして手動金額入力から開始する。
  */
 async function startOtherTransit(
   event: LineEvent,
@@ -4670,7 +4670,7 @@ async function handleTransitText(
         "次に【用途・支払先】を送ってください。\n" +
           "どこへ何のために行ったかが分かるようにご入力ください。\n\n" +
           "（例）京都駅まで往復・研修参加\n" +
-          "（例）○○バス・備品の受け取り\n\n" +
+          "（例）備品の受け取り\n\n" +
           "分からない場合は「なし」と送ってください。",
         [transitCancelItem()]
       )
