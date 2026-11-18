@@ -6,7 +6,10 @@
        background:#F3E9DA}
   .cell{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:46px;
         border:6px solid #F3E9DA;border-radius:40px;position:relative}
-  .c1{background:linear-gradient(145deg,#C08A4E,#A86F39)}
+  .c1{background:linear-gradient(145deg,#C08A4E,#A86F39);grid-column:span 2}
+  .c1 .label{font-size:128px}
+  .c1 .sub{font-size:62px}
+  .c1 svg{width:240px;height:240px}
   .c2{background:linear-gradient(145deg,#CFA06A,#B9854C)}
   .c3{background:linear-gradient(145deg,#C8A882,#AE8B61)}
   .c4{background:linear-gradient(145deg,#E3D2BA,#D2BC9C)}
@@ -21,12 +24,7 @@
   <div class="cell c1 light">
     <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
       <path d="M3 9a2 2 0 0 1 2-2h2.3l1.3-2h6.8l1.3 2H19a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.6"/></svg>
-    <div class="label">経費を申請</div><div class="sub">物品・研修・交通費</div>
-  </div>
-  <div class="cell c2 light">
-    <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-      <rect x="5" y="3" width="14" height="13" rx="3"/><path d="M5 9h14M9 19l-2 2M15 19l2 2"/><circle cx="9" cy="13" r="1.1" fill="#fff"/><circle cx="15" cy="13" r="1.1" fill="#fff"/></svg>
-    <div class="label">交通費を申請</div><div class="sub">電車・バス・飛行機</div>
+    <div class="label">申請する</div><div class="sub">領収書・交通費・研修費</div>
   </div>
   <div class="cell c3 light">
     <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">

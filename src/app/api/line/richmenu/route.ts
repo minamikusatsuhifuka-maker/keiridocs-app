@@ -36,12 +36,17 @@ const WIDTH = 2500
 const HEIGHT = 1686
 
 /**
- * 6分割（3列×2行）の領域と、押したときに送るテキスト。
+ * 3列×2行の領域と、押したときに送るテキスト。
  * public/line/richmenu.jpg の見た目と一致させること。
+ *
+ * 「申請する」は横2マス分。
+ * 以前は「経費を申請」「交通費を申請」の2つに分けていたが、
+ * 新幹線の領収書のようにどちらにも当てはまるものがあり、
+ * スタッフがどちらを押せばよいか分からなくなっていた。
+ * 入口を1つにして、押したあとに何を送るかを選んでもらう。
  */
 const AREAS = [
-  { col: 0, row: 0, text: "経費を申請" },
-  { col: 1, row: 0, text: "交通費を申請" },
+  { col: 0, row: 0, span: 2, text: "申請する" },
   { col: 2, row: 0, text: "申請履歴" },
   { col: 0, row: 1, text: "設定" },
   { col: 1, row: 1, text: "使い方" },
@@ -52,7 +57,7 @@ function buildAreas() {
   const w = Math.floor(WIDTH / 3)
   const h = Math.floor(HEIGHT / 2)
   return AREAS.map((a) => ({
-    bounds: { x: a.col * w, y: a.row * h, width: w, height: h },
+    bounds: { x: a.col * w, y: a.row * h, width: w * (a.span ?? 1), height: h },
     action: { type: "message", text: a.text },
   }))
 }

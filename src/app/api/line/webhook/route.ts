@@ -1665,7 +1665,7 @@ async function handleIcPurposePostback(event: LineEvent, params: URLSearchParams
     source.userId,
     "どの講座のための移動ですか？\n選んだ移動すべてに同じ講座を適用します。\n\n" +
       "別の講座の移動が混ざっている場合は、まず同じ講座の分だけを選んで申請し、\n" +
-      "そのあと「交通費を申請」からもう一度お選びください。",
+      "そのあと「申請する」→「ICカードの利用履歴」からもう一度お選びください。",
     items
   )
 }
@@ -3216,6 +3216,11 @@ interface ApplicationMenuItem {
   label: string
   /** テキストで直接開始できるトリガー文言（正規化後の完全一致で判定） */
   triggers: string[]
+  /**
+   * メニューのボタンには出さない（打ち込み・従来の言い回しへの保険としてだけ残す）。
+   * 入口を1つにまとめたため、選択肢は3つだけ出す。
+   */
+  hidden?: boolean
   /** 選択・トリガー時の開始処理 */
   start: (
     event: LineEvent,
@@ -3226,8 +3231,73 @@ interface ApplicationMenuItem {
 
 /** 申請メニューに並べる項目（Quick Reply は最大13個。キャンセルの1枠を除き12件まで） */
 const APPLICATION_MENU: ApplicationMenuItem[] = [
+  /*
+   * ここから3つが、メニューに出る選択肢。
+   *
+   * 以前はリッチメニューを「経費を申請」「交通費を申請」の2つに分けていたが、
+   * 新幹線の領収書のようにどちらにも当てはまるものがあり、
+   * スタッフがどちらを押せばよいか分からなくなっていた。
+   * 入口を「申請する」1つにして、ここで**何を送るか**だけを選んでもらう。
+   *
+   * 分かれ目は費用の種類ではなく「手元にあるもの」。
+   *   領収書・レシート・切符がある      → 写真を送る
+   *   ICカードの利用履歴しかない        → 履歴として読み取る（1枚に何件も並ぶため）
+   *   何も出ない区間（バス・在来線など） → 自分で入力する
+   */
+  {
+    key: "photo",
+    label: "📷 領収書の写真を送る",
+    triggers: ["写真", "写真を送る", "領収書の写真", "レシートを送る"],
+    start: async (event, supabase) => {
+      // 直前に「ICカードの利用履歴」を選んでいた場合の印を消す。
+      // 残っていると領収書を利用履歴として読み取ってしまう。
+      await clearTransitSession(supabase, event.source.userId)
+      await sendLineMessage(event.replyToken, event.source.userId, RECEIPT_GUIDE_TEXT)
+    },
+  },
+  {
+    key: "ichistory",
+    label: "🚃 ICカードの利用履歴",
+    triggers: [
+      "ic",
+      "IC",
+      "ICカード",
+      "icカード",
+      "利用履歴",
+      "ic履歴",
+      "IC履歴",
+      "icoca",
+      "ICOCA",
+      "イコカ",
+      "pitapa",
+      "PiTaPa",
+      "ピタパ",
+      "suica",
+      "Suica",
+      "スイカ",
+    ],
+    start: async (event, supabase, staffMembers) => {
+      await sendTransitGuide(event, supabase, staffMembers)
+    },
+  },
+  {
+    key: "noreceipt",
+    label: "🚶 領収書がない交通費",
+    triggers: [
+      "領収書がない",
+      "領収書なし",
+      "領収書が出ない",
+      "りょうしゅうしょがない",
+      "手入力",
+      "自分で入力",
+    ],
+    start: async (event, supabase, staffMembers) => {
+      await startOtherTransit(event, supabase, staffMembers)
+    },
+  },
   {
     key: "receipt",
+    hidden: true,
     label: "🧾 領収書を送る",
     triggers: [
       "領収書",
@@ -3246,6 +3316,7 @@ const APPLICATION_MENU: ApplicationMenuItem[] = [
   {
     // 物品購入・備品の立替。送るものが領収書だけなので案内は共通
     key: "goods",
+    hidden: true,
     label: "🛒 物品購入・備品",
     triggers: ["物品購入", "物品", "備品", "買い物", "買物", "購入"],
     start: async (event) => {
@@ -3255,6 +3326,7 @@ const APPLICATION_MENU: ApplicationMenuItem[] = [
   {
     // 研修・講座の立替（受講料・交通費・宿泊費・弁当代・会費）
     key: "training",
+    hidden: true,
     label: "📚 研修費・講座",
     triggers: ["研修", "研修費", "講座", "セミナー", "受講料", "受講費"],
     start: async (event) => {
@@ -3266,7 +3338,10 @@ const APPLICATION_MENU: ApplicationMenuItem[] = [
     // 電車・地下鉄・バス・飛行機を区別せず「交通費」1つにまとめ、
     // ICカードの履歴・切符・領収書の写真から申請してもらう。
     // 金額を推定する方式はやめた（記録が残らず、定期券区間の扱いも曖昧になるため）。
+    // 旧「交通費を申請」の言葉。領収書がある場合も履歴の場合もあるため、
+    // どれを送るかを選べる申請メニューを出す（IC履歴の案内へ直行させない）
     key: "transit",
+    hidden: true,
     label: "🚃 交通費（電車・地下鉄・飛行機）",
     triggers: [
       "交通費",
@@ -3297,12 +3372,17 @@ const APPLICATION_MENU: ApplicationMenuItem[] = [
       "航空券",
       "新幹線",
     ],
-    start: async (event, supabase, staffMembers) => {
-      await sendTransitGuide(event, supabase, staffMembers)
+    start: async (event) => {
+      await sendApplicationMenu(
+        event.replyToken,
+        event.source.userId,
+        "🚃 交通費の申請ですね。\nお手元にあるものをお選びください。\n\n"
+      )
     },
   },
   {
     key: "station",
+    hidden: true,
     label: "🏠 自宅最寄り駅の登録",
     triggers: [
       "最寄り駅",
@@ -3334,7 +3414,8 @@ const MENU_TRIGGER_INDEX: Map<string, ApplicationMenuItem> = (() => {
 
 /**
  * 「申請」系＝申請メニュー（Quick Reply）を表示するトリガー。
- * リッチメニューの「申請する」ボタンは「申請」を送る。「経費」「立替」「精算」「メニュー」は手で打った人への保険。
+ * リッチメニューの「申請する」ボタンはこの文言を送る。
+ * 「経費」「立替」「精算」「メニュー」や、旧メニューの「経費を申請」は手で打った人への保険。
  */
 const APPLICATION_MENU_TRIGGERS = new Set([
   "申請",
@@ -3411,8 +3492,7 @@ const USAGE_TEXT =
   "　その場合は担当からご連絡します。\n" +
   "　いまどうなっているかは、メニューの「申請履歴」でいつでも確認できます\n\n" +
   "【メニューの使い分け】\n" +
-  "・経費を申請 … 物品購入・研修費・交通費から選んで申請\n" +
-  "・交通費を申請 … 交通費の申請へ直接進む\n" +
+  "・申請する … 領収書の写真・ICカードの利用履歴・領収書がない交通費\n" +
   "・申請履歴 … これまでの申請と支給額の確認\n" +
   "・設定 … お名前・最寄り駅・通勤手段・定期券・アカデミー会員\n" +
   "・問い合わせ … 担当への連絡（内容を書くと担当に届きます）\n\n" +
@@ -3423,7 +3503,7 @@ const CONTACT_TEXT =
   "💬 問い合わせ\n" +
   "申請内容の間違いや、分からないことがあれば担当に直接お声がけください。\n" +
   "間違いを伝えるときは「日付・支払先・金額」を添えていただくとスムーズです。\n\n" +
-  "下のメニューの「経費を申請」「交通費を申請」からいつでも申請できます。"
+  "下のメニューの「申請する」からいつでも申請できます。"
 
 /** 氏名登録が終わったあとの案内（3行） */
 const ONBOARDING_DONE_TEXT =
@@ -3453,22 +3533,20 @@ const FOLLOW_TEXT =
  * 二重払いにならない。切符の場合だけ、あとで1タップ確認する。
  */
 const TRANSIT_GUIDE_TEXT =
-  "🚃 交通費の申請\n" +
+  "🚃 ICカードの利用履歴を送ってください\n" +
   "─────────────\n" +
-  "電車・地下鉄・バス・新幹線・飛行機は、すべてここから申請できます。\n\n" +
-  "【領収書・記録がある場合】\n" +
-  "次のどれかの<写真>をこのトークに送ってください。\n" +
-  "・ICカード（ICOCA・PiTaPaなど）の利用履歴の画面\n" +
-  "・切符や領収書\n" +
-  "・新幹線や飛行機のチケット・予約画面\n" +
-  "写真を送ると、区分を選ぶボタンが出ます。\n\n" +
+  "ICOCA・PiTaPa・Suicaなどのアプリで\n" +
+  "<利用履歴の画面>を写真に撮って送ってください。\n\n" +
+  "1枚に何件もの移動が並んでいても大丈夫です。\n" +
+  "読み取ったあと、申請する移動を選んでいただけます。\n" +
+  "チャージ・残高・お買い物は自動で除きます。\n\n" +
   "【領収書がない場合】\n" +
   "下の「領収書がない」を押してください。\n" +
-  "電車・バスなど、領収書の出ない区間はこちらです。\n" +
+  "バスなど、履歴も領収書も出ないものはこちらです。\n" +
   "次の2つをお聞きします。\n" +
   "　① 金額（円）\n" +
   "　② 用途・支払先（例：京都駅まで往復、○○バス）\n\n" +
-  "※ICカードで定期券の区間を通った分は、もともと引き落とされません。\n" +
+  "※定期券の区間を通った分は、もともと引き落とされません。\n" +
   "　履歴の金額をそのまま申請してください。\n" +
   "※金額が読み取りにくいときは、金額の部分がはっきり写るように撮ってください。"
 
@@ -3498,11 +3576,15 @@ const TRAINING_GUIDE_TEXT =
   "※受験料は合格通知・修了通知の写真もあわせてお送りください。"
 
 const RECEIPT_GUIDE_TEXT =
-  "🧾 領収書の送り方\n" +
+  "📷 領収書の写真を送ってください\n" +
   "─────────────\n" +
-  "領収書の写真をこのトークにそのまま送ってください。\n" +
-  "内容を自動で読み取り、区分を選ぶだけで登録できます。\n\n" +
-  "※ 領収書が出ない交通費は「電車代」または「交通費」と送ってください。\n" +
+  "次のものは、すべてこのまま写真を送るだけです。\n" +
+  "・お店の領収書・レシート（物品・書籍など）\n" +
+  "・研修や講座の受講料・宿泊費の領収書\n" +
+  "・切符、新幹線・飛行機のチケットや予約画面\n\n" +
+  "写真を送ると内容を読み取り、区分を選ぶボタンが出ます。\n\n" +
+  "※ ICカードの利用履歴は読み方が違います。\n" +
+  "　メニューの「申請する」→「ICカードの利用履歴」からお願いします。\n" +
   "※ PDFファイルはLINEでは受け付けていません。経理担当にお渡しください。"
 
 /** 「申請」系の開始キーワードか */
@@ -3517,7 +3599,7 @@ function findMenuItemByText(text: string): ApplicationMenuItem | null {
 
 /** 申請メニュー（Quick Reply）を送る */
 async function sendApplicationMenu(replyToken: string, userId: string, lead = ""): Promise<void> {
-  const items: PostbackAction[] = APPLICATION_MENU.map((m) => ({
+  const items: PostbackAction[] = APPLICATION_MENU.filter((m) => !m.hidden).map((m) => ({
     type: "postback",
     label: m.label,
     data: `action=apm&k=${encodeURIComponent(m.key)}`,
@@ -3528,13 +3610,19 @@ async function sendApplicationMenu(replyToken: string, userId: string, lead = ""
     replyToken,
     userId,
     lead +
-      "📋 経費を申請\n" +
+      "📋 申請する\n" +
       "─────────────\n" +
-      "どの費用を申請しますか？下のボタンからお選びください。\n\n" +
-      "・物品購入・備品 … 事務用品や院内で使うものの立替\n" +
-      "・研修費・講座 … 受講料・交通費・宿泊費・弁当代・会費\n" +
-      "・交通費 … 電車・バス・新幹線・飛行機\n\n" +
-      "領収書の写真がお手元にあれば、このトークに送るだけでも申請できます。",
+      "お手元にあるものを選んでください。\n" +
+      "費用の種類（物品・研修費・交通費など）は、\n" +
+      "このあと自動で選んでいただきます。\n\n" +
+      "・📷 領収書の写真を送る\n" +
+      "　　お店の領収書・レシート、切符、新幹線や飛行機の\n" +
+      "　　チケット、研修の受講料や宿泊費の領収書\n\n" +
+      "・🚃 ICカードの利用履歴\n" +
+      "　　ICOCA・PiTaPa・Suicaなどの利用履歴の画面\n\n" +
+      "・🚶 領収書がない交通費\n" +
+      "　　バスなど、履歴も領収書も出ないもの（金額を入力）\n\n" +
+      "領収書の写真は、ボタンを押さずにこのトークへ送るだけでも申請できます。",
     items
   )
 }
@@ -5406,8 +5494,7 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
 const UNKNOWN_INPUT_TEXT =
   "ご入力の内容を操作として読み取れませんでした。\n" +
   "下のメニューからお選びください。\n\n" +
-  "・経費を申請 … 物品購入・研修費・交通費など\n" +
-  "・交通費を申請 … 電車・バスなどの交通費\n" +
+  "・申請する … 領収書の写真・ICカードの利用履歴・領収書がない交通費\n" +
   "・申請履歴 … これまでの申請と支給額\n" +
   "・設定 … お名前・最寄り駅・通勤手段・定期券\n" +
   "・使い方 … 申請の進め方\n" +
