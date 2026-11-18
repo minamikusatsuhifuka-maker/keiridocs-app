@@ -1008,7 +1008,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                           </div>
                         </div>
 
-                        {/* 担当。スタッフの「問い合わせ」がこの人のLINEに届く */}
+                        {/* 担当。運用のお知らせはこの人だけに届く（院長には送らない） */}
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="min-w-0">
                             <p className="text-sm font-medium">担当</p>
@@ -1023,7 +1023,9 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                               <br />
                               ・アプリやLINEに異常が出たときのお知らせ
                               <br />
-                              院長には常に届きます。複数の方をONにもできます。
+                              <strong>院長には届きません。</strong>複数の方をONにもできます。
+                              <br />
+                              誰もONにしていない場合だけ、通知が届かなくなるのを防ぐため院長に届きます。
                             </p>
                           </div>
                           <div className="flex items-center gap-2">

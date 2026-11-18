@@ -8,12 +8,14 @@ import { isReceptionist } from "@/lib/line-staff-profile"
  * 気づかれないまま残る。院長だけに送っていると確認もれにつながる。
  *
  * ■ 宛先
- *   - 院長（ADMIN_LINE_USER_ID）
- *   - スタッフ一覧で「担当」をONにした方（複数可）
+ * 運用のお知らせは、スタッフ一覧で「担当」をONにした方だけに届く。
+ * 院長には届かない（同じ通知が二重に届くのを避けるため）。
+ *
+ * ただし**担当が1人も設定されていない場合だけ**院長に送る。
+ * 誰にも届かないまま要対応や異常が放置されるのを防ぐための安全網。
  *
  * ■ 使い分け
- *   notifyAdmins       … 運用のお知らせ（要対応のまとめ、新規登録、異常）。
- *                        担当も院長も受け取る
+ *   notifyAdmins       … 運用のお知らせ（要対応のまとめ、新規登録、異常）。担当だけ
  *   notifyOwnerOnly    … 設定・保守の話（バックアップの失敗など）。院長だけ
  */
 
@@ -66,15 +68,21 @@ export async function fetchReceptionistIds(supabase: MinimalClient): Promise<str
 }
 
 /**
- * 運用のお知らせを送る（院長と、スタッフ一覧で「担当」にした方）。
+ * 運用のお知らせを送る（スタッフ一覧で「担当」をONにした方だけ）。
+ *
+ * 院長には送らない。担当が1人も設定されていないときだけ、
+ * 通知が誰にも届かなくなるのを防ぐため院長に送る。
  *
  * @returns 送れた人数
  */
 export async function notifyAdmins(supabase: MinimalClient, text: string): Promise<number> {
-  const targets = new Set<string>()
-  const ownerId = process.env.ADMIN_LINE_USER_ID
-  if (ownerId) targets.add(ownerId)
-  for (const id of await fetchReceptionistIds(supabase)) targets.add(id)
+  const targets = new Set<string>(await fetchReceptionistIds(supabase))
+
+  // 担当が未設定のときの安全網（要対応や異常が誰にも届かないのを防ぐ）
+  if (targets.size === 0) {
+    const ownerId = process.env.ADMIN_LINE_USER_ID
+    if (ownerId) targets.add(ownerId)
+  }
 
   let sent = 0
   for (const id of targets) {

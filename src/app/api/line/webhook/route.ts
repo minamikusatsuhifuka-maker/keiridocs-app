@@ -3436,10 +3436,9 @@ async function handleConfirmPostback(
         const isTest = !!(
           testCheck as unknown as { staff_members?: { is_test?: boolean } } | null
         )?.staff_members?.is_test
-        const adminId = process.env.ADMIN_LINE_USER_ID
-        if (adminId && !isTest) {
-          await pushMessage(
-            adminId,
+        if (!isTest) {
+          await notifyAdmins(
+            supabase as never,
             `🧾 ${result.staffName}さんが ¥${formatAmount(amount)} を立替（${result.storeName || "不明"}）。\n` +
               `区分: ${detail.fullLabel}\n` +
               `支給額: ¥${formatAmount(subsidy)}（${isHalf ? "半額" : "全額"}・給与支給）`
@@ -4549,10 +4548,9 @@ async function doTransitFinalize(
   ])
 
   // テストスタッフは院長通知から除外
-  const adminId = process.env.ADMIN_LINE_USER_ID
-  if (adminId && !isTest) {
-    await pushMessage(
-      adminId,
+  if (!isTest) {
+    await notifyAdmins(
+      supabase as never,
       `🚃 ${staffName}さんが交通費（領収書なし）¥${formatAmount(amount)} を申請。\n${storeName}\n利用日：${useDate}`
     )
   }
@@ -5862,10 +5860,9 @@ async function handleNameRegistrationText(event: LineEvent, staffMembers: StaffR
     source.userId,
     "恐れ入りますが、お名前の確認が必要です。\n担当にご連絡ください。"
   )
-  const adminId = process.env.ADMIN_LINE_USER_ID
-  if (adminId) {
-    await pushMessage(
-      adminId,
+  {
+    await notifyAdmins(
+      createServiceClient() as never,
       `⚠️ 氏名の照合ができませんでした（同姓同名が複数登録されています）\n` +
         `入力：${inputText.slice(0, 20)}\n` +
         `/mkadmin の「LINEスタッフ管理」で、区別できる氏名に修正してください。`
@@ -6227,10 +6224,9 @@ async function requestNameChange(supabase: ServiceClient, staffId: string): Prom
     const requests = [...(state.profile.name_change_requests ?? []), { requested_at: new Date().toISOString() }]
     await updateLineProfile(supabase, staffId, { name_change_requests: requests.slice(-10) })
   }
-  const adminId = process.env.ADMIN_LINE_USER_ID
-  if (adminId && !state.isTest) {
-    await pushMessage(
-      adminId,
+  if (!state.isTest) {
+    await notifyAdmins(
+      supabase as never,
       `📝 ${state.name}さんからお名前の変更依頼がありました。\n/mkadmin の「LINEスタッフ管理」で変更してください（LINEの紐づけ・過去の申請はそのまま残ります）。`
     )
   }
