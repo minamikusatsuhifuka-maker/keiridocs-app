@@ -1497,6 +1497,58 @@ async function handleReadAsTransitPostback(
 }
 
 /**
+ * すでに精算済みの申請を、もう一度確定しようとしたときの案内。
+ *
+ * 「すでに登録済みです」とだけ返すと本人は何もできない。
+ * IC利用履歴から来た申請なら、まだ申請していない移動が残っていることが多いので、
+ * その場で選び直せるようにする。
+ */
+async function sendAlreadySettled(event: LineEvent, receiptId: string): Promise<void> {
+  const { replyToken, source } = event
+  const supabase = createServiceClient()
+
+  // IC利用履歴の申請なら、残っている移動を数えて選び直せるようにする
+  let remaining = 0
+  try {
+    const { raw, trips } = await loadTripState(supabase, receiptId)
+    if (trips.length > 0) {
+      const submitted = Array.isArray(raw.transit_submitted)
+        ? (raw.transit_submitted as number[])
+        : []
+      remaining = trips.length - submitted.length
+    }
+  } catch {
+    // 数えられなくても案内は出す
+  }
+
+  const actions: PostbackAction[] = []
+  if (remaining > 0) {
+    actions.push({
+      type: "postback",
+      label: `残り${remaining}件を選ぶ`,
+      data: `action=icmore&rid=${receiptId}`,
+      displayText: "残りの移動を選びます",
+    })
+  }
+  actions.push({
+    type: "postback",
+    label: "申請履歴を見る",
+    data: "action=hist",
+    displayText: "申請履歴を見ます",
+  })
+
+  await sendLineQuickReply(
+    replyToken,
+    source.userId,
+    "ℹ️ この申請はすでに登録済みです。\n" +
+      (remaining > 0
+        ? `まだ申請していない移動が ${remaining}件 あります。\n下のボタンから選び直せます。`
+        : "内容は「申請履歴」でご確認いただけます。\n出し直す場合は、申請履歴から取り消してください。"),
+    actions
+  )
+}
+
+/**
  * 読み取り結果が「交通系ICカードの利用履歴」か。
  *
  * スタッフはアルバムから何枚も続けて送るため、1枚ごとに種類を選ばせない。
@@ -2871,7 +2923,7 @@ async function handlePhase2ConfirmPostback(event: LineEvent, params: URLSearchPa
     settledSubsidy = await sumSettledSubsidy(supabase, targets)
 
     if (already > 0 && settledAmount === 0) {
-      await sendLineMessage(replyToken, source.userId, "ℹ️ この領収書はすでに登録済みです。")
+      await sendAlreadySettled(event, receiptId)
       return
     }
 
@@ -3350,7 +3402,7 @@ async function handleConfirmPostback(
 
     switch (result.status) {
       case "already":
-        await sendLineMessage(replyToken, source.userId, "ℹ️ この領収書はすでに登録済みです。")
+        await sendAlreadySettled(event, receiptId)
         return
       case "not_found":
         await sendLineMessage(replyToken, source.userId, "⚠️ 対象の領収書が見つかりませんでした。")
@@ -5040,6 +5092,17 @@ async function handleTransitText(
       }
       await savePendingCourseName(supabase, receiptId, name)
       await clearTransitSession(supabase, source.userId)
+
+      // IC利用履歴から来た場合は、一括申請の流れに戻す。
+      // 通常の申請の流れに合流させると、すでに精算済みの元レコードを
+      // 確定しようとして「すでに登録済みです」で止まってしまう
+      // （1件目の講座を申請したあと、2件目の講座で起きていた）。
+      const { trips: icTrips } = await loadTripState(supabase, receiptId)
+      if (icTrips.length > 0) {
+        await sendIcBatchConfirm(event, receiptId, null)
+        return
+      }
+
       // 講座の分類が決まっていないので、内訳は共通のものだけ出す
       await sendLineQuickReply(
         replyToken,
@@ -7488,7 +7551,7 @@ async function settleMultiReceipts(
   }
 
   if (okCount === 0 && alreadyCount === siblings.length) {
-    await sendLineMessage(replyToken, source.userId, "ℹ️ この領収書はすでに登録済みです。")
+    await sendAlreadySettled(event, siblings[0]?.id ?? "")
     return
   }
 
