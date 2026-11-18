@@ -54,3 +54,53 @@ export function applyYear(trips: TransitTrip[], year: number): TransitTrip[] {
     t.date.startsWith("0000-") ? { ...t, date: `${year}${t.date.slice(4)}` } : t
   )
 }
+
+/**
+ * すでに申請済みの移動の番号を、**件数で**割り当てる。
+ *
+ * 同じ日に同じ区間・同じ運賃の移動が複数あることは普通にある
+ * （往復を2回した、同じ区間を1日に2度通ったなど）。
+ * 「内容が一致したら申請済み」と判定すると、1件申請しただけで
+ * 残りの同じ内容の移動まで選べなくなってしまう。
+ *
+ * そこで、登録済みの**件数**だけを申請済みに割り当てる。
+ * 3件あって1件登録済みなら、残り2件は選べる。
+ *
+ * @param trips          読み取った移動（表示順）
+ * @param registeredKeys 登録済みの記録の内容キー（重複を含む配列）
+ * @param submitted      元の画像側に残っている申請済みの番号（確実な情報なので優先する）
+ * @param keyOf          移動から内容キーを作る関数
+ * @returns 申請済みとして扱う移動の番号
+ */
+export function assignRegisteredTrips(
+  trips: TransitTrip[],
+  registeredKeys: string[],
+  submitted: number[],
+  keyOf: (trip: TransitTrip) => string
+): Set<number> {
+  const result = new Set<number>(submitted.filter((i) => i >= 0 && i < trips.length))
+
+  // 残り件数を数える
+  const remaining = new Map<string, number>()
+  for (const k of registeredKeys) remaining.set(k, (remaining.get(k) ?? 0) + 1)
+
+  // 番号で分かっている分は、その内容の枠を先に使ったものとして差し引く
+  for (const i of result) {
+    const k = keyOf(trips[i])
+    const left = remaining.get(k) ?? 0
+    if (left > 0) remaining.set(k, left - 1)
+  }
+
+  // 残った件数を、まだ申請済みになっていない移動に先頭から割り当てる
+  trips.forEach((t, i) => {
+    if (result.has(i)) return
+    const k = keyOf(t)
+    const left = remaining.get(k) ?? 0
+    if (left > 0) {
+      result.add(i)
+      remaining.set(k, left - 1)
+    }
+  })
+
+  return result
+}

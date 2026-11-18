@@ -25,7 +25,12 @@ import {
   type CourseRule,
   type ExpenseItem,
 } from "../src/lib/subsidy-rules"
-import { applyYear, deriveTransitTrips, hasUnknownYear } from "../src/lib/transit-history"
+import {
+  applyYear,
+  assignRegisteredTrips,
+  deriveTransitTrips,
+  hasUnknownYear,
+} from "../src/lib/transit-history"
 import { resolveTravelWindow } from "../src/lib/subsidy-assess"
 
 let passed = 0
@@ -784,6 +789,70 @@ check(
     ],
   })
   check("金額や区間が読めない行は除く", broken.length, 0)
+}
+
+
+/* ---------- 申請済みの移動の割り当て（同じ内容が複数あっても止めない） ----------
+ *
+ * 同じ日に同じ区間・同じ運賃の移動が複数あることは普通にある。
+ * 1件申請しただけで残りまで「申請済み」になると、続けて申請できなくなる。
+ */
+{
+  const t = (date: string, route: string, fare: number) => ({ date, route, fare })
+  const key = (x: { date: string; route: string; fare: number }) =>
+    `${x.route}|${x.fare}|${x.date}`
+  const trips = [
+    t("2026-11-17", "京都 → 大津京", 240), // 0
+    t("2026-11-17", "大津京 → 京都", 240), // 1
+    t("2026-11-17", "京都 → 大津京", 240), // 2（0と同じ内容）
+    t("2026-11-17", "大津京 → 京都", 240), // 3（1と同じ内容）
+    t("2026-11-17", "京都 → 米原", 990), // 4
+  ]
+  const ids = (s: Set<number>) => [...s].sort((a, b) => a - b)
+
+  check("何も申請していなければ全件選べる", ids(assignRegisteredTrips(trips, [], [], key)), [])
+
+  // 1件だけ登録済み → 同じ内容の残り1件はまだ選べる
+  check(
+    "同じ内容が2件あり1件登録済みなら、申請済みは1件だけ",
+    ids(assignRegisteredTrips(trips, [key(trips[0])], [], key)),
+    [0]
+  )
+  check(
+    "同じ内容が2件とも登録済みなら、2件とも申請済み",
+    ids(assignRegisteredTrips(trips, [key(trips[0]), key(trips[2])], [], key)),
+    [0, 2]
+  )
+
+  // 元の画像側の番号（確実な情報）を優先し、二重に数えない
+  check(
+    "番号で分かっている分は、その内容の枠を使ったものとして数える",
+    ids(assignRegisteredTrips(trips, [key(trips[0])], [2], key)),
+    [2]
+  )
+  check(
+    "番号と件数が両方ある場合は合わせて割り当てる",
+    ids(assignRegisteredTrips(trips, [key(trips[0]), key(trips[2])], [2], key)),
+    [0, 2]
+  )
+
+  // 1件目の講座を申請したあと、2件目の講座を続けて申請できること
+  const afterFirst = assignRegisteredTrips(trips, [key(trips[0]), key(trips[1])], [0, 1], key)
+  check("1件目の申請後に残りが選べる", ids(afterFirst), [0, 1])
+  check(
+    "残りの移動（2・3・4番）は申請できる",
+    [2, 3, 4].every((i) => !afterFirst.has(i)),
+    true
+  )
+
+  // 登録済みが読めなかった場合は、番号の情報だけで進める
+  check("登録済みが取れなくても番号の分は守る", ids(assignRegisteredTrips(trips, [], [1], key)), [1])
+
+  check(
+    "範囲外の番号は無視する",
+    ids(assignRegisteredTrips(trips, [], [99, -1, 3], key)),
+    [3]
+  )
 }
 
 /* ---------- 結果 ---------- */

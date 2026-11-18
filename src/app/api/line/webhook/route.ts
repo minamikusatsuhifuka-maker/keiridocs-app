@@ -62,6 +62,7 @@ import {
   applyYear,
   deriveTransitTrips,
   hasUnknownYear,
+  assignRegisteredTrips,
   type TransitTrip,
 } from "@/lib/transit-history"
 import {
@@ -1188,7 +1189,13 @@ async function handleCancelConfirmPostback(event: LineEvent, params: URLSearchPa
  * 1枚の利用履歴を2回に分けて申請することがあるため、同じ画像を送り直したときに
  * **全体を止めず、登録済みの明細だけを除いて**残りを選べるようにする。
  *
- * 判定は日付＋区間＋運賃の一致。次のものは「申請済み」に数えない。
+ * 判定は日付＋区間＋運賃の一致だが、**件数で**割り当てる。
+ * 同じ日に同じ区間・運賃の移動が複数あることは普通にあるため
+ * （往復を2回した、同じ区間を1日に2度通ったなど）、
+ * 内容が一致したら全部申請済み、としてはいけない。
+ * 3件あって1件登録済みなら、残り2件は選べるようにする。
+ *
+ * 次のものは「申請済み」に数えない。
  *  - 取り消した申請（ai_raw.cancelled_at）
  *  - 精算（petty_cash_transactions）がまだ無い記録
  *    … 読み取り直後の作業中のレコードは、店名・金額が移動1件目と同じ値に
@@ -1204,13 +1211,17 @@ async function findRegisteredTrips(
   supabase: ServiceClient,
   staffMemberId: string,
   trips: TransitTrip[],
-  excludeReceiptId?: string
+  excludeReceiptId?: string,
+  /** 元の画像側に残っている申請済みの番号（確実な情報なので優先する） */
+  submitted: number[] = []
 ): Promise<Set<number>> {
   // テスト実行中は、そのテスト実行で申請した移動だけを「申請済み」とみなす
   const testRunId = await loadActiveTestRunId(supabase, staffMemberId)
-  const registered = new Set<number>()
+  const tripKey = (t: TransitTrip) => contentKey(t.route, t.fare, t.date)
+  const fallback = () => assignRegisteredTrips(trips, [], submitted, tripKey)
+
   const dates = Array.from(new Set(trips.map((t) => t.date).filter(Boolean)))
-  if (dates.length === 0) return registered
+  if (dates.length === 0) return fallback()
 
   try {
     type Row = { id: string; store_name: string | null; amount: number | null; date: string | null }
@@ -1233,7 +1244,7 @@ async function findRegisteredTrips(
     })
 
     const candidates = rows.filter((r) => r.id !== excludeReceiptId)
-    if (candidates.length === 0) return registered
+    if (candidates.length === 0) return fallback()
 
     // 精算済み（支給の対象になっている）記録だけを「申請済み」とみなす
     const { data: txs } = await supabase
@@ -1249,20 +1260,17 @@ async function findRegisteredTrips(
         .filter((v): v is string => !!v)
     )
 
-    const keys = new Set(
-      candidates
-        .filter((r) => settledIds.has(r.id))
-        .map((r) => contentKey(r.store_name, r.amount, r.date))
-    )
-    trips.forEach((t, i) => {
-      if (keys.has(contentKey(t.route, t.fare, t.date))) registered.add(i)
-    })
+    // 登録済みの件数（重複を含む）を割り当てる
+    const registeredKeys = candidates
+      .filter((r) => settledIds.has(r.id))
+      .map((r) => contentKey(r.store_name, r.amount, r.date))
+    return assignRegisteredTrips(trips, registeredKeys, submitted, tripKey)
   } catch (error) {
-    // 判定できないときは「登録済みなし」として進める（申請を止めないため。
-    // 二重登録は確定時の重複判定と transit_submitted で止まる）
+    // 判定できないときは、確実な情報（元の画像側の申請済みの番号）だけで進める。
+    // 申請を止めないため。二重登録は確定時の重複判定でも止まる
     console.error("[LINE Bot] 申請済みの移動を判定できませんでした:", error)
+    return fallback()
   }
-  return registered
 }
 
 /**
@@ -1541,10 +1549,10 @@ async function sendTransitTripPicker(
   const submitted = Array.isArray(state.raw.transit_submitted)
     ? (state.raw.transit_submitted as number[])
     : []
+  // findRegisteredTrips が submitted を含めて返す（件数で割り当てる）
   const registered = staffMemberId
-    ? await findRegisteredTrips(supabase, staffMemberId, trips, receiptId)
-    : new Set<number>()
-  for (const i of submitted) registered.add(i)
+    ? await findRegisteredTrips(supabase, staffMemberId, trips, receiptId, submitted)
+    : new Set<number>(submitted)
 
   const selectable = trips.map((_, i) => i).filter((i) => !registered.has(i))
 
@@ -1978,7 +1986,7 @@ async function handleIcConfirmPostback(event: LineEvent, params: URLSearchParams
     .maybeSingle()
   const ownerId = (ownerRow as { staff_member_id?: string | null } | null)?.staff_member_id ?? null
   const alreadyRegistered = ownerId
-    ? await findRegisteredTrips(supabase, ownerId, trips, receiptId)
+    ? await findRegisteredTrips(supabase, ownerId, trips, receiptId, submitted)
     : new Set<number>()
 
   const picked = (selected ?? trips.map((_, i) => i))
@@ -1986,10 +1994,39 @@ async function handleIcConfirmPostback(event: LineEvent, params: URLSearchParams
     .filter((i) => !submitted.includes(i))
     .filter((i) => !alreadyRegistered.has(i))
   if (picked.length === 0) {
-    await sendLineMessage(
+    // 行き止まりにしない。残りがあれば選び直せるようにする
+    const remaining = trips.map((_, i) => i).filter((i) => !alreadyRegistered.has(i))
+    await sendLineQuickReply(
       replyToken,
       source.userId,
-      "ℹ️ 選ばれた移動はすでに申請済みです。\n「申請履歴」でご確認いただけます。"
+      "ℹ️ 選ばれた移動はすでに申請済みです。\n" +
+        (remaining.length > 0
+          ? `まだ申請していない移動が ${remaining.length}件 あります。\n下のボタンから選び直せます。`
+          : "この利用履歴の移動は、すべて申請済みです。") +
+        "\n\n内容は「申請履歴」でご確認いただけます。",
+      remaining.length > 0
+        ? [
+            {
+              type: "postback",
+              label: `残り${remaining.length}件を選ぶ`,
+              data: `action=icmore&rid=${receiptId}`,
+              displayText: "残りの移動を選びます",
+            },
+            {
+              type: "postback",
+              label: "申請履歴を見る",
+              data: "action=hist",
+              displayText: "申請履歴を見ます",
+            },
+          ]
+        : [
+            {
+              type: "postback",
+              label: "申請履歴を見る",
+              data: "action=hist",
+              displayText: "申請履歴を見ます",
+            },
+          ]
     )
     return
   }
