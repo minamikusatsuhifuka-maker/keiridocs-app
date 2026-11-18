@@ -43,6 +43,7 @@ function createServiceClient() {
 interface HoldTxRow {
   id: string
   staff_member_id: string | null
+  staff_receipt_id: string | null
   amount: number | null
   transaction_date: string | null
   created_at: string
@@ -118,8 +119,15 @@ export async function GET() {
     // 1. 保留中の明細（上限超過・講座待ち・添付待ち）
     const holds = await fetchHoldRows(supabase)
 
+    // テスト実行中に作られた申請を外す（スイッチをOFFに戻しても本番に混ざらないように）
+    const testRunReceiptIds = await fetchTestRunReceiptIds(
+      supabase,
+      holds.map((t) => t.staff_receipt_id).filter((v): v is string => !!v)
+    )
+
     const items: PendingItem[] = holds
       .filter((t) => !(t.staff_member_id && testStaff.has(t.staff_member_id)))
+      .filter((t) => !(t.staff_receipt_id && testRunReceiptIds.has(t.staff_receipt_id)))
       .map((t) => {
         const excess = t.excess_amount ?? 0
         const isRepeat = t.subsidy_category === "achievement_repeat"
@@ -209,13 +217,45 @@ async function fetchCourses(supabase: ReturnType<typeof createServiceClient>) {
 }
 
 /** 保留中の明細（migration 044 未適用なら空を返す） */
+/**
+ * テスト実行中に作られた申請のIDを集める。
+ *
+ * テストスタッフのスイッチ（is_test）は後から切り替えられるため、
+ * それだけで判定すると、OFFに戻した時点で練習の申請が要対応に出てしまう。
+ */
+async function fetchTestRunReceiptIds(
+  supabase: ReturnType<typeof createServiceClient>,
+  receiptIds: string[]
+): Promise<Set<string>> {
+  const ids = Array.from(new Set(receiptIds))
+  if (ids.length === 0) return new Set()
+  try {
+    const rows = await fetchAllRows<{ id: string }>((from, to) =>
+      supabase
+        .from("staff_receipts")
+        .select("id")
+        .in("id", ids)
+        .not("ai_raw->>test_run_id", "is", null)
+        .order("id", { ascending: true })
+        .range(from, to) as unknown as PromiseLike<{
+          data: { id: string }[] | null
+          error: { message: string } | null
+        }>
+    )
+    return new Set(rows.map((r) => r.id))
+  } catch {
+    // 判定できないときは除外しない（要対応が消えるより、出すほうが安全）
+    return new Set()
+  }
+}
+
 async function fetchHoldRows(supabase: ReturnType<typeof createServiceClient>): Promise<HoldTxRow[]> {
   try {
     return await fetchAllRows<HoldTxRow>((from, to) =>
       supabase
         .from("petty_cash_transactions")
         .select(
-          "id, staff_member_id, amount, transaction_date, created_at, expense_detail, expense_item, excess_amount, subsidy_category, hold_reason, course_id, course_pending_name"
+          "id, staff_member_id, staff_receipt_id, amount, transaction_date, created_at, expense_detail, expense_item, excess_amount, subsidy_category, hold_reason, course_id, course_pending_name"
         )
         .eq("category", "staff_refund")
         .not("hold_reason", "is", null)
@@ -283,6 +323,8 @@ async function fetchIncomplete(
   return receipts
     .filter((r) => !settled.has(r.id))
     .filter((r) => !(r.staff_member_id && testStaff.has(r.staff_member_id)))
+    // テスト実行中に作られた申請も外す（テストスタッフのスイッチをOFFに戻しても残らないように）
+    .filter((r) => !parseAiRawObject(r.ai_raw)?.test_run_id)
     // 担当が「対応済み」にしたものは要対応から外す（/api/staff-reimburse/dismiss）
     .filter((r) => !parseAiRawObject(r.ai_raw)?.pending_dismissed_at)
     // 本人が取り消した申請は未完了ではない

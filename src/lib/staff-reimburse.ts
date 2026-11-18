@@ -129,6 +129,19 @@ function parseStoreFromDescription(text: string | null): string {
  * @param params.endExclusive 終了日（YYYY-MM-DD・JST・含まない）
  * @param params.submissionMonth 提出月で絞る場合に指定
  */
+/**
+ * テスト実行中に作られた申請か（ai_raw.test_run_id が付いているか）。
+ *
+ * テストスタッフのスイッチ（is_test）は後から切り替えられるため、
+ * それだけで判定すると、OFFに戻した時点で練習の申請が本番扱いになる。
+ * 申請そのものに付いた印で判定すれば、スイッチの状態に左右されない。
+ */
+function isTestRunReceipt(aiRaw: unknown): boolean {
+  if (!aiRaw || typeof aiRaw !== "object") return false
+  const v = (aiRaw as Record<string, unknown>).test_run_id
+  return typeof v === "string" && v.length > 0
+}
+
 export async function buildStaffReimburse(params: {
   supabase: SupabaseClient<Database>
   start: string
@@ -206,6 +219,11 @@ export async function buildStaffReimburse(params: {
     // テストスタッフの申請は集計・CSVから除外（保存先・通知も別途分離）
     if (t.staff_member_id && testStaffIds.has(t.staff_member_id)) continue
     const receipt = t.staff_receipt_id ? receiptMap.get(t.staff_receipt_id) : undefined
+    // テスト実行中に作られた申請も除外する。
+    // is_test だけで判定すると、テスト後にスイッチをOFFに戻した時点で
+    // 練習の申請が本番扱いになり、給与と会計士提出に混ざってしまう。
+    // 記録側に印が付いているので、スイッチの状態に関わらず除外できる。
+    if (isTestRunReceipt(receipt?.aiRaw)) continue
     // 申請日（アップロード日）: 領収書のcreated_atを優先、無ければ取引のcreated_at
     const applicationDate = toJstDate(receipt?.created_at ?? t.created_at)
     if (submissionMonth) {
