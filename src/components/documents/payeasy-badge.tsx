@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { Badge } from "@/components/ui/badge"
 import { payEasyBadgeLabel, payEasyState } from "@/lib/payeasy"
 
@@ -15,8 +16,19 @@ import { payEasyBadgeLabel, payEasyState } from "@/lib/payeasy"
  *   💳 要確認         … 納付書だが番号が足りない
  *
  * Pay-easy の書類でなければ何も出さない。
+ *
+ * documentId を渡すと、押したときに書類詳細（納付番号とコピーボタン）へ移る。
+ * 一覧から納付の操作まで最短で辿れるようにするため。
  */
-export function PayEasyBadge({ ocrRaw, className }: { ocrRaw: unknown; className?: string }) {
+export function PayEasyBadge({
+  ocrRaw,
+  className,
+  documentId,
+}: {
+  ocrRaw: unknown
+  className?: string
+  documentId?: string
+}) {
   const label = payEasyBadgeLabel(ocrRaw)
   if (!label) return null
 
@@ -39,9 +51,25 @@ export function PayEasyBadge({ ocrRaw, className }: { ocrRaw: unknown; className
           ? "すべて納付済みです"
           : "Pay-easyで納付する書類です"
 
-  return (
-    <Badge variant="outline" className={`${tone} ${className ?? ""}`} title={title}>
+  const badge = (
+    <Badge
+      variant="outline"
+      className={`${tone} ${documentId ? "cursor-pointer hover:opacity-80" : ""} ${className ?? ""}`}
+      title={documentId ? `${title}（押すと納付の番号を開きます）` : title}
+    >
       {label}
     </Badge>
+  )
+
+  if (!documentId) return badge
+  return (
+    <Link
+      href={`/documents/${documentId}`}
+      // 行のクリックなど、親側の操作と二重に反応しないようにする
+      onClick={(e) => e.stopPropagation()}
+      aria-label={`${label}（納付の番号を開く）`}
+    >
+      {badge}
+    </Link>
   )
 }

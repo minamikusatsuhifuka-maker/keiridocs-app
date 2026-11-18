@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { normalizePaymentMethod, normalizeBankInfo, normalizeAmount } from "@/lib/gemini"
 import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
 import type { Json } from "@/types/database"
+import { payEasyForSplit } from "@/lib/payeasy"
 
 /** 分割登録の1件分（クライアントの確認UIで編集済みの内容） */
 interface SplitPaymentInput {
@@ -124,10 +125,18 @@ export async function POST(request: NextRequest) {
         input_method: inputMethod,
         status: autoStatus,
         dropbox_path: dropboxPath,
-        // 解析生データに分割情報を付与して保存（トレーサビリティ用）
-        ocr_raw: (ocrRaw
-          ? { ...ocrRaw, split_group: splitGroup, split_index: i + 1, split_total: payments.length, split_payment: p }
-          : { split_group: splitGroup, split_index: i + 1, split_total: payments.length, split_payment: p }) as unknown as Json,
+        // 解析生データに分割情報を付与して保存（トレーサビリティ用）。
+        // Pay-easyの納付番号は、その支払いの分だけを持たせる（payEasyForSplit）。
+        // 全部をコピーすると、2件の書類が同じ番号を2組ずつ持ち、
+        // 片方で納付済みにしても、もう片方は未納付のまま残ってしまう。
+        ocr_raw: {
+          ...(ocrRaw ?? {}),
+          ...(ocrRaw ? { payeasy: payEasyForSplit(ocrRaw.payeasy, p, i) } : {}),
+          split_group: splitGroup,
+          split_index: i + 1,
+          split_total: payments.length,
+          split_payment: p,
+        } as unknown as Json,
         tax_category: p.tax_category || "未判定",
         account_title: p.account_title || "",
         payment_method: paymentMethod,

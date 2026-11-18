@@ -11,6 +11,7 @@ import type { SplitPayment } from "@/lib/gemini"
 import { resolveAutoDocumentStatus, fetchVendorMasterMethod } from "@/lib/document-status"
 import { resolvePaymentCategory, type PaymentCategory } from "@/lib/payment-methods"
 import type { Database, Json } from "@/types/database"
+import { mergePayEasyOnReanalyze } from "@/lib/payeasy"
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type DocumentRow = Database["public"]["Tables"]["documents"]["Row"]
@@ -22,7 +23,10 @@ type DocumentRow = Database["public"]["Tables"]["documents"]["Row"]
 export type ReanalyzeTargetDoc = Pick<
   DocumentRow,
   "id" | "dropbox_path" | "type" | "status" | "payment_status" | "vendor_name"
->
+> & {
+  /** 納付済みの記録と分割登録の情報を引き継ぐために読む（渡されなければ引き継がない） */
+  ocr_raw?: DocumentRow["ocr_raw"]
+}
 
 /** 再解析の失敗理由（ファイル欠損を他の失敗と区別する） */
 export type ReanalyzeFailReason = "file_not_found" | "empty" | "unsupported" | "error"
@@ -145,7 +149,8 @@ export async function reanalyzeDocument(
 
     // 抽出できた値のみ上書き（既存の良いデータを壊さない）。ocr_rawは常に更新
     const update: Database["public"]["Tables"]["documents"]["Update"] = {
-      ocr_raw: result as unknown as Json,
+      // 納付済みの記録と分割登録の情報は、上書きで消さずに引き継ぐ
+      ocr_raw: mergePayEasyOnReanalyze(doc.ocr_raw, result) as unknown as Json,
     }
     if (result.amount !== null) update.amount = result.amount
     // 外貨建てで円に換算できなかった場合は、既存の金額（外貨の数値を円とみなした誤登録の可能性）を残さず空欄にする

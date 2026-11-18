@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
   // 対象書類を取得（adminは全件、staffは自分の書類のみ）
   let listQuery = supabase
     .from("documents")
-    .select("id, dropbox_path, type, status, payment_status, vendor_name")
+    .select("id, dropbox_path, type, status, payment_status, vendor_name, ocr_raw")
     .in("id", ids)
   if (auth.role !== "admin") {
     listQuery = listQuery.eq("user_id", user.id)

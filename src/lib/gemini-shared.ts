@@ -212,7 +212,11 @@ export function isPayEasyComplete(e: PayEasyEntry | null | undefined): boolean {
  * コピーする値は区切らない。空白が混ざると銀行の入力欄で弾かれるため。
  */
 export function groupDigits(value: string): string {
-  return (value ?? "").replace(/\D/g, "").replace(/(.{4})/g, "$1 ").trim()
+  const digits = (value ?? "").replace(/\D/g, "")
+  // 収納機関番号（5桁）のような短い番号は区切らない。
+  // 「0012 0」のように半端に割れて、かえって読みにくくなるため
+  if (digits.length <= 6) return digits
+  return digits.replace(/(.{4})/g, "$1 ").trim()
 }
 
 /** 取引先名を確定できず空欄にしたときの警告文 */

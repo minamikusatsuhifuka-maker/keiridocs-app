@@ -527,7 +527,7 @@ export function DocumentTable({
             doc.status === "要振込" && <StatusBadge status="要振込" className="shrink-0" />
           )}
           {/* Pay-easyで納付する書類の印。納付の進み具合（1/2 など）も出す */}
-          <PayEasyBadge ocrRaw={doc.ocr_raw} className="shrink-0" />
+          <PayEasyBadge ocrRaw={doc.ocr_raw} documentId={doc.id} className="shrink-0" />
         </span>
         )
       },

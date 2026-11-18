@@ -33,9 +33,12 @@ import {
 } from "../src/lib/transit-history"
 import { resolveTravelWindow } from "../src/lib/subsidy-assess"
 import {
+  mergePayEasyOnReanalyze,
   payEasyBadgeLabel,
   payEasyDueDate,
+  payEasyForSplit,
   payEasyState,
+  readPayEasy,
   withPayEasyPaid,
 } from "../src/lib/payeasy"
 import { groupDigits, isPayEasyComplete } from "../src/lib/gemini-shared"
@@ -927,7 +930,7 @@ check(
 
   // 表示は4桁区切り、コピーする値は区切らない
   check("表示は4桁区切り", groupDigits("02600260000000"), "0260 0260 0000 00")
-  check("5桁の収納機関番号", groupDigits("00120"), "0012 0")
+  check("5桁の収納機関番号は区切らない", groupDigits("00120"), "00120")
 
   // 2枚を1件に紐づける申告番号
   check(
@@ -935,6 +938,78 @@ check(
     raw.payeasy[0].declaration_number === raw.payeasy[1].declaration_number,
     true
   )
+}
+
+
+/* ---------- 分割登録したときの振り分け ----------
+ *
+ * 1つのファイルに税金分と手数料分が並ぶ納付書は、分割登録で2件の書類になる。
+ * 両方に2組ずつ持たせると、片方で納付済みにしてももう片方が未納付のまま残り、
+ * 一覧の表示が食い違う（実機で起きた）。
+ */
+{
+  const tax = {
+    kind: "税金分",
+    institution_code: "00120",
+    customer_number: "03379900000",
+    confirmation_number: "700000",
+    amount: 31700,
+    due_date: null,
+    declaration_number: "41604659560",
+    note: "消費・地方消費税",
+  }
+  const fee = {
+    kind: "手数料分",
+    institution_code: "58082",
+    customer_number: "02600260000000",
+    confirmation_number: "100000",
+    amount: 6600,
+    due_date: "2027-01-21",
+    declaration_number: "41604659560",
+    note: "輸入申告代行手数料",
+  }
+  const all = [tax, fee]
+  const kinds = (list: ReturnType<typeof payEasyForSplit>) => list.map((e) => e.kind)
+
+  // 金額で振り分ける（いちばん確実）
+  check(
+    "31,700円の書類には税金分だけ",
+    kinds(payEasyForSplit(all, { amount: 31700, vendor_name: "大阪税関" }, 0)),
+    ["税金分"]
+  )
+  check(
+    "6,600円の書類には手数料分だけ",
+    kinds(payEasyForSplit(all, { amount: 6600, vendor_name: "日本郵便株式会社" }, 1)),
+    ["手数料分"]
+  )
+
+  // 金額が合わないときは摘要、それも無ければ並び順
+  check(
+    "摘要で振り分ける",
+    kinds(payEasyForSplit(all, { amount: null, description: "日本郵便への輸入申告代行手数料" }, 0)),
+    ["手数料分"]
+  )
+  check("手がかりが無ければ並び順", kinds(payEasyForSplit(all, { amount: null }, 1)), ["手数料分"])
+  check("組が1つなら分割しない", kinds(payEasyForSplit([tax], { amount: 999 }, 0)), ["税金分"])
+
+  // 振り分け後は、それぞれの書類で独立して納付済みにできる
+  const feeDoc = { payeasy: payEasyForSplit(all, { amount: 6600 }, 1) }
+  check("6,600円の書類は未納付", payEasyBadgeLabel(feeDoc), "💳 Pay-easy")
+  check("6,600円の書類を納付済みにできる", payEasyBadgeLabel(withPayEasyPaid(feeDoc, 0, true)), "✓ 納付済み")
+
+  // 再解析しても納付済みと分割情報が消えないこと
+  const paid = withPayEasyPaid(feeDoc, 0, true) as Record<string, unknown>
+  const prev = { ...paid, split_group: "g1", split_index: 2, split_total: 2, split_payment: { amount: 6600 } }
+  const merged = mergePayEasyOnReanalyze(prev, { vendor_name: "日本郵便", payeasy: all }) as Record<string, unknown>
+  check("再解析後も1組のまま", readPayEasy(merged).length, 1)
+  check("再解析後も納付済みのまま", payEasyBadgeLabel(merged), "✓ 納付済み")
+  check("再解析後も分割情報が残る", merged.split_group, "g1")
+
+  // 番号が変わったら別の納付として扱う（納付済みを引き継がない）
+  const changed = mergePayEasyOnReanalyze(prev, {
+    payeasy: [{ ...fee, confirmation_number: "999999" }],
+  })
+  check("番号が変われば未納付に戻る", payEasyBadgeLabel(changed), "💳 Pay-easy")
 }
 
 /* ---------- 結果 ---------- */
