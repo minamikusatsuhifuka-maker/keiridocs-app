@@ -12,6 +12,12 @@ import type { Database } from "@/types/database"
  * 取り消された申請（ai_raw.cancelled_at あり）は、どちらの照合でも除外する。
  * 取り消したのに同じ写真を送り直せないと、修正する手段が無くなるため。
  *
+ * ■ テスト実行（testRunId）
+ * 実機テスト中は、**そのテスト実行の中だけ**で照合する。
+ * 本番の申請と混ぜて照合すると、以前のテストや本番で使った画像を
+ * 二度と使えなくなり、テストのやり直しができない。
+ * 逆に、本番の申請はテストの記録と照合しない（テストが本番を止めないように）。
+ *
  * ※ このファイルはクライアント（管理画面）からも import するため、Node専用の
  *   crypto には依存しない（ハッシュ計算は呼び出し側＝サーバで行う）。
  */
@@ -130,6 +136,26 @@ export interface ExistingDuplicate {
   matchType: "image" | "content"
 }
 
+/**
+ * テスト実行による絞り込みを加える。
+ *
+ * - testRunId あり … そのテスト実行で作られた記録だけを照合する
+ * - testRunId なし … テスト実行の印が付いていない記録（＝本番）だけを照合する
+ *
+ * 双方向に分離することで、テストが本番を止めることも、
+ * 本番がテストを止めることも無くなる。
+ */
+function scopeByTestRun<T>(query: T, testRunId: string | null | undefined): T {
+  const q = query as unknown as {
+    filter: (col: string, op: string, val: unknown) => unknown
+  }
+  return (
+    testRunId
+      ? q.filter("ai_raw->>test_run_id", "eq", testRunId)
+      : q.filter("ai_raw->>test_run_id", "is", null)
+  ) as unknown as T
+}
+
 type ExistingRow = {
   id: string
   staff_member_id: string | null
@@ -145,16 +171,20 @@ type ExistingRow = {
  */
 export async function findImageHashDuplicate(
   supabase: SupabaseClient<Database>,
-  imageHash: string | null
+  imageHash: string | null,
+  testRunId?: string | null
 ): Promise<ExistingDuplicate | null> {
   if (!imageHash) return null
-  const { data, error } = await supabase
-    .from("staff_receipts")
-    // image_hash は型に存在するが、未適用環境では実行時エラーになるため下でハンドリング
-    .select("id, staff_member_id, store_name, amount, date, created_at")
-    .eq("image_hash", imageHash)
-    // 取り消した申請は重複扱いしない（同じ写真で出し直せるようにするため）
-    .filter("ai_raw->>cancelled_at", "is", null)
+  const { data, error } = await scopeByTestRun(
+    supabase
+      .from("staff_receipts")
+      // image_hash は型に存在するが、未適用環境では実行時エラーになるため下でハンドリング
+      .select("id, staff_member_id, store_name, amount, date, created_at")
+      .eq("image_hash", imageHash)
+      // 取り消した申請は重複扱いしない（同じ写真で出し直せるようにするため）
+      .filter("ai_raw->>cancelled_at", "is", null),
+    testRunId
+  )
     .order("created_at", { ascending: true })
     .limit(1)
 
@@ -179,20 +209,24 @@ export async function findContentDuplicate(
     storeName: string | null
     amount: number | null
     date: string | null
+    /** テスト実行のID。指定するとそのテスト実行の中だけで照合する */
+    testRunId?: string | null
   }
 ): Promise<ExistingDuplicate | null> {
-  const { staffMemberId, storeName, amount, date } = params
+  const { staffMemberId, storeName, amount, date, testRunId } = params
   if (!isContentKeyComplete(storeName, amount, date) || amount == null) return null
 
-  const { data, error } = await supabase
-    .from("staff_receipts")
-    .select("id, staff_member_id, store_name, amount, date, created_at")
-    .eq("staff_member_id", staffMemberId)
-    .eq("amount", amount)
-    .eq("date", normalizeDate(date))
-    // 取り消した申請は重複扱いしない（同じ内容で出し直せるようにするため）
-    .filter("ai_raw->>cancelled_at", "is", null)
-    .order("created_at", { ascending: true })
+  const { data, error } = await scopeByTestRun(
+    supabase
+      .from("staff_receipts")
+      .select("id, staff_member_id, store_name, amount, date, created_at")
+      .eq("staff_member_id", staffMemberId)
+      .eq("amount", amount)
+      .eq("date", normalizeDate(date))
+      // 取り消した申請は重複扱いしない（同じ内容で出し直せるようにするため）
+      .filter("ai_raw->>cancelled_at", "is", null),
+    testRunId
+  ).order("created_at", { ascending: true })
 
   if (error) {
     console.warn("[dedup] 内容照合をスキップ:", error.message)

@@ -35,6 +35,7 @@ import {
   commuterPassLabel,
   findNameConflicts,
   hasPendingNameChange,
+  activeTestRun,
   hasPriorCourseRecord,
   hasSeparateLegalName,
   isReceptionist,
@@ -140,6 +141,8 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const [togglingRetiredId, setTogglingRetiredId] = useState<string | null>(null)
   // テスト分の一括削除の処理中のID
   const [purgingId, setPurgingId] = useState<string | null>(null)
+  // テスト実行の開始・終了の処理中のID
+  const [testRunId, setTestRunId] = useState<string | null>(null)
   // 退職者も一覧に表示するか（既定は在籍者のみ）
   const [showRetired, setShowRetired] = useState(false)
 
@@ -465,6 +468,36 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   }
 
   /**
+   * テスト実行の開始・終了。
+   *
+   * 過去の記録を消さずに実機テストをやり直すための仕組み。
+   * 開始すると、それ以降の申請に印が付き、重複判定と上限の累計を
+   * そのテスト実行の中だけで行う。以前と同じ画像をそのまま使える。
+   */
+  async function handleTestRun(member: StaffMember, start: boolean) {
+    setTestRunId(member.id)
+    try {
+      const res = await fetch("/api/line-staff", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: member.id, testRun: { start } }),
+      })
+      const json = (await res.json().catch(() => ({}))) as { error?: string }
+      if (!res.ok) throw new Error(json.error || "切り替えられませんでした")
+      toast.success(
+        start
+          ? `${member.name}さんの新しいテストを開始しました（重複と上限はこのテストの中だけで判定します）`
+          : `${member.name}さんのテストを終了しました`
+      )
+      fetchStaff()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "切り替えられませんでした")
+    } finally {
+      setTestRunId(null)
+    }
+  }
+
+  /**
    * テストの申請・立替明細・Dropboxの写真をまとめて削除する。
    *
    * テストをやり直すときに使う。消し残しがあると、同じ写真を送り直したときに
@@ -486,21 +519,42 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
         receipts?: number
         photos?: number
         transactions?: number
+        items?: {
+          date: string | null
+          store: string | null
+          amount: number | null
+          createdAt: string | null
+        }[]
         error?: string
       }
       if (!countRes.ok) throw new Error(counts.error || "件数を取得できませんでした")
 
-      if (!counts.receipts && !counts.transactions) {
-        toast.info(`${member.name}さんのテストの申請はありません`)
+      if (!counts.receipts) {
+        toast.info(
+          `${member.name}さんに、テスト実行中に作られた申請はありません（本番の申請は削除の対象外です）`
+        )
         return
       }
 
-      // 2. 氏名の入力で確認する
+      // 2. 何が消えるのかを一覧で見せてから、氏名の入力で確認する
+      const list = (counts.items ?? [])
+        .slice(0, 30)
+        .map(
+          (i) =>
+            `  ${i.date ?? "日付不明"}　${i.store ?? "支払先不明"}　` +
+            `¥${(i.amount ?? 0).toLocaleString("ja-JP")}`
+        )
+        .join("\n")
+      const more =
+        (counts.items?.length ?? 0) > 30 ? `\n  …ほか ${(counts.items?.length ?? 0) - 30}件` : ""
+
       const typed = window.prompt(
-        `${member.name}さんのテストの記録をすべて削除します。\n\n` +
-          `・申請　　${counts.receipts ?? 0}件\n` +
+        `${member.name}さんの「テスト実行中に作られた申請」を削除します。\n` +
+          "本番の申請は対象に入っていません。\n\n" +
+          `・申請　${counts.receipts ?? 0}件\n` +
           `・立替の明細　${counts.transactions ?? 0}件\n` +
           `・Dropboxの写真　${counts.photos ?? 0}件\n\n` +
+          `【削除する申請】\n${list}${more}\n\n` +
           "元に戻せません。\n" +
           `実行する場合は、お名前「${member.name}」を入力してください。`
       )
@@ -1017,6 +1071,68 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                             </span>
                           </div>
                         </div>
+
+                        {/* テスト実行。過去の記録を消さずにテストをやり直すための仕組み */}
+                        {member.is_test && (
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium">
+                                テスト実行
+                                {activeTestRun(member.line_profile) && (
+                                  <span className="ml-2 text-xs" style={{ color: "#059669" }}>
+                                    実行中（
+                                    {new Date(
+                                      activeTestRun(member.line_profile)!.started_at
+                                    ).toLocaleString("ja-JP", {
+                                      month: "2-digit",
+                                      day: "2-digit",
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                    })}
+                                    開始）
+                                  </span>
+                                )}
+                              </p>
+                              <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
+                                <strong>使う場面：</strong>実機テストをやり直すとき。
+                                <strong>過去の記録は1件も消しません。</strong>
+                                <br />
+                                開始すると、それ以降の申請を「このテストの分」として扱い、
+                                <strong>重複の判定と上限の累計をこのテストの中だけ</strong>で行います。
+                                そのため、
+                                <strong>以前と同じ写真をそのまま使えます</strong>し、
+                                交通費の累計も0から始まるので上限と半額の計算を確かめられます。
+                                <br />
+                                会計士さんへの提出・給与の集計には、従来どおり入りません。
+                                <br />
+                                テストが終わったら「終了」を押してください（本番の判定に戻ります）。
+                              </p>
+                            </div>
+                            <div className="flex gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={testRunId === member.id}
+                                onClick={() => handleTestRun(member, true)}
+                              >
+                                {testRunId === member.id && (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                )}
+                                新しいテストを開始
+                              </Button>
+                              {activeTestRun(member.line_profile) && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={testRunId === member.id}
+                                  onClick={() => handleTestRun(member, false)}
+                                >
+                                  終了
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        )}
 
                         {/* テストの申請と画像をまとめて消す。テストスタッフのときだけ出す */}
                         {member.is_test && (

@@ -6,6 +6,7 @@ import {
   hasPendingNameChange,
   parseLineProfile,
   travelCapResetAt,
+  type TestRun,
   type TravelCapReset,
 } from "@/lib/line-staff-profile"
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
@@ -300,6 +301,12 @@ export async function PATCH(request: NextRequest) {
        * undo=true でいちばん新しい数え直しを取り消す。
        */
       travelCapReset?: { courseId?: string; undo?: boolean }
+      /**
+       * テスト実行の開始・終了。
+       * start=true で新しいテスト実行を始める（過去の記録は消さない）。
+       * start=false で終了する。
+       */
+      testRun?: { start?: boolean }
       /** アカデミー会員のサービス開始日（YYYY-MM-DD。null で登録を取り消す） */
       academyStart?: string | null
       /** 一時休止（産休・育休・休職など）。true で停止、false で再開 */
@@ -464,6 +471,64 @@ export async function PATCH(request: NextRequest) {
         throw error
       }
       return NextResponse.json({ data })
+    }
+
+    /*
+     * テスト実行の開始・終了。
+     *
+     * ■ なぜ必要か
+     * 実機テストをやり直すたびに記録を消すのは危険で、手間もかかる。
+     * 「新しいテストを開始」すると、それ以降の申請に印が付き、
+     * **重複判定と上限の累計をそのテスト実行の中だけ**で行う。
+     * そのため、
+     *   - 以前と同じ画像をそのまま使える（重複で止まらない）
+     *   - 累計が0から始まるので、上限と半額の計算を確かめられる
+     *   - 過去の記録は1件も消さない
+     *
+     * 会計士提出・給与集計からの除外は、従来どおり is_test で行う。
+     */
+    if (body.testRun) {
+      const { data: member, error: readError } = await service
+        .from("staff_members")
+        .select("line_profile, is_test, name")
+        .eq("id", body.id)
+        .single()
+      if (readError || !member) {
+        return NextResponse.json({ error: "スタッフが見つかりません" }, { status: 404 })
+      }
+      const row = member as { line_profile?: unknown; is_test?: boolean | null; name: string }
+      if (body.testRun.start && !row.is_test) {
+        return NextResponse.json(
+          {
+            error:
+              "テストを始める前に「テストスタッフ」をONにしてください。" +
+              "ONにしないと、テストの申請が会計士さんへの提出と給与の集計に入ってしまいます。",
+          },
+          { status: 400 }
+        )
+      }
+
+      const profile = parseLineProfile(row.line_profile)
+      const now = new Date().toISOString()
+      const nextRun: TestRun | undefined = body.testRun.start
+        ? { id: `run_${now.replace(/[^0-9]/g, "")}`, started_at: now, by: user.email ?? undefined }
+        : profile.test_run
+          ? { ...profile.test_run, ended_at: now }
+          : undefined
+
+      const { data, error } = await service
+        .from("staff_members")
+        .update({
+          line_profile: JSON.parse(JSON.stringify({ ...profile, test_run: nextRun })),
+        })
+        .eq("id", body.id)
+        .select("*")
+        .single()
+      if (error) {
+        console.error("テスト実行の切替エラー:", error.message, error.code)
+        throw error
+      }
+      return NextResponse.json({ data, testRun: nextRun ?? null })
     }
 
     /*

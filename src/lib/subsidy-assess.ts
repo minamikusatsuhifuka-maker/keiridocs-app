@@ -30,7 +30,12 @@
  */
 
 import { fetchAllRows } from "@/lib/supabase/fetch-all"
-import { academyStartDate, parseLineProfile, travelCapResetAt } from "@/lib/line-staff-profile"
+import {
+  academyStartDate,
+  activeTestRunId,
+  parseLineProfile,
+  travelCapResetAt,
+} from "@/lib/line-staff-profile"
 import { formatYearMonth, resolveStaffSubmissionMonth } from "@/lib/submission-month"
 import {
   computeSubsidy,
@@ -152,10 +157,13 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
   )
 
   // 2. 上限枠の消費分を数える。
-  //    テストスタッフの申請・取り消した申請・数え直しより前の申請は数えない
-  //    （数えると実際には支給していない額で枠が埋まり、正しい申請が支給0円になる）。
+  //    取り消した申請は数えない（数えると実際には支給していない額で枠が埋まり、
+  //    正しい申請が支給0円になる）。
+  //
+  //    テスト実行中は、そのテスト実行で作られた申請だけを数える。
+  //    本番の申請はテストの累計に入らず、テストの申請も本番の累計に入らない。
   const staffState = await fetchStaffCapState(supabase, staffMemberId, input.courseId ?? null)
-  const counted = staffState.isTest ? [] : await rejectCancelled(supabase, priors)
+  const counted = await selectCountableRows(supabase, priors, staffState.testRunId)
 
   // 交通費・宿泊費の枠は「受講ごと」に数える。
   // 区切りは領収書の日付（申請の順番では変わらないようにするため）
@@ -280,22 +288,23 @@ async function fetchStaffCapState(
   supabase: ServiceClient,
   staffMemberId: string,
   courseId: string | null
-): Promise<{ isTest: boolean; travelCapResetAt: string | null }> {
+): Promise<{ isTest: boolean; travelCapResetAt: string | null; testRunId: string | null }> {
   try {
     const { data, error } = await supabase
       .from("staff_members")
       .select("is_test, line_profile")
       .eq("id", staffMemberId)
       .maybeSingle()
-    if (error || !data) return { isTest: false, travelCapResetAt: null }
+    if (error || !data) return { isTest: false, travelCapResetAt: null, testRunId: null }
     const row = data as { is_test?: boolean | null; line_profile?: unknown }
     return {
       isTest: !!row.is_test,
       travelCapResetAt: travelCapResetAt(row.line_profile, courseId),
+      testRunId: activeTestRunId(row.line_profile),
     }
   } catch {
     // 読めないときは枠を数える側に倒す（過大支給を防ぐ）
-    return { isTest: false, travelCapResetAt: null }
+    return { isTest: false, travelCapResetAt: null, testRunId: null }
   }
 }
 
@@ -393,37 +402,77 @@ function isInTravelWindow(row: PriorRow, w: TravelWindow): boolean {
 }
 
 /**
- * 本人が取り消した申請を除く。
+ * 枠の計算に数える明細だけを選ぶ。
  *
- * 取り消し（LINEの「この申請を取り消す」）では明細を削除しているため通常は残らないが、
- * 削除に失敗した場合や管理画面からの操作で残ることがある。
- * 枠だけが埋まって正しい申請が支給0円になるのを防ぐため、ここでも除外する。
+ * 次のものは数えない。
+ *  - 本人が取り消した申請（ai_raw.cancelled_at）
+ *    取り消し時に明細も消しているため通常は残らないが、削除に失敗した場合や
+ *    管理画面からの操作で残ることがある。枠だけが埋まって正しい申請が
+ *    支給0円になるのを防ぐため、ここでも除外する。
+ *  - いまのテスト実行と関係のない申請
+ *    テスト実行中（testRunId あり）は、そのテスト実行で作られた申請だけを数える。
+ *    本番のときは、テスト実行の印が付いた申請を数えない。
+ *    こうしないと、テストの申請が本番の枠を食ったり、
+ *    本番の申請でテストの累計が埋まったりする。
+ *
+ * 手で登録した明細（staff_receipt_id が無い）は本番として扱う。
  */
-async function rejectCancelled(supabase: ServiceClient, rows: PriorRow[]): Promise<PriorRow[]> {
+/** ai_raw をオブジェクトとして読む（読めなければ空） */
+function readAiRaw(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      // 読めない場合は空として扱う
+    }
+  }
+  return {}
+}
+
+async function selectCountableRows(
+  supabase: ServiceClient,
+  rows: PriorRow[],
+  testRunId: string | null
+): Promise<PriorRow[]> {
   const receiptIds = Array.from(
     new Set(rows.map((r) => r.staff_receipt_id).filter((v): v is string => !!v))
   )
-  if (receiptIds.length === 0) return rows
+  // 記録が無い＝手で登録した明細だけ。テスト実行中は数えない
+  if (receiptIds.length === 0) return testRunId ? [] : rows
 
   try {
-    const cancelled = await fetchAllRows<{ id: string }>((from, to) =>
+    type Meta = { id: string; ai_raw: unknown }
+    const metas = await fetchAllRows<Meta>((from, to) =>
       supabase
         .from("staff_receipts")
-        .select("id")
+        .select("id, ai_raw")
         .in("id", receiptIds)
-        .not("ai_raw->>cancelled_at", "is", null)
         .order("id", { ascending: true })
         .range(from, to) as unknown as PromiseLike<{
-          data: { id: string }[] | null
+          data: Meta[] | null
           error: { message: string } | null
         }>
     )
-    if (cancelled.length === 0) return rows
-    const drop = new Set(cancelled.map((c) => c.id))
-    return rows.filter((r) => !r.staff_receipt_id || !drop.has(r.staff_receipt_id))
+    const byId = new Map(metas.map((m) => [m.id, readAiRaw(m.ai_raw)]))
+
+    return rows.filter((r) => {
+      if (!r.staff_receipt_id) return !testRunId // 手で登録した明細は本番扱い
+      const raw = byId.get(r.staff_receipt_id)
+      if (!raw) return !testRunId
+      if (raw.cancelled_at) return false
+      const rowRun = typeof raw.test_run_id === "string" ? raw.test_run_id : null
+      return testRunId ? rowRun === testRunId : rowRun === null
+    })
   } catch {
-    // 判定できないときは除外せずそのまま数える（過大支給を防ぐ）
-    return rows
+    // 判定できないときは安全側に倒す
+    // （本番は全件を数えて過大支給を防ぐ。テストは数えない）
+    return testRunId ? [] : rows
   }
 }
 

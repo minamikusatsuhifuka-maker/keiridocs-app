@@ -37,6 +37,7 @@ import {
   commuterPassLabel,
   familyName,
   hasPendingNameChange,
+  activeTestRunId,
   hasPriorCourseRecord,
   isCommuteMethodUnanswered,
   isCommuterPassUnanswered,
@@ -1192,25 +1193,31 @@ async function findRegisteredTrips(
   trips: TransitTrip[],
   excludeReceiptId?: string
 ): Promise<Set<number>> {
+  // テスト実行中は、そのテスト実行で申請した移動だけを「申請済み」とみなす
+  const testRunId = await loadActiveTestRunId(supabase, staffMemberId)
   const registered = new Set<number>()
   const dates = Array.from(new Set(trips.map((t) => t.date).filter(Boolean)))
   if (dates.length === 0) return registered
 
   try {
     type Row = { id: string; store_name: string | null; amount: number | null; date: string | null }
-    const rows = await fetchAllRows<Row>((from, to) =>
-      supabase
+    const rows = await fetchAllRows<Row>((from, to) => {
+      const base = supabase
         .from("staff_receipts")
         .select("id, store_name, amount, date")
         .eq("staff_member_id", staffMemberId)
         .in("date", dates)
         .filter("ai_raw->>cancelled_at", "is", null)
+      const scoped = testRunId
+        ? base.filter("ai_raw->>test_run_id", "eq", testRunId)
+        : base.filter("ai_raw->>test_run_id", "is", null)
+      return scoped
         .order("id", { ascending: true })
         .range(from, to) as unknown as PromiseLike<{
           data: Row[] | null
           error: { message: string } | null
         }>
-    )
+    })
 
     const candidates = rows.filter((r) => r.id !== excludeReceiptId)
     if (candidates.length === 0) return registered
@@ -1260,14 +1267,19 @@ async function resumeTransitFromSameImage(
   staffMemberId: string,
   imageHash: string
 ): Promise<boolean> {
-  const { data } = await supabase
+  // テスト実行中は、そのテスト実行で送った画像だけを対象にする
+  // （以前のテストや本番で使った画像をそのまま使い直せるようにするため）
+  const testRunId = await loadActiveTestRunId(supabase, staffMemberId)
+  const base = supabase
     .from("staff_receipts")
     .select("id, ai_raw")
     .eq("staff_member_id", staffMemberId)
     .eq("image_hash", imageHash)
     .filter("ai_raw->>cancelled_at", "is", null)
-    .order("created_at", { ascending: false })
-    .limit(1)
+  const scoped = testRunId
+    ? base.filter("ai_raw->>test_run_id", "eq", testRunId)
+    : base.filter("ai_raw->>test_run_id", "is", null)
+  const { data } = await scoped.order("created_at", { ascending: false }).limit(1)
   const row = (data ?? [])[0] as { id: string; ai_raw: unknown } | undefined
   if (!row) return false
 
@@ -1345,6 +1357,29 @@ async function releaseTransitTrip(
   } catch (error) {
     // 申請の取り消し自体は済んでいるため、ここで失敗しても止めない
     console.error("[LINE Bot] 申請済みの印を外せませんでした:", error)
+  }
+}
+
+/**
+ * そのスタッフで動いているテスト実行のID（無ければ null）。
+ *
+ * テスト実行中は、重複判定と上限の累計をそのテスト実行の中だけで行う。
+ * 過去の記録を消さずに実機テストをやり直せるようにするための仕組み。
+ */
+async function loadActiveTestRunId(
+  supabase: ServiceClient,
+  staffMemberId: string
+): Promise<string | null> {
+  try {
+    const { data } = await supabase
+      .from("staff_members")
+      .select("line_profile")
+      .eq("id", staffMemberId)
+      .maybeSingle()
+    return activeTestRunId((data as { line_profile?: unknown } | null)?.line_profile)
+  } catch {
+    // 読めないときは本番として扱う（テスト扱いにして集計から外すより安全）
+    return null
   }
 }
 
@@ -1880,8 +1915,15 @@ async function handleIcConfirmPostback(event: LineEvent, params: URLSearchParams
           date: trip.date,
           amount: trip.fare,
           store_name: trip.route,
+          // 元の申請と同じテスト実行の印を引き継ぐ
+          // （引き継がないと、テストで作った分が本番の重複判定・累計に混ざる）
           ai_raw: JSON.parse(
-            JSON.stringify({ selected_trip: trip, from_receipt_id: receiptId, trip_index: idx })
+            JSON.stringify({
+              selected_trip: trip,
+              from_receipt_id: receiptId,
+              trip_index: idx,
+              ...(typeof raw.test_run_id === "string" ? { test_run_id: raw.test_run_id } : {}),
+            })
           ) as Json,
         })
         .select("id")
@@ -7344,6 +7386,11 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     const { session: photoSession } = await loadTransitSession(supabase, source.userId)
     const isTransitHistory = photoSession?.step === "await_ic_photo"
 
+    // 動いているテスト実行（あれば）。
+    // テスト実行中は、重複判定と上限の累計をそのテスト実行の中だけで行う。
+    // 過去の記録を消さずに実機テストをやり直せるようにするため。
+    const testRunId = await loadActiveTestRunId(supabase, matchedStaff.id)
+
     // 4.5 画像ハッシュで重複チェック（解析前。同一画像の再送をハードブロック）
     const imageHash = crypto.createHash("sha256").update(imageBuffer).digest("hex")
 
@@ -7358,7 +7405,7 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
       }
     }
 
-    const imageDup = isTransitHistory ? null : await findImageHashDuplicate(supabase, imageHash)
+    const imageDup = isTransitHistory ? null : await findImageHashDuplicate(supabase, imageHash, testRunId)
     if (imageDup) {
       console.log("[LINE Bot] 画像ハッシュ重複を検知 → 登録中止")
       await sendDuplicateWarning(event, imageDup, imageDup.staff_member_id === matchedStaff.id)
@@ -7403,6 +7450,7 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
         storeName: t.storeName,
         amount: t.amount,
         date: t.date,
+        testRunId,
       })
       if (contentDup) {
         console.log("[LINE Bot] 内容重複を検知 → 登録中止")
@@ -7452,7 +7500,11 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
       store_name: ocrResult.vendor_name || null,
       tax_category: ocrResult.tax_category || null,
       account_title: ocrResult.account_title || null,
-      ai_raw: JSON.parse(JSON.stringify(ocrResult)) as Json,
+      // テスト実行中は印を付ける。重複判定と上限の累計を
+      // そのテスト実行の中だけで行うため（過去の記録を消さずにやり直せる）
+      ai_raw: JSON.parse(
+        JSON.stringify(testRunId ? { ...ocrResult, test_run_id: testRunId } : ocrResult)
+      ) as Json,
     }
 
     // image_hash は migration 030 で追加。未適用環境でも保存を止めないようフォールバック

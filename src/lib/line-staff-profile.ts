@@ -117,6 +117,22 @@ export function hasPriorCourseRecord(raw: unknown): boolean {
  *
  * @returns ISO8601 の日時。数え直していなければ null
  */
+/**
+ * いま動いているテスト実行のID（無ければ null）。
+ *
+ * 終了済み（ended_at あり）は動いていないものとして扱う。
+ */
+export function activeTestRunId(raw: unknown): string | null {
+  return activeTestRun(raw)?.id ?? null
+}
+
+/** いま動いているテスト実行（無ければ null）。画面に開始日時を出すために使う */
+export function activeTestRun(raw: unknown): TestRun | null {
+  const run = parseLineProfile(raw).test_run
+  if (!run || !run.id || run.ended_at) return null
+  return run
+}
+
 export function travelCapResetAt(raw: unknown, courseId: string | null | undefined): string | null {
   if (!courseId) return null
   const hits = (parseLineProfile(raw).travel_cap_resets ?? [])
@@ -170,7 +186,34 @@ export interface TravelCapReset {
   used_before?: number
 }
 
+/**
+ * テスト実行（実機テストの1回分）。
+ *
+ * 実機テストをやり直すとき、過去の記録を消さずにやり直せるようにするための印。
+ * 開始するとIDを発行し、その間に作られた申請に test_run_id を付ける。
+ *
+ * - 重複判定と上限の累計は、**同じテスト実行の中だけ**で行う
+ *   → 以前と同じ画像をそのまま使える。累計も0から数え直せる
+ * - 本番の記録はテスト実行の判定に入らない。逆も同じ
+ * - 会計士提出・給与集計からの除外は、従来どおり is_test で行う
+ */
+export interface TestRun {
+  /** テスト実行のID（発行時刻ベース。申請の印に使う） */
+  id: string
+  /** 開始日時（ISO8601） */
+  started_at: string
+  /** 開始した人（メールアドレス）。記録用 */
+  by?: string
+  /** 終了日時。終了していなければ未設定 */
+  ended_at?: string
+}
+
 export interface LineProfile {
+  /**
+   * いま動いているテスト実行。
+   * 「新しいテストを開始」で入れ替える（過去のIDは申請側に残る）。
+   */
+  test_run?: TestRun
   /**
    * 担当か（スタッフからの問い合わせをこの人のLINEへ転送する）。
    * 院長は ADMIN_LINE_USER_ID で常に受け取るため、ここは担当者用。
