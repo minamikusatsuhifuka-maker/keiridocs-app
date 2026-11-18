@@ -141,6 +141,8 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
   const [togglingRetiredId, setTogglingRetiredId] = useState<string | null>(null)
   // テスト分の一括削除の処理中のID
   const [purgingId, setPurgingId] = useState<string | null>(null)
+  // 「この日以降を削除」で指定する日付（スタッフごと）
+  const [purgeSince, setPurgeSince] = useState<Record<string, string>>({})
   // テスト実行の開始・終了の処理中のID
   const [testRunId, setTestRunId] = useState<string | null>(null)
   // 退職者も一覧に表示するか（既定は在籍者のみ）
@@ -508,12 +510,13 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
    *   2. 消す前に件数を見せる
    *   3. 氏名を入力してもらう
    */
-  async function handlePurgeTest(member: StaffMember) {
+  async function handlePurgeTest(member: StaffMember, since?: string) {
     setPurgingId(member.id)
     try {
       // 1. 何件消えるのかを先に見せる
       const countRes = await fetch(
-        `/api/staff-receipts/purge-test?staffMemberId=${encodeURIComponent(member.id)}`
+        `/api/staff-receipts/purge-test?staffMemberId=${encodeURIComponent(member.id)}` +
+          (since ? `&since=${encodeURIComponent(since)}` : "")
       )
       const counts = (await countRes.json().catch(() => ({}))) as {
         receipts?: number
@@ -531,7 +534,10 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
 
       if (!counts.receipts) {
         toast.info(
-          `${member.name}さんに、テスト実行中に作られた申請はありません（本番の申請は削除の対象外です）`
+          since
+            ? `${member.name}さんに、${since} 以降に取り込んだ申請はありません`
+            : `${member.name}さんに、テスト実行中に作られた申請はありません。` +
+              "「新しいテストを開始」を押す前の分は、下の日付を指定して削除してください"
         )
         return
       }
@@ -549,8 +555,11 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
         (counts.items?.length ?? 0) > 30 ? `\n  …ほか ${(counts.items?.length ?? 0) - 30}件` : ""
 
       const typed = window.prompt(
-        `${member.name}さんの「テスト実行中に作られた申請」を削除します。\n` +
-          "本番の申請は対象に入っていません。\n\n" +
+        (since
+          ? `${member.name}さんの「${since} 以降に取り込んだ申請」を削除します。\n` +
+            "それより前の申請は対象に入っていません。\n\n"
+          : `${member.name}さんの「テスト実行中に作られた申請」を削除します。\n` +
+            "本番の申請は対象に入っていません。\n\n") +
           `・申請　${counts.receipts ?? 0}件\n` +
           `・立替の明細　${counts.transactions ?? 0}件\n` +
           `・Dropboxの写真　${counts.photos ?? 0}件\n\n` +
@@ -563,7 +572,7 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
       const res = await fetch("/api/staff-receipts/purge-test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ staffMemberId: member.id, confirmName: typed }),
+        body: JSON.stringify({ staffMemberId: member.id, confirmName: typed, since }),
       })
       const json = (await res.json().catch(() => ({}))) as {
         deletedReceipts?: number
@@ -1150,23 +1159,53 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                                 テスト中の申請は会計士さんへの提出・給与の集計から外れているため、
                                 消しても提出済みの資料と食い違いません。
                                 <br />
+                                <br />
+                                <strong>「新しいテストを開始」を押す前にテストした分</strong>には印が無いため、
+                                上のボタンでは消せません。その場合は日付を指定して
+                                「この日以降を削除」をお使いください。
+                                指定した日より前の申請には手が届きません。
+                                <br />
                                 元に戻せません。実行の前にお名前の入力をお願いします。
                               </p>
                             </div>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-destructive hover:text-destructive"
-                              onClick={() => handlePurgeTest(member)}
-                              disabled={purgingId === member.id}
-                            >
-                              {purgingId === member.id ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <Trash2 className="h-4 w-4" />
-                              )}
-                              テスト分を削除
-                            </Button>
+                            <div className="flex flex-col items-end gap-2">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-destructive hover:text-destructive"
+                                onClick={() => handlePurgeTest(member)}
+                                disabled={purgingId === member.id}
+                              >
+                                {purgingId === member.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-4 w-4" />
+                                )}
+                                テスト分を削除
+                              </Button>
+                              {/* 「新しいテストを開始」を押す前の分は印が無いため、
+                                  日付で範囲を切って消せるようにする */}
+                              <div className="flex items-center gap-2">
+                                <Input
+                                  type="date"
+                                  className="h-8 w-[150px]"
+                                  value={purgeSince[member.id] ?? ""}
+                                  onChange={(e) =>
+                                    setPurgeSince((prev) => ({ ...prev, [member.id]: e.target.value }))
+                                  }
+                                  aria-label="この日以降に取り込んだ申請を削除"
+                                />
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="text-destructive hover:text-destructive"
+                                  disabled={purgingId === member.id || !purgeSince[member.id]}
+                                  onClick={() => handlePurgeTest(member, purgeSince[member.id])}
+                                >
+                                  この日以降を削除
+                                </Button>
+                              </div>
+                            </div>
                           </div>
                         )}
 

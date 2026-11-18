@@ -54,6 +54,20 @@ interface ReceiptRow {
   test_run_id: string | null
 }
 
+/**
+ * 「この日以降」の指定を受け取る。
+ *
+ * 日付（YYYY-MM-DD）はその日の0時（日本時間）として扱う。
+ * 形式が違うものは受け取らない（範囲が広がって本番の記録に届くのを防ぐため）。
+ */
+function normalizeSince(value: string | null | undefined): string | null {
+  if (!value) return null
+  const m = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (m) return `${m[1]}-${m[2]}-${m[3]}T00:00:00+09:00`
+  const t = Date.parse(value)
+  return Number.isFinite(t) ? new Date(t).toISOString() : null
+}
+
 /** 対象スタッフを読み、テストスタッフであることを確かめる */
 async function loadTestStaff(
   service: ReturnType<typeof createServiceClient>,
@@ -87,10 +101,12 @@ export async function GET(request: Request) {
   } = await authSupabase.auth.getUser()
   if (!user) return NextResponse.json({ error: "認証が必要です" }, { status: 401 })
 
-  const staffMemberId = new URL(request.url).searchParams.get("staffMemberId")
+  const url = new URL(request.url)
+  const staffMemberId = url.searchParams.get("staffMemberId")
   if (!staffMemberId) {
     return NextResponse.json({ error: "スタッフが指定されていません" }, { status: 400 })
   }
+  const since = normalizeSince(url.searchParams.get("since"))
 
   const service = createServiceClient()
   const staff = await loadTestStaff(service, staffMemberId)
@@ -99,7 +115,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const receipts = await listReceipts(service, staffMemberId)
+    const receipts = await listReceipts(service, staffMemberId, since)
     const transactions = await countTransactions(
       service,
       staffMemberId,
@@ -143,6 +159,7 @@ export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as {
     staffMemberId?: string
     confirmName?: string
+    since?: string
   }
   if (!body.staffMemberId) {
     return NextResponse.json({ error: "スタッフが指定されていません" }, { status: 400 })
@@ -164,7 +181,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const receipts = await listReceipts(service, body.staffMemberId)
+    const receipts = await listReceipts(service, body.staffMemberId, normalizeSince(body.since))
 
     if (receipts.length === 0) {
       return NextResponse.json({
@@ -230,13 +247,20 @@ export async function POST(request: Request) {
 /**
  * 削除の対象＝**テスト実行中に作られた申請**を全件取得する。
  *
- * ai_raw.test_run_id が付いている記録だけを返す。
- * 印の無い記録（旧アプリからの申請を含む本番の記録）は決して返さない。
- * ここが本番データを守る要なので、条件を緩めないこと。
+ * 既定では ai_raw.test_run_id が付いている記録だけを返す。
+ * 印の無い記録（旧アプリからの申請を含む本番の記録）は返さない。
+ *
+ * since を渡したときだけ、**その日時以降に取り込まれた**記録も返す。
+ * 「新しいテストを開始」を押す前にテストした分には印が無く、
+ * 印だけでは消せないため。日付で範囲を切ることで、
+ * 過去の本番の申請には絶対に手が届かないようにしている。
+ *
+ * @param since この日時以降の記録も対象にする（ISO8601）。省略すると印の付いた分だけ
  */
 async function listReceipts(
   service: ReturnType<typeof createServiceClient>,
-  staffMemberId: string
+  staffMemberId: string,
+  since?: string | null
 ): Promise<ReceiptRow[]> {
   type Row = {
     id: string
@@ -247,18 +271,19 @@ async function listReceipts(
     created_at: string | null
     ai_raw: unknown
   }
-  const rows = await fetchAllRows<Row>((from, to) =>
-    service
+  const rows = await fetchAllRows<Row>((from, to) => {
+    const base = service
       .from("staff_receipts")
       .select("id, dropbox_path, date, store_name, amount, created_at, ai_raw")
       .eq("staff_member_id", staffMemberId)
-      .not("ai_raw->>test_run_id", "is", null)
-      .order("id", { ascending: true })
-      .range(from, to) as unknown as PromiseLike<{
-        data: Row[] | null
-        error: { message: string } | null
-      }>
-  )
+    const scoped = since
+      ? base.gte("created_at", since)
+      : base.not("ai_raw->>test_run_id", "is", null)
+    return scoped.order("id", { ascending: true }).range(from, to) as unknown as PromiseLike<{
+      data: Row[] | null
+      error: { message: string } | null
+    }>
+  })
   return rows
     .map((r) => {
       const raw = (r.ai_raw && typeof r.ai_raw === "object" ? r.ai_raw : {}) as Record<string, unknown>
@@ -272,8 +297,8 @@ async function listReceipts(
         test_run_id: typeof raw.test_run_id === "string" ? raw.test_run_id : null,
       }
     })
-    // 念のため二重に確かめる（印の無いものは絶対に消さない）
-    .filter((r) => !!r.test_run_id)
+    // 日付で範囲を切っていない場合は、印の無いものを絶対に消さない
+    .filter((r) => (since ? true : !!r.test_run_id))
 }
 
 /** 対象の申請に紐づく立替明細の件数 */
