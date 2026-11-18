@@ -274,6 +274,9 @@ const PAYMENT_EXTRACTION_RULES = `【支払方法（payment_method）の判定�
 - 各項目が部分的に欠ける場合、見つかった項目のみ埋め、無い項目は空文字にする`
 
 /** フォールバック値 */
+/** AI側が混み合って読み取れなかったことを示す印（warnings に入れる） */
+export const OCR_BUSY_WARNING = "OCR_BUSY"
+
 const FALLBACK_RESULT: OcrResult = {
   vendor_name: "",
   amount: null,
@@ -462,8 +465,14 @@ ${MULTI_PAYMENT_RULES}`
         continue
       }
 
+      // 読み取れなかった理由を warnings に残す。
+      // 「画像が不鮮明」と「AI側が混み合っていた」では案内が変わるため
       console.error("Gemini API エラー:", error)
-      return { ...FALLBACK_RESULT, model_used: modelId }
+      return {
+        ...FALLBACK_RESULT,
+        warnings: [is429 ? OCR_BUSY_WARNING : "OCR_FAILED"],
+        model_used: modelId,
+      }
     }
   }
 

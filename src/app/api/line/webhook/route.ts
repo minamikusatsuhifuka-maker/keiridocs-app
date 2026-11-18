@@ -4,6 +4,7 @@ import { downloadFile, uploadFile } from "@/lib/dropbox"
 import {
   analyzeDocument,
   normalizeAmount,
+  OCR_BUSY_WARNING,
   STAFF_RECEIPT_AUTO_ANALYSIS_EXTRA_HINT,
   TRANSIT_HISTORY_ANALYSIS_EXTRA_HINT,
   type OcrResult,
@@ -124,8 +125,17 @@ import type { Database } from "@/types/database"
 import type { Json } from "@/types/database"
 import crypto from "crypto"
 
-/** Vercel関数のタイムアウトを60秒に延長（Gemini + Dropbox処理に十分な時間を確保） */
-export const maxDuration = 60
+/**
+ * Vercel関数のタイムアウト。
+ *
+ * 60秒では足りなかった。写真1枚の処理は Dropboxへの保存 + AI解析 で
+ * おおむね20〜30秒かかる。さらに、
+ *  - アルバムから複数枚を続けて送ると、1回のリクエストで順に処理する
+ *  - AI側が混み合うと最大75秒まで待って再試行する（429対策）
+ * ため、60秒を超えると**処理ごと打ち切られ、返信も届かない**。
+ * 実機テストで、2枚送ったうちの2枚目が無反応になり送り直しになった。
+ */
+export const maxDuration = 300
 
 /* ---------- 型定義 ---------- */
 
@@ -2173,7 +2183,9 @@ async function applyManualReceiptInput(
 async function sendReadFailureChoices(
   event: LineEvent,
   receiptId: string,
-  isTransit: boolean
+  isTransit: boolean,
+  /** AI側が混み合って読めなかった場合（画像の問題ではないことを伝える） */
+  busy = false
 ): Promise<void> {
   const { replyToken, source } = event
   await sendLineQuickReply(
@@ -2181,9 +2193,13 @@ async function sendReadFailureChoices(
     source.userId,
     "⚠️ 一部の項目を読み取れませんでした。\n" +
       "─────────────\n" +
-      (isTransit
-        ? "利用履歴から移動を読み取れませんでした。\n"
-        : "金額または日付を読み取れませんでした。\n") +
+      (busy
+        ? "いま読み取りが混み合っていて、処理できませんでした。\n" +
+          "写真の問題ではありません。\n" +
+          "少し時間をおいて、同じ写真をもう一度送っていただけます。\n"
+        : isTransit
+          ? "利用履歴から移動を読み取れませんでした。\n"
+          : "金額または日付を読み取れませんでした。\n") +
       "写真はDropboxに保存しています。\n\n" +
       "どうされますか？\n\n" +
       (isTransit
@@ -7562,6 +7578,9 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     })
     if (isTransitHistory) await clearTransitSession(supabase, source.userId)
 
+    // AI側が混み合って読めなかったか（画像の問題と区別して案内するため）
+    const ocrBusy = (ocrResult.warnings ?? []).includes(OCR_BUSY_WARNING)
+
     // 自動で見分けた結果、利用履歴だった場合は履歴の流れに合流する
     const treatAsTransitHistory = isTransitHistory || looksLikeTransitHistory(ocrResult)
     console.log(`[LINE Bot] Gemini AI解析完了: vendor=${ocrResult.vendor_name}, amount=${ocrResult.amount}, payments=${ocrResult.payments.length}`)
@@ -7703,14 +7722,14 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
         return
       }
       // 1件も読み取れなかった → 読み取り失敗と同じ案内にする
-      await sendReadFailureChoices(event, receiptId, true)
+      await sendReadFailureChoices(event, receiptId, true, ocrBusy)
       return
     }
 
     // 金額が読み取れない場合はボタンを出さず、進み方を選んでもらう（誤精算防止）。
     // 以前は「担当が手動で登録します」とだけ返していたため、本人は何もできなかった。
     if (!amount || amount <= 0) {
-      await sendReadFailureChoices(event, receiptId, false)
+      await sendReadFailureChoices(event, receiptId, false, ocrBusy)
       console.log("[LINE Bot] 読み取り失敗 → 選択肢を提示")
       return
     }
