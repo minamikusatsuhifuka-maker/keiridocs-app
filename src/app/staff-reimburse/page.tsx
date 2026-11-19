@@ -16,6 +16,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { NotifyStaffDialog } from "@/components/mkadmin/notify-staff-dialog"
 import { InquiryList } from "@/components/line-staff/inquiry-list"
+import { ReceiptDiagnose } from "@/components/line-staff/receipt-diagnose"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
@@ -667,6 +668,14 @@ export default function StaffReimbursePage() {
 
       {/* スタッフからの問い合わせ（LINEを見落としてもここから追えるようにする） */}
       <InquiryList />
+
+      {/* 申請が見つからないときに、隠れている申請と理由を出す */}
+      <ReceiptDiagnose
+        onChanged={() => {
+          fetchPending()
+          fetchData()
+        }}
+      />
 
       {/* 絞り込み */}
       <Card>
