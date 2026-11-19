@@ -9,9 +9,16 @@ import { toast } from "sonner"
 
 interface PayrollItem {
   id: string
+  /** 立替額（領収書の金額） */
   amount: number
+  /** 給与で支払う額（規程どおりの支給額。半額・上限超過を反映） */
+  subsidy: number
   note: string | null
   description: string | null
+  expense_detail: string | null
+  excess_amount: number | null
+  approved_excess: number | null
+  hold_reason: string | null
   transaction_date: string | null
   created_at: string
   receipt_urls: string[] | null
@@ -20,9 +27,16 @@ interface PayrollItem {
 interface StaffGroup {
   staff_member_id: string | null
   staff_name: string
+  /** 支給額の合計（給与に乗せる額） */
   total: number
+  /** 立替額の合計（参考） */
+  totalAmount: number
   count: number
   items: PayrollItem[]
+}
+
+interface HeldItem extends PayrollItem {
+  staff_name: string
 }
 
 interface DoneItem extends PayrollItem {
@@ -33,7 +47,10 @@ interface DoneItem extends PayrollItem {
 interface PayrollData {
   pending: StaffGroup[]
   done: DoneItem[]
+  /** 担当の確認待ち。支給額が未確定なので給与に乗せない */
+  held: HeldItem[]
   pendingTotal: number
+  heldTotal: number
 }
 
 /**
@@ -81,30 +98,33 @@ export function PayrollRefundPanel({
     })
   }
 
-  // スタッフ単位で返金済みにする
-  const markStaffDone = async (group: StaffGroup) => {
-    if (
-      !confirm(
-        `「${group.staff_name}」の給与返金 ¥${group.total.toLocaleString()}（${group.count}件）を返金済みにしますか？`
-      )
-    )
-      return
-    const key = group.staff_member_id ?? "unknown"
+  /**
+   * 返金済みにする（スタッフ単位・1件単位の共通処理）。
+   *
+   * 対象は必ず画面に出ている明細のIDで指定する。
+   * スタッフ単位の指定にすると、担当の確認待ちで画面に出していない分まで
+   * 「返金済み」になり、支払っていないものが支払い済みとして消えてしまう。
+   */
+  const markDone = async (
+    key: string,
+    ids: string[],
+    label: string,
+    total: number
+  ) => {
+    if (ids.length === 0) return
+    if (!confirm(`${label} ¥${total.toLocaleString()}（${ids.length}件）を返金済みにしますか？`)) return
     setProcessingKey(key)
     try {
-      const body = group.staff_member_id
-        ? { staff_member_id: group.staff_member_id }
-        : { ids: group.items.map((i) => i.id) }
       const res = await fetch("/api/petty-cash/staff-refund/payroll", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ids }),
       })
       if (!res.ok) {
         const json = (await res.json().catch(() => ({}))) as { error?: string }
         throw new Error(json.error || "更新に失敗しました")
       }
-      toast.success(`${group.staff_name} を返金済みにしました`)
+      toast.success(`${label} を返金済みにしました`)
       await fetchData()
       onChanged?.()
     } catch (e) {
@@ -127,7 +147,7 @@ export function PayrollRefundPanel({
           給与返金待ち
           {data && data.pending.length > 0 && (
             <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100">
-              合計 ¥{data.pendingTotal.toLocaleString()}
+              支給額の合計 ¥{data.pendingTotal.toLocaleString()}
             </Badge>
           )}
         </CardTitle>
@@ -165,13 +185,27 @@ export function PayrollRefundPanel({
                       </span>
                     </button>
                     <div className="flex items-center gap-3">
-                      <span className="tabular-nums font-bold">
-                        ¥{group.total.toLocaleString()}
+                      <span className="text-right">
+                        <span className="block tabular-nums font-bold">
+                          ¥{group.total.toLocaleString()}
+                        </span>
+                        {group.totalAmount !== group.total && (
+                          <span className="block text-xs text-muted-foreground tabular-nums">
+                            立替 ¥{group.totalAmount.toLocaleString()}
+                          </span>
+                        )}
                       </span>
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => markStaffDone(group)}
+                        onClick={() =>
+                          markDone(
+                            key,
+                            group.items.map((i) => i.id),
+                            `${group.staff_name}さんの給与返金`,
+                            group.total
+                          )
+                        }
                         disabled={processingKey === key}
                       >
                         {processingKey === key ? (
@@ -190,22 +224,62 @@ export function PayrollRefundPanel({
                           <tr className="text-left text-muted-foreground">
                             <th className="py-1 font-medium">日付</th>
                             <th className="py-1 font-medium">内容</th>
-                            <th className="py-1 text-right font-medium">金額</th>
+                            <th className="py-1 text-right font-medium">立替額</th>
+                            <th className="py-1 text-right font-medium">支給額</th>
                             <th className="py-1 text-right font-medium">領収書</th>
+                            <th className="py-1 text-right font-medium"></th>
                           </tr>
                         </thead>
                         <tbody>
                           {group.items.map((it) => (
                             <tr key={it.id} className="border-t border-border/50">
                               <td className="py-1 whitespace-nowrap">{fmtDate(it)}</td>
-                              <td className="py-1">{it.note || it.description || "—"}</td>
-                              <td className="py-1 text-right tabular-nums">
+                              <td className="py-1">
+                                {it.note || it.description || "—"}
+                                {it.expense_detail && (
+                                  <span className="block text-xs text-muted-foreground">
+                                    {it.expense_detail}
+                                    {/* 半額・上限超過は、金額が減る理由としてその場に出す */}
+                                    {it.subsidy < it.amount &&
+                                      (it.excess_amount
+                                        ? `／上限超過 ¥${it.excess_amount.toLocaleString()}`
+                                        : "／半額支給")}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-1 text-right tabular-nums text-muted-foreground">
                                 ¥{it.amount.toLocaleString()}
+                              </td>
+                              <td className="py-1 text-right tabular-nums font-medium">
+                                ¥{it.subsidy.toLocaleString()}
                               </td>
                               <td className="py-1 text-right text-muted-foreground">
                                 {Array.isArray(it.receipt_urls) && it.receipt_urls.length > 0
                                   ? `${it.receipt_urls.length}件`
                                   : "—"}
+                              </td>
+                              <td className="py-1 text-right">
+                                {/* 1件ずつ返金済みにできるようにする（分けて支給する場合） */}
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={processingKey === it.id}
+                                  onClick={() =>
+                                    markDone(
+                                      it.id,
+                                      [it.id],
+                                      `${group.staff_name}さんの「${it.expense_detail || it.note || "この1件"}」`,
+                                      it.subsidy
+                                    )
+                                  }
+                                >
+                                  {processingKey === it.id ? (
+                                    <Loader2 className="size-3.5 animate-spin" />
+                                  ) : (
+                                    <CheckCircle2 className="size-3.5" />
+                                  )}
+                                  この1件
+                                </Button>
                               </td>
                             </tr>
                           ))}
@@ -216,6 +290,34 @@ export function PayrollRefundPanel({
                 </div>
               )
             })}
+          </div>
+        )}
+
+        {/* 担当の確認待ち。支給額が未確定なので給与に乗せない。
+            黙って消えると支給漏れになるため、ここに出して気づけるようにする。 */}
+        {data && data.held.length > 0 && (
+          <div className="mt-4 rounded-lg border border-amber-500/60 p-3">
+            <p className="text-sm font-medium">
+              確認待ち {data.held.length}件（立替 ¥{data.heldTotal.toLocaleString()}）
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              上限超過や講座待ちなどで支給額が決まっていないため、給与返金待ちには入れていません。
+              「スタッフ立替」の要対応で承認すると、ここから給与返金待ちへ移ります。
+            </p>
+            <table className="mt-2 w-full text-sm">
+              <tbody>
+                {data.held.map((it) => (
+                  <tr key={it.id} className="border-t border-border/50">
+                    <td className="py-1 whitespace-nowrap">{fmtDate(it)}</td>
+                    <td className="py-1">{it.staff_name}</td>
+                    <td className="py-1">{it.expense_detail || it.note || it.description || "—"}</td>
+                    <td className="py-1 text-right tabular-nums">
+                      ¥{it.amount.toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
 
