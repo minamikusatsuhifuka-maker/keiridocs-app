@@ -488,7 +488,12 @@ function buildDuplicateWarning(dup: ExistingDuplicate): string {
 async function sendDuplicateWarning(
   event: LineEvent,
   dup: ExistingDuplicate,
-  isMine: boolean
+  isMine: boolean,
+  /**
+   * 送られた画像のLINEメッセージID。
+   * 渡すと「それでも登録する」を出し、本人がその場で進められるようにする。
+   */
+  messageId?: string
 ): Promise<void> {
   const { replyToken, source } = event
 
@@ -518,6 +523,23 @@ async function sendDuplicateWarning(
       data: "action=hist",
       displayText: "申請履歴を見ます",
     },
+    /*
+     * 重複判定は外れることがある。
+     * 取り消したあとの出し直し、1枚に複数の領収証がある場合の一部取り消し、
+     * 同じ日に同じ区間・同じ運賃で移動した場合などで、本人は正しいのに
+     * 止まってしまう。止めたままだと担当に連絡する以外に進む道がない。
+     * 本人が1タップで進められるようにし、担当には必ず知らせる。
+     */
+    ...(messageId
+      ? [
+          {
+            type: "postback" as const,
+            label: "それでも登録する",
+            data: `action=dupok&mid=${messageId}`,
+            displayText: "重複ではないので登録します",
+          },
+        ]
+      : []),
   ])
 }
 
@@ -764,6 +786,9 @@ async function handlePostback(event: LineEvent): Promise<void> {
       return
     case "rsm": // 未完了の申請を続ける（申請履歴から）
       await handleResumePostback(event, params)
+      return
+    case "dupok": // 重複ではないので、そのまま登録する
+      await handleDuplicateOverridePostback(event, params)
       return
     // 領収書なし交通費フロー
     case "trm": // 交通手段の選択（電車/その他）
@@ -3477,6 +3502,47 @@ async function handleFixPostback(
     return
   }
   await sendTier1(replyToken, source.userId, receiptId, "もう一度、区分を選んでください。")
+}
+
+/**
+ * 「それでも登録する」→ 重複判定を飛ばして、送られた画像をそのまま登録する。
+ *
+ * 重複判定は外れることがある（取り消し後の出し直し、1枚に複数の領収証がある場合の
+ * 一部取り消し、同じ日に同じ区間・同じ運賃の移動など）。
+ * 止めたままだと本人には担当に連絡する以外に進む道がなく、締めに間に合わなくなる。
+ *
+ * 画像はLINEから取り直す（押すのが遅れて取れない場合は、送り直してもらう）。
+ * 担当には必ず知らせる（確認なしで金額が通らないようにする）。
+ */
+async function handleDuplicateOverridePostback(
+  event: LineEvent,
+  params: URLSearchParams
+): Promise<void> {
+  const messageId = params.get("mid")
+  if (!messageId) {
+    await sendLineMessage(
+      event.replyToken,
+      event.source.userId,
+      "⚠️ 処理できませんでした。お手数ですが、もう一度写真を送ってください。"
+    )
+    return
+  }
+
+  const supabase = createServiceClient()
+  const staffMembers = await fetchStaffMembers(supabase)
+  const me = staffMembers ? resolveStaffForUser(staffMembers, event.source.userId) : null
+  await notifyAdmins(
+    supabase as never,
+    "【重複の確認をお願いします】\n" +
+      `${me?.name ?? "お名前未登録の方"}さんが、重複の案内に対して「それでも登録する」で申請しました。\n\n` +
+      "二重申請になっていないか、「スタッフ立替」でご確認ください。"
+  ).catch(() => {})
+
+  // 画像メッセージの処理を、重複判定だけ飛ばしてやり直す
+  await handleImageMessage(
+    { ...event, message: { ...(event.message ?? {}), id: messageId } } as LineEvent,
+    { skipDedup: true }
+  )
 }
 
 /**
@@ -7768,9 +7834,20 @@ async function settleMultiReceipts(
 }
 
 /** 画像メッセージ処理: Gemini解析 → Dropbox保存 → DB保存 → LINE返信 */
-async function handleImageMessage(event: LineEvent): Promise<void> {
+async function handleImageMessage(
+  event: LineEvent,
+  opts?: {
+    /**
+     * 重複判定を飛ばす。
+     * 本人が重複の案内で「それでも登録する」を押したときだけ true。
+     * このとき担当に必ず知らせる（確認なしで金額が通らないようにする）。
+     */
+    skipDedup?: boolean
+  }
+): Promise<void> {
   const { replyToken, source, message } = event
   if (!message?.id) return
+  const skipDedup = opts?.skipDedup === true
 
   const supabase = createServiceClient()
   const { data: staffMembers, error: staffError } = await supabase
@@ -7833,10 +7910,18 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
       }
     }
 
-    const imageDup = isTransitHistory ? null : await findImageHashDuplicate(supabase, imageHash, testRunId)
+    const imageDup =
+      isTransitHistory || skipDedup
+        ? null
+        : await findImageHashDuplicate(supabase, imageHash, testRunId)
     if (imageDup) {
       console.log("[LINE Bot] 画像ハッシュ重複を検知 → 登録中止")
-      await sendDuplicateWarning(event, imageDup, imageDup.staff_member_id === matchedStaff.id)
+      await sendDuplicateWarning(
+        event,
+        imageDup,
+        imageDup.staff_member_id === matchedStaff.id,
+        message.id
+      )
       return
     }
 
@@ -7873,7 +7958,7 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
     // 1枚に何件もの移動が並び、全体の店名・金額は移動1件の内容と一致しないため、
     // 1件でも申請済みだと履歴全体が登録できなくなってしまう。
     // 申請済みの移動は選択の段階で除く（findRegisteredTrips）。
-    const dupTargets = treatAsTransitHistory
+    const dupTargets = treatAsTransitHistory || skipDedup
       ? []
       : splitCandidates.length >= 2
         ? splitCandidates.map((c) => ({
@@ -7892,7 +7977,7 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
       })
       if (contentDup) {
         console.log("[LINE Bot] 内容重複を検知 → 登録中止")
-        await sendDuplicateWarning(event, contentDup, true)
+        await sendDuplicateWarning(event, contentDup, true, message.id)
         return
       }
     }
@@ -7941,7 +8026,12 @@ async function handleImageMessage(event: LineEvent): Promise<void> {
       // テスト実行中は印を付ける。重複判定と上限の累計を
       // そのテスト実行の中だけで行うため（過去の記録を消さずにやり直せる）
       ai_raw: JSON.parse(
-        JSON.stringify(testRunId ? { ...ocrResult, test_run_id: testRunId } : ocrResult)
+        JSON.stringify({
+          ...ocrResult,
+          ...(testRunId ? { test_run_id: testRunId } : {}),
+          // 重複の案内を越えて登録した印。担当が後から確認できるようにする
+          ...(skipDedup ? { duplicate_override_at: new Date().toISOString() } : {}),
+        })
       ) as Json,
     }
 

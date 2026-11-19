@@ -148,6 +148,11 @@ export async function GET(request: Request) {
         reasons.push("担当の確認待ちです（上限超過・講座待ちなど）。確認すると支給額が確定します。")
         if (fix === "none") fix = "approve_hold"
       }
+      if (raw.duplicate_override_at) {
+        reasons.push(
+          "重複の案内を越えて、本人が「それでも登録する」で申請したものです。二重申請になっていないか確認してください。"
+        )
+      }
       if (raw.pending_dismissed_at) {
         reasons.push("担当が「対応済みにして隠す」を押したため、要対応の一覧から外れています。")
       }
