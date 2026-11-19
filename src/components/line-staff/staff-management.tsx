@@ -791,8 +791,9 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
               {visibleStaff.map((member) => {
                 const st = setupStatus(member)
                 const profile = parseLineProfile(member.line_profile)
-                const atcHidden =
-                  !!member.seminar_repeat_claimed_at || hasPriorCourseRecord(member.line_profile)
+                // 非表示になるのは既受講回数の登録があるときだけ。
+                // 「セミナー2回目以降」の申請記録では隠さない（ATC初受講と別の話）
+                const atcHidden = hasPriorCourseRecord(member.line_profile)
                 const isOpen = expandedId === member.id
                 return (
                   <div
@@ -984,10 +985,10 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                           <div className="min-w-0">
                             <p className="text-sm font-medium">初回ATCの表示</p>
                             <p className="text-xs" style={{ color: "var(--dusk-text-muted)" }}>
-                              {!member.seminar_repeat_claimed_at && hasPriorCourseRecord(member.line_profile)
-                                ? "既受講の登録により非表示になっています（スイッチは不要です）"
+                              {hasPriorCourseRecord(member.line_profile)
+                                ? "既受講の登録があるため非表示です（ATCの受講実績で判定します）"
                                 : member.seminar_repeat_claimed_at
-                                  ? `本人の申請により非表示（${formatClaimedAt(member.seminar_repeat_claimed_at)}）`
+                                  ? `LINEに表示されます（セミナー2回目以降の申請あり：${formatClaimedAt(member.seminar_repeat_claimed_at)}）`
                                   : "LINEに「初回ATC＋アカデミー会員費」が表示されます"}
                             </p>
                           </div>

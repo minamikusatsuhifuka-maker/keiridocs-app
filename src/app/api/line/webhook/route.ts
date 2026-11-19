@@ -3097,39 +3097,43 @@ async function readHoldReason(
 }
 
 /**
- * 領収書IDから、そのスタッフが「セミナー2回目以降」を申請済みかを判定する。
- * staff_members.seminar_repeat_claimed_at が非NULLなら申請済み。
- * 申請済みのスタッフには以降「初回ATC＋アカデミー会員費」を非表示にする。
- * カラム未適用（migration 032未実行）・エラー時は未申請扱い（ボタンを出す）。
+ * 「初回ATC＋アカデミー会員費」を隠すべきかを判定する。
+ *
+ * ■ 隠す条件は「ATCを受講した実績があること」だけ
+ * 担当が登録した既受講回数（line_profile.prior_courses）が1回以上なら、
+ * その人は初受講を終えているので出さない（初回の全額支給を二重に受けないようにする）。
+ *
+ * ■ seminar_repeat_claimed_at では隠さない
+ * この印は「セミナー2回目以降」や弁当代の申請で付いていた。
+ * 弁当代は全額で初受講とは無関係、ATC以外のコースの再受講も
+ * 「ATCの初受講」とは別の話なので、印が付いただけで隠すと
+ * ATC初受講の受講費が半額しか選べなくなる（是沢・荒木・小山さんの事例）。
+ * 規程どおりの初回／再受講の判定は、講座ごとの受講料実績
+ * （subsidy-assess の priorTuitionCount）で行う。
  */
 async function isSeminarRepeatClaimedByReceipt(
   supabase: ReturnType<typeof createServiceClient>,
   receiptId: string
 ): Promise<boolean> {
-  // 既受講の登録（line_profile.prior_courses）も判定に使う。
-  // 担当が登録した受講回数が1回以上なら、その人は初受講を終えているので
-  // 「初回ATC＋アカデミー会員費」は出さない（初回の全額支給を二重に受けないようにする）。
   const { data, error } = await supabase
     .from("staff_receipts")
-    .select("staff_members!inner(seminar_repeat_claimed_at, line_profile)")
+    .select("staff_members!inner(line_profile)")
     .eq("id", receiptId)
     .single()
   if (error) {
-    console.warn("[LINE Bot] 初回ATC表示判定スキップ（migration 032未実行?）:", error.message)
+    console.warn("[LINE Bot] 初回ATC表示判定スキップ:", error.message)
     return false
   }
-  const member = (
-    data as unknown as {
-      staff_members: { seminar_repeat_claimed_at: string | null; line_profile?: unknown }
-    } | null
-  )?.staff_members
-  if (member?.seminar_repeat_claimed_at) return true
+  const member = (data as unknown as { staff_members: { line_profile?: unknown } } | null)
+    ?.staff_members
   return hasPriorCourseRecord(member?.line_profile)
 }
 
 /**
  * 「セミナー2回目以降」申請完了を記録する（staff_members.seminar_repeat_claimed_at をセット）。
- * 以降そのスタッフには「初回ATC＋アカデミー会員費」を非表示にする。
+ * 担当がスタッフ一覧で経緯を確認するための記録。
+ * **この印でLINEの「初回ATC＋アカデミー会員費」は隠さない**
+ * （隠すのは担当が登録した既受講回数が1回以上のときだけ）。
  * 会計履歴は書き換えない。カラム未適用・失敗時はログのみで精算フローは止めない。
  */
 async function markSeminarRepeatClaimed(
@@ -3557,9 +3561,10 @@ async function handleConfirmPostback(
         const subsidy = calcSubsidy(amount, detail.subsidyCategory)
         const isHalf = detail.subsidyCategory === "achievement_repeat"
 
-        // 「セミナー2回目以降」（その他＝半額／弁当代＝全額のどちらも）が確定したら記録
-        // （以降「初回ATC＋アカデミー会員費」をLINEで非表示）
-        if (detail.key === "ach_repeat" || detail.key === "bento") {
+        // 「セミナー2回目以降」の申請を記録する（担当が一覧で確認できるようにする）。
+        // 弁当代は全額でATCの初受講とは無関係なので記録しない。
+        // 記録しても「初回ATC」は隠さない（隠すのは既受講回数の登録があるときだけ）。
+        if (detail.key === "ach_repeat") {
           await markSeminarRepeatClaimed(supabase, receiptId)
         }
 
@@ -7706,8 +7711,8 @@ async function settleMultiReceipts(
     return
   }
 
-  // 「セミナー2回目以降」（弁当代含む）が確定したら記録（以降「初回ATC」を非表示）
-  if (detail.key === "ach_repeat" || detail.key === "bento") {
+  // 弁当代は全額でATCの初受講とは無関係なので記録しない
+  if (detail.key === "ach_repeat") {
     await markSeminarRepeatClaimed(supabase, siblings[0].id)
   }
 
