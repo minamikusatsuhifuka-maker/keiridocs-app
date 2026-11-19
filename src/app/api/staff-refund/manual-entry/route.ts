@@ -242,7 +242,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "このスタッフは既に「セミナー2回目以降」を登録済みのため、「初回ATC＋アカデミー会員費」は選べません。",
+            "このスタッフは既受講回数が登録されているため、「初回ATC＋アカデミー会員費」は選べません。\n初受講の場合は、スタッフ一覧で既受講回数の登録を確認してください。",
           code: "ach_first_blocked",
         },
         { status: 409 }
@@ -392,8 +392,9 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // 「セミナー2回目以降」（弁当代含む）を登録したらフラグをセット（LINEと同一）
-    if (detail.key === "ach_repeat" || detail.key === "bento") {
+    // 「セミナー2回目以降」を登録したら記録する（担当が経緯を見るため）。
+    // 弁当代は全額でATCの初受講とは無関係なので記録しない。
+    if (detail.key === "ach_repeat") {
       await markSeminarRepeatClaimed(service, staffMemberId)
     }
 
@@ -472,7 +473,7 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "このスタッフは既に「セミナー2回目以降」を登録済みのため、「初回ATC＋アカデミー会員費」は選べません。",
+            "このスタッフは既受講回数が登録されているため、「初回ATC＋アカデミー会員費」は選べません。\n初受講の場合は、スタッフ一覧で既受講回数の登録を確認してください。",
           code: "ach_first_blocked",
         },
         { status: 409 }
@@ -522,8 +523,8 @@ export async function PATCH(request: NextRequest) {
       if (updTxError) throw updTxError
     }
 
-    // セミナー2回目以降（弁当代含む）に変更したらフラグをセット（LINEと同一・非破壊）
-    if (detail && (detail.key === "ach_repeat" || detail.key === "bento")) {
+    // 弁当代は全額でATCの初受講とは無関係なので記録しない
+    if (detail && detail.key === "ach_repeat") {
       await markSeminarRepeatClaimed(service, staffMemberId)
     }
 

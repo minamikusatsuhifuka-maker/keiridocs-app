@@ -162,7 +162,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "このスタッフは既に「セミナー2回目以降」を登録済みのため、「初回ATC＋アカデミー会員費」は選べません。",
+            "このスタッフは既受講回数が登録されているため、「初回ATC＋アカデミー会員費」は選べません。\n初受講の場合は、スタッフ一覧で既受講回数の登録を確認してください。",
           code: "ach_first_blocked",
         },
         { status: 409 }

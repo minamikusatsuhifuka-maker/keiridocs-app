@@ -4,6 +4,7 @@ import { normalizeSubsidyCategory, type SubsidyCategory } from "@/lib/subsidy"
 import { assessSubsidy } from "@/lib/subsidy-assess"
 import type { CourseKind, CourseRule, ExpenseItem } from "@/lib/subsidy-rules"
 import { parseAiRawObject } from "@/lib/staff-receipt-split"
+import { hasPriorCourseRecord } from "@/lib/line-staff-profile"
 
 /**
  * スタッフ立替領収書（staff_receipts）の精算確定を行う共通ロジック。
@@ -334,9 +335,16 @@ export async function settleStaffReceipt(params: {
 /* ---------- セミナー2回目以降フラグ（初回ATC表示制御） ---------- */
 
 /**
- * 指定スタッフが「セミナー2回目以降」を申請済みか（staff_members.seminar_repeat_claimed_at が非NULL）。
- * LINEと同じく、申請済みのスタッフには「初回ATC＋アカデミー会員費」を選ばせない判定に使う。
- * カラム未適用（migration 032未実行）・エラー時は未申請扱い（false）で精算を止めない。
+ * 「初回ATC＋アカデミー会員費」を選ばせないべきスタッフか。
+ *
+ * 判定はATCの受講実績だけで行う（担当が登録した既受講回数が1回以上か）。
+ * LINE側（webhook の isSeminarRepeatClaimedByReceipt）と同じ基準。
+ *
+ * seminar_repeat_claimed_at では判定しない。この印は弁当代（全額・初受講と無関係）や
+ * ATC以外のコースの再受講でも付いていたため、初受講の方が「初回ATC」を選べず
+ * 半額になっていた。担当が管理画面で直すこともできなかった。
+ *
+ * エラー時は未申請扱い（false）で精算を止めない。
  */
 export async function isSeminarRepeatClaimed(
   client: ServiceClient,
@@ -344,14 +352,14 @@ export async function isSeminarRepeatClaimed(
 ): Promise<boolean> {
   const { data, error } = await client
     .from("staff_members")
-    .select("seminar_repeat_claimed_at")
+    .select("line_profile")
     .eq("id", staffMemberId)
     .single()
   if (error) {
-    console.warn("[staff-refund] セミナー2回目以降判定スキップ（migration 032未実行?）:", error.message)
+    console.warn("[staff-refund] 初回ATC判定スキップ:", error.message)
     return false
   }
-  return !!(data as { seminar_repeat_claimed_at: string | null } | null)?.seminar_repeat_claimed_at
+  return hasPriorCourseRecord((data as { line_profile?: unknown } | null)?.line_profile)
 }
 
 /**

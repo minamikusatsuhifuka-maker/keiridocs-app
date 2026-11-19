@@ -6672,25 +6672,38 @@ async function sendHistory(
     ai_raw: unknown
   }[]
   const ids = receipts.map((r) => r.id)
+  /*
+   * 支給額は保存済みの明細から計算する（calcStoredSubsidy）。
+   * 上限超過分・担当が承認した追加支給・弁当代の全額戻しまで含むため、
+   * 本人のLINEに出る金額と、給与・会計士さんへの提出が必ず一致する。
+   */
   const txByReceipt = new Map<
     string,
     {
       amount: number
       subsidy_category: string | null
       expense_detail: string | null
+      expense_item?: string | null
+      excess_amount?: number | null
+      approved_excess?: number | null
       hold_reason?: string | null
     }
   >()
   if (ids.length > 0) {
     const { data: txs } = await supabase
       .from("petty_cash_transactions")
-      .select("staff_receipt_id, amount, subsidy_category, expense_detail, hold_reason")
+      .select(
+        "staff_receipt_id, amount, subsidy_category, expense_detail, expense_item, excess_amount, approved_excess, hold_reason"
+      )
       .in("staff_receipt_id", ids)
     for (const t of (txs ?? []) as {
       staff_receipt_id: string | null
       amount: number
       subsidy_category: string | null
       expense_detail: string | null
+      expense_item?: string | null
+      excess_amount?: number | null
+      approved_excess?: number | null
       hold_reason?: string | null
     }[]) {
       if (t.staff_receipt_id) txByReceipt.set(t.staff_receipt_id, t)
@@ -6762,7 +6775,8 @@ async function sendHistory(
       store: (r.store_name || "不明").slice(0, 40),
       category: tx?.expense_detail || (status === "category_pending" ? "区分を選ぶ前の領収書" : "—"),
       amount,
-      subsidy: tx ? calcSubsidy(tx.amount, tx.subsidy_category) : null,
+      // 給与・会計士さんへの提出と同じ計算にする（区分を直すとここも変わる）
+      subsidy: tx ? calcStoredSubsidy(tx) : null,
     }
   })
   // 取り消した申請は通常の一覧から分ける。
