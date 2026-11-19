@@ -134,6 +134,11 @@ interface PendingItem {
   calcNote?: string[]
   submittedAt: string
   daysWaiting: number
+  /**
+   * テストの印が付いたまま残っている申請。
+   * 本物の申請なのに、給与集計・会計士提出から外れている状態。
+   */
+  testMarked?: boolean
 }
 
 const PENDING_LABELS: Record<PendingItem["kind"], string> = {
@@ -425,6 +430,53 @@ export default function StaffReimbursePage() {
       }
     },
     [fetchPending]
+  )
+
+  /**
+   * テストの印を外して、本番の申請として扱えるようにする。
+   *
+   * テストを終えずに「テストスタッフ」をOFFにすると、そのあとの本物の申請にも
+   * 印が付き、給与集計・会計士提出から外れてしまう。その救済。
+   */
+  const clearTestMark = useCallback(
+    async (item: PendingItem) => {
+      if (
+        !confirm(
+          `${item.staffName}さんの申請（${yen(item.amount)}）からテストの印を外し、` +
+            "本番の申請として扱います。\n\n" +
+            "記録は消えません。印を外すと、給与集計と会計士さんへの提出に入ります。\n\n" +
+            "よろしいですか？"
+        )
+      )
+        return
+
+      setApprovingId(item.id)
+      try {
+        const res = await fetch("/api/staff-receipts/clear-test-mark", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ receiptIds: [item.id] }),
+        })
+        const json = (await res.json().catch(() => ({}))) as {
+          error?: string
+          cleared?: number
+          skipped?: { name: string; reason: string }[]
+        }
+        if (!res.ok) throw new Error(json.error || "処理に失敗しました")
+        if (json.skipped && json.skipped.length > 0) {
+          toast.error(`外せませんでした（${json.skipped[0].reason}）`)
+        } else {
+          toast.success("テストの印を外しました")
+        }
+        fetchPending()
+        fetchData()
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "処理に失敗しました")
+      } finally {
+        setApprovingId(null)
+      }
+    },
+    [fetchPending, fetchData]
   )
 
   /**
@@ -853,6 +905,15 @@ export default function StaffReimbursePage() {
                         >
                           {PENDING_LABELS[p.kind]}
                         </Badge>
+                        {/* 印が残っていると支給されないため、はっきり見せる */}
+                        {p.testMarked && (
+                          <Badge
+                            variant="outline"
+                            className="border-red-500 text-red-700 dark:text-red-400"
+                          >
+                            テストの印あり・支給対象外
+                          </Badge>
+                        )}
                         <span className="text-sm font-medium">{p.staffName}</span>
                         {p.courseName && (
                           <span className="text-sm" style={{ color: "var(--muted-foreground)" }}>
@@ -965,6 +1026,21 @@ export default function StaffReimbursePage() {
                     {/* 未完了は承認・却下が無いため、対応済みにして画面から外せるようにする */}
                     {(p.kind === "incomplete" || p.kind === "help") && (
                       <div className="flex flex-col gap-2 sm:w-64 sm:shrink-0">
+                        {/* テストの印が残っていると支給されない。ここで外せるようにする */}
+                        {p.testMarked && (
+                          <Button
+                            size="sm"
+                            disabled={approvingId === p.id}
+                            onClick={() => clearTestMark(p)}
+                          >
+                            {approvingId === p.id ? (
+                              <Loader2 className="size-3.5 animate-spin" />
+                            ) : (
+                              <Check className="size-3.5" />
+                            )}
+                            テストの印を外す
+                          </Button>
+                        )}
                         <Button
                           variant="outline"
                           size="sm"

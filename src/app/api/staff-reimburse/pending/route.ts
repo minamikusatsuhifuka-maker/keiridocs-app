@@ -84,6 +84,13 @@ export interface PendingItem {
   submittedAt: string
   /** 経過日数 */
   daysWaiting: number
+  /**
+   * テストの印（ai_raw.test_run_id）が付いたまま残っている申請か。
+   *
+   * テストスタッフを解除したあとに残っていると、本物の申請なのに
+   * 給与集計・会計士提出から静かに外れる。担当が気づけるよう印を立てる。
+   */
+  testMarked?: boolean
 }
 
 export async function GET() {
@@ -127,7 +134,22 @@ export async function GET() {
 
     const items: PendingItem[] = holds
       .filter((t) => !(t.staff_member_id && testStaff.has(t.staff_member_id)))
-      .filter((t) => !(t.staff_receipt_id && testRunReceiptIds.has(t.staff_receipt_id)))
+      /*
+       * テスト実行中に作られた申請は外す。ただし、テストスタッフを解除した方の分は残す。
+       *
+       * テストを終えずにスイッチをOFFにすると、そのあとの本物の申請にも
+       * テストの印が付いてしまう。外したままにすると、本人は申請できたのに
+       * 支給されず、担当からも見えない。印付きとして見せ、担当が直せるようにする。
+       */
+      .filter(
+        (t) =>
+          !(
+            t.staff_receipt_id &&
+            testRunReceiptIds.has(t.staff_receipt_id) &&
+            t.staff_member_id &&
+            testStaff.has(t.staff_member_id)
+          )
+      )
       .map((t) => {
         const excess = t.excess_amount ?? 0
         const isRepeat = t.subsidy_category === "achievement_repeat"
@@ -168,6 +190,7 @@ export async function GET() {
           })(),
           submittedAt: t.created_at,
           daysWaiting: daysSince(t.created_at),
+          testMarked: !!(t.staff_receipt_id && testRunReceiptIds.has(t.staff_receipt_id)),
         }
       })
 
@@ -323,8 +346,6 @@ async function fetchIncomplete(
   return receipts
     .filter((r) => !settled.has(r.id))
     .filter((r) => !(r.staff_member_id && testStaff.has(r.staff_member_id)))
-    // テスト実行中に作られた申請も外す（テストスタッフのスイッチをOFFに戻しても残らないように）
-    .filter((r) => !parseAiRawObject(r.ai_raw)?.test_run_id)
     // 担当が「対応済み」にしたものは要対応から外す（/api/staff-reimburse/dismiss）
     .filter((r) => !parseAiRawObject(r.ai_raw)?.pending_dismissed_at)
     // 本人が取り消した申請は未完了ではない
@@ -346,6 +367,7 @@ async function fetchIncomplete(
       calcNote: [],
       submittedAt: r.created_at,
       daysWaiting: daysSince(r.created_at),
+      testMarked: !!parseAiRawObject(r.ai_raw)?.test_run_id,
     }))
 }
 

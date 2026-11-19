@@ -762,6 +762,9 @@ async function handlePostback(event: LineEvent): Promise<void> {
     case "fix":
       await handleFixPostback(event, params)
       return
+    case "rsm": // 未完了の申請を続ける（申請履歴から）
+      await handleResumePostback(event, params)
+      return
     // 領収書なし交通費フロー
     case "trm": // 交通手段の選択（電車/その他）
       await handleTransitModePostback(event, params)
@@ -2163,7 +2166,7 @@ async function handleIcConfirmPostback(event: LineEvent, params: URLSearchParams
         useBase = false
         continue
       }
-      const { data: created } = await supabase
+      const { data: created, error: createError } = await supabase
         .from("staff_receipts")
         .insert({
           staff_member_id: String(base.staff_member_id),
@@ -2185,10 +2188,17 @@ async function handleIcConfirmPostback(event: LineEvent, params: URLSearchParams
         })
         .select("id")
         .single()
-      if (created) targetIds.push((created as { id: string }).id)
+      // 作れなかったら黙って飛ばさない。本人は申請できたつもりで支給されないため
+      if (createError || !created) {
+        throw new Error(
+          `明細の作成に失敗しました（${trip.date} ${trip.route}）: ${createError?.message ?? "不明"}`
+        )
+      }
+      targetIds.push((created as { id: string }).id)
     }
 
     let settledTotal = 0
+    const failed: string[] = []
     for (const id of targetIds) {
       const result = await settleStaffReceipt({
         staffReceiptId: id,
@@ -2197,10 +2207,38 @@ async function handleIcConfirmPostback(event: LineEvent, params: URLSearchParams
         client: supabase,
         phase2,
       })
-      if (result.status === "ok") settledTotal += result.amount ?? 0
+      if (result.status === "ok") {
+        settledTotal += result.amount ?? 0
+        continue
+      }
+      // 確定できなかった分を成功として数えると、本人は申請できたつもりで支給されない
+      failed.push(`${result.status}:${id}`)
     }
+    const settledCount = targetIds.length - failed.length
     const subsidyTotal = await sumSettledSubsidy(supabase, targetIds)
     const holdReason = await readHoldReason(supabase, targetIds[0] ?? receiptId)
+
+    // 1件も確定できなかったときは、申請済みの印を付けずに知らせる。
+    // 印を付けてしまうと、同じ移動を出し直すこともできなくなる。
+    if (settledCount === 0) {
+      await saveTripState(supabase, receiptId, { extra: { transit_lock: null } })
+      console.error("[LINE Bot] IC一括：1件も確定できませんでした", failed)
+      await notifyAdmins(
+        supabase as never,
+        "⚠️ LINE申請が完了していません\n" +
+          `${await staffNameById(supabase, String(base.staff_member_id))}さんの交通費 ${targetIds.length}件 が、` +
+          "明細として登録できませんでした。\n" +
+          "「スタッフ立替」の要対応をご確認ください。"
+      )
+      await sendLineMessage(
+        replyToken,
+        source.userId,
+        "⚠️ 申請を完了できませんでした。\n" +
+          "もう一度お試しください。\n" +
+          "解決しない場合は「問い合わせ」から担当にご連絡ください。"
+      )
+      return
+    }
 
     // 申請済みの番号を記録し、処理中の印を外す
     const nextSubmitted = [...submitted, ...picked].sort((a, b) => a - b)
@@ -2208,9 +2246,24 @@ async function handleIcConfirmPostback(event: LineEvent, params: URLSearchParams
       extra: { transit_submitted: nextSubmitted, transit_lock: null },
     })
 
+    // 一部だけ落ちたときも隠さない。担当が拾えるようにする
+    if (failed.length > 0) {
+      console.error("[LINE Bot] IC一括：一部を確定できませんでした", failed)
+      await notifyAdmins(
+        supabase as never,
+        "⚠️ LINE申請の一部が登録できていません\n" +
+          `${await staffNameById(supabase, String(base.staff_member_id))}さんの交通費 ` +
+          `${targetIds.length}件のうち ${failed.length}件 が明細になっていません。\n` +
+          "「スタッフ立替」の要対応をご確認ください。"
+      )
+    }
+
     const remaining = trips.map((_, i) => i).filter((i) => !nextSubmitted.includes(i))
     const body =
-      `✅ 交通費 ${targetIds.length}件 を申請しました。\n` +
+      `✅ 交通費 ${settledCount}件 を申請しました。\n` +
+      (failed.length > 0
+        ? `※ ${failed.length}件は登録できませんでした。担当が確認します。\n`
+        : "") +
       `　合計：¥${formatAmount(settledTotal)}\n` +
       `　支給額：¥${formatAmount(subsidyTotal)}\n` +
       (holdReason ? `\n${holdNotice(holdReason)}\n` : "") +
@@ -2245,6 +2298,20 @@ async function handleIcConfirmPostback(event: LineEvent, params: URLSearchParams
       "⚠️ 処理中にエラーが発生しました。もう一度お試しください。\n" +
         "解決しない場合は「問い合わせ」から担当にご連絡ください。"
     )
+  }
+}
+
+/** 通知文に名前を入れるための名前引き（取れなければ空で続ける） */
+async function staffNameById(supabase: ServiceClient, staffMemberId: string): Promise<string> {
+  try {
+    const { data } = await supabase
+      .from("staff_members")
+      .select("name")
+      .eq("id", staffMemberId)
+      .maybeSingle()
+    return (data as { name?: string } | null)?.name ?? ""
+  } catch {
+    return ""
   }
 }
 
@@ -3399,6 +3466,42 @@ async function handleFixPostback(
     return
   }
   await sendTier1(replyToken, source.userId, receiptId, "もう一度、区分を選んでください。")
+}
+
+/**
+ * 「この申請を続ける」→ 最後まで進んでいない申請を再開する。
+ *
+ * 写真を送り直さずに続けられるようにする。
+ * 本人は申請できたつもりでいるため、気づいたときにその場で終えられる必要がある。
+ *
+ * IC利用履歴の申請は区分選択ではなく、移動の選び直しに戻す。
+ */
+async function handleResumePostback(event: LineEvent, params: URLSearchParams): Promise<void> {
+  const { replyToken, source } = event
+  const receiptId = params.get("rid")
+  if (!receiptId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
+    return
+  }
+  const supabase = createServiceClient()
+
+  // すでに明細になっていれば、二重に進めない
+  const { data: settled } = await supabase
+    .from("petty_cash_transactions")
+    .select("id")
+    .eq("staff_receipt_id", receiptId)
+    .limit(1)
+  if (settled && settled.length > 0) {
+    await sendAlreadySettled(event, receiptId)
+    return
+  }
+
+  const { trips } = await loadTripState(supabase, receiptId)
+  if (trips.length > 0) {
+    await sendTransitTripPicker(event, receiptId, trips, "申請する移動を選んでください。\n\n")
+    return
+  }
+  await sendTier1(replyToken, source.userId, receiptId, "続きを選んでください。")
 }
 
 /** 「OK」→ 給与支給（payroll）固定で精算確定。詳細区分・主区分マッピングを保存 */
@@ -6619,7 +6722,11 @@ async function sendHistory(
       payoutNote =
         "担当が確認しています。確認が長引いた場合は翌月のお給与になることがあります（担当からご連絡します）"
     } else if (status === "category_pending") {
-      payoutNote = "区分が選ばれていないため、まだ支給の対象になっていません"
+      // 「区分が選ばれていない」だけでは、本人は申請できたつもりで気づけない。
+      // 最後まで進んでいないことと、続け方をはっきり書く。
+      payoutNote =
+        "まだ申請が完了していません（最後の「OK」まで進んでいません）。" +
+        "下の「この申請を続ける」から進めてください"
     }
 
     // 取り消せるのは、まだ会計士さんに提出していない当月分だけ。
@@ -6638,6 +6745,8 @@ async function sendHistory(
       status,
       payoutNote,
       cancelData,
+      // 完了していない申請は、その場で続けられるようにする
+      resumeData: status === "category_pending" ? `action=rsm&rid=${r.id}` : undefined,
       store: (r.store_name || "不明").slice(0, 40),
       category: tx?.expense_detail || (status === "category_pending" ? "区分を選ぶ前の領収書" : "—"),
       amount,

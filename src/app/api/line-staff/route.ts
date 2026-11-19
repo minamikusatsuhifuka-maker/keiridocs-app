@@ -622,9 +622,35 @@ export async function PATCH(request: NextRequest) {
 
     // テストスタッフ切替（ON/OFF）
     if (typeof body.is_test === "boolean") {
+      /*
+       * OFFにするときは、テスト実行も必ず終える。
+       *
+       * テスト実行が続いていると、そのあとの「本物の申請」にもテストの印
+       * （ai_raw.test_run_id）が付き、担当の要対応・給与集計・会計士提出から
+       * 静かに外れてしまう。本人は申請できたのに支給されない状態になる。
+       * 「テストスタッフOFF」＝テスト終了のつもりで押されるため、ここで揃える。
+       */
+      const patch: Record<string, unknown> = { is_test: body.is_test }
+      if (!body.is_test) {
+        const { data: member } = await service
+          .from("staff_members")
+          .select("line_profile")
+          .eq("id", body.id)
+          .maybeSingle()
+        const profile = parseLineProfile((member as { line_profile?: unknown } | null)?.line_profile)
+        if (profile.test_run && !profile.test_run.ended_at) {
+          patch.line_profile = JSON.parse(
+            JSON.stringify({
+              ...profile,
+              test_run: { ...profile.test_run, ended_at: new Date().toISOString() },
+            })
+          )
+        }
+      }
+
       const { data, error } = await service
         .from("staff_members")
-        .update({ is_test: body.is_test })
+        .update(patch)
         .eq("id", body.id)
         .select("*")
         .single()

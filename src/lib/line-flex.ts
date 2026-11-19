@@ -578,6 +578,11 @@ export interface HistoryItem {
   payoutNote?: string
   /** 取り消しボタンのpostbackデータ（取り消せるものだけ入る） */
   cancelData?: string
+  /**
+   * 「続ける」ボタンのpostbackデータ（まだ申請が完了していないものだけ入る）。
+   * 最後まで進んでいない申請を、写真を送り直さずに再開できるようにするため。
+   */
+  resumeData?: string
 }
 
 /** ⑦ 申請履歴（直近4〜5件・1バブル） */
@@ -608,6 +613,10 @@ export function historyCard(params: { staffFamilyName: string; items: HistoryIte
     // 本人が「いつ入るか」を自分で確かめられるようにする
     if (it.payoutNote) {
       body.push(text(it.payoutNote, { size: "xs", color: FLEX_COLORS.textSub }))
+    }
+    // まだ完了していない申請は、その場で続けられるようにする
+    if (it.resumeData) {
+      body.push(secondaryButton(postback("この申請を続ける", it.resumeData)))
     }
     // 取り消せるものには、その場で取り消せるボタンを添える
     if (it.cancelData) {
