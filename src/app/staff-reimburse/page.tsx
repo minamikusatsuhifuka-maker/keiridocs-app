@@ -17,6 +17,8 @@ import { Button } from "@/components/ui/button"
 import { NotifyStaffDialog } from "@/components/mkadmin/notify-staff-dialog"
 import { InquiryList } from "@/components/line-staff/inquiry-list"
 import { ReceiptDiagnose } from "@/components/line-staff/receipt-diagnose"
+import { RecalcPanel } from "@/components/line-staff/recalc-panel"
+import { FixItemDialog, type FixItemTarget } from "@/components/line-staff/fix-item-dialog"
 import {
   CompletePendingDialog,
   type CompleteTarget,
@@ -310,6 +312,8 @@ export default function StaffReimbursePage() {
   const [approvingId, setApprovingId] = useState<string | null>(null)
   // 未完了の申請を担当が代わりに登録するダイアログの対象
   const [completeTarget, setCompleteTarget] = useState<CompleteTarget | null>(null)
+  // 内訳・講座を直すダイアログの対象（確認待ちの明細）
+  const [fixTarget, setFixTarget] = useState<FixItemTarget | null>(null)
   // 金額を指定して承認する対象（null は入力なしのワンクリック承認）
   const [customAmountFor, setCustomAmountFor] = useState<PendingItem | null>(null)
   const [customAmount, setCustomAmount] = useState("")
@@ -813,11 +817,29 @@ export default function StaffReimbursePage() {
       {/* スタッフからの問い合わせ（LINEを見落としてもここから追えるようにする） */}
       <InquiryList />
 
+      {/* 確認待ちの明細の内訳・講座を直す（保存前に支給額を確認する） */}
+      <FixItemDialog
+        target={fixTarget}
+        onClose={() => setFixTarget(null)}
+        onSaved={() => {
+          fetchPending()
+          fetchData()
+        }}
+      />
+
       {/* 未完了の申請を、担当が代わりに完了させる */}
       <CompletePendingDialog
         target={completeTarget}
         onClose={() => setCompleteTarget(null)}
         onDone={() => {
+          fetchPending()
+          fetchData()
+        }}
+      />
+
+      {/* 保存済みの支給額を、いまの規程で計算し直す（保存前に差分を確認する） */}
+      <RecalcPanel
+        onChanged={() => {
           fetchPending()
           fetchData()
         }}
@@ -1280,6 +1302,23 @@ export default function StaffReimbursePage() {
                             <Check className="size-3.5" />
                           )}
                           このまま確定する
+                        </Button>
+                        {/* 「その他」で申請された宿泊費などは、内訳を直さないと
+                            支給率と上限（交通費＋宿泊費 30,000円）が正しく当たらない */}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            setFixTarget({
+                              id: p.id,
+                              staffName: p.staffName,
+                              label: p.itemLabel,
+                              amount: p.amount,
+                              date: p.paymentDate ?? null,
+                            })
+                          }
+                        >
+                          内訳・講座を直す
                         </Button>
                         <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>
                           金額を変える場合は、下の明細で直してから確定してください。

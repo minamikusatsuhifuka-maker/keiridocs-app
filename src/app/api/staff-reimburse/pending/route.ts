@@ -189,6 +189,7 @@ export async function GET() {
             )
           })(),
           submittedAt: t.created_at,
+          paymentDate: t.transaction_date,
           daysWaiting: daysSince(t.created_at),
           testMarked: !!(t.staff_receipt_id && testRunReceiptIds.has(t.staff_receipt_id)),
         }

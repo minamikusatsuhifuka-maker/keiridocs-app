@@ -2,6 +2,8 @@ import { NextResponse } from "next/server"
 import { createClient as createSupabaseClient } from "@supabase/supabase-js"
 import { createClient as createAuthClient } from "@/lib/supabase/server"
 import { assessSubsidy } from "@/lib/subsidy-assess"
+import { calcStoredSubsidy } from "@/lib/subsidy-rules"
+import { STAFF_EXPENSE_DETAILS } from "@/lib/subsidy"
 import type { ExpenseItem, CourseKind, CourseRule } from "@/lib/subsidy-rules"
 import type { Database } from "@/types/database"
 
@@ -45,9 +47,18 @@ export async function POST(request: Request) {
     id?: string
     /** 割り当てる courses.id */
     courseId?: string
+    /** 内訳を直す場合（交通費・宿泊費・受講料など） */
+    expenseItem?: string
+    /** 費用区分の表示を直す場合 */
+    detailKey?: string
+    /** true なら保存せず、変更前後の支給額だけを返す */
+    dryRun?: boolean
   }
-  if (!body.id || !body.courseId) {
-    return NextResponse.json({ error: "対象と講座を指定してください" }, { status: 400 })
+  if (!body.id) {
+    return NextResponse.json({ error: "対象を指定してください" }, { status: 400 })
+  }
+  if (!body.courseId && !body.expenseItem) {
+    return NextResponse.json({ error: "講座または内訳を指定してください" }, { status: 400 })
   }
 
   try {
@@ -56,7 +67,7 @@ export async function POST(request: Request) {
     const { data: txRow, error: txError } = await service
       .from("petty_cash_transactions")
       .select(
-        "id, staff_member_id, staff_receipt_id, amount, expense_item, hold_reason, course_id, course_pending_name, created_at"
+        "id, staff_member_id, staff_receipt_id, amount, expense_item, expense_detail, subsidy_category, excess_amount, approved_excess, hold_reason, course_id, course_pending_name, created_at"
       )
       .eq("id", body.id)
       .eq("category", "staff_refund")
@@ -70,15 +81,20 @@ export async function POST(request: Request) {
       staff_receipt_id: string | null
       amount: number
       expense_item: string | null
+      expense_detail: string | null
+      subsidy_category: string | null
+      excess_amount: number | null
+      approved_excess: number | null
       hold_reason: string | null
       course_id: string | null
       course_pending_name: string | null
       created_at: string
     }
 
-    if (tx.hold_reason !== "course") {
+    // 確認待ちの明細だけを対象にする（確定済みを黙って書き換えないため）
+    if (!tx.hold_reason) {
       return NextResponse.json(
-        { error: "この明細は講座の確認待ちではありません（すでに確定しているか、別の理由で保留中です）" },
+        { error: "この明細はすでに確定しています。明細の「編集」から直してください。" },
         { status: 409 }
       )
     }
@@ -86,15 +102,22 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "スタッフが特定できません" }, { status: 409 })
     }
 
-    const { data: courseRow } = await service
-      .from("courses")
-      .select("id, name, kind, rule")
-      .eq("id", body.courseId)
-      .single()
-    if (!courseRow) {
-      return NextResponse.json({ error: "指定された講座が見つかりません" }, { status: 400 })
+    const targetCourseId = body.courseId ?? tx.course_id
+    let course: { id: string; name: string; kind: string; rule: string } | null = null
+    if (targetCourseId) {
+      const { data: courseRow } = await service
+        .from("courses")
+        .select("id, name, kind, rule")
+        .eq("id", targetCourseId)
+        .single()
+      if (!courseRow) {
+        return NextResponse.json({ error: "指定された講座が見つかりません" }, { status: 400 })
+      }
+      course = courseRow as { id: string; name: string; kind: string; rule: string }
     }
-    const course = courseRow as { id: string; name: string; kind: string; rule: string }
+
+    // 内訳（交通費・宿泊費など）。指定が無ければ今のまま
+    const item = (body.expenseItem ?? tx.expense_item ?? "other") as ExpenseItem
 
     // 申請時と同じ条件で判定し直す（領収書の日付・申請日時を使う）
     let judgeDate: string | null = null
@@ -118,33 +141,76 @@ export async function POST(request: Request) {
       supabase: service,
       staffMemberId: tx.staff_member_id,
       amount: tx.amount,
-      item: (tx.expense_item ?? "other") as ExpenseItem,
-      courseId: course.id,
-      courseKind: course.kind as CourseKind,
-      courseRule: course.rule as CourseRule,
+      item,
+      courseId: course?.id ?? null,
+      courseKind: (course?.kind ?? null) as CourseKind | null,
+      courseRule: (course?.rule ?? null) as CourseRule | null,
       pendingCourseName: null,
       judgeDate,
       submittedAt,
       manualSubmissionMonthRaw,
     })
 
+    const nextCategory = assessed.rate < 1 ? "achievement_repeat" : "other"
+    const nextExcess = assessed.excess > 0 ? assessed.excess : null
+
+    const before = calcStoredSubsidy({
+      amount: tx.amount,
+      subsidy_category: tx.subsidy_category,
+      expense_item: tx.expense_item,
+      excess_amount: tx.excess_amount,
+      approved_excess: tx.approved_excess,
+    })
+    const after = calcStoredSubsidy({
+      amount: tx.amount,
+      subsidy_category: nextCategory,
+      expense_item: item,
+      excess_amount: nextExcess,
+      approved_excess: tx.approved_excess,
+    })
+
+    // 確認だけ（保存しない）
+    if (body.dryRun) {
+      return NextResponse.json({
+        ok: true,
+        dryRun: true,
+        courseName: course?.name ?? null,
+        item,
+        before,
+        after,
+        rate: assessed.rate,
+        excess: assessed.excess,
+        holdReason: assessed.holdReason,
+        previousName: tx.course_pending_name,
+      })
+    }
+
+    const detail = body.detailKey
+      ? STAFF_EXPENSE_DETAILS.find((d) => d.key === body.detailKey) ?? null
+      : null
+
     const { error: updateError } = await service
       .from("petty_cash_transactions")
       .update({
-        course_id: course.id,
+        course_id: course?.id ?? null,
         // 申請時の名前は残さない（割り当て済みであることを明確にする）
         course_pending_name: null,
-        excess_amount: assessed.excess > 0 ? assessed.excess : null,
+        expense_item: item,
+        ...(detail ? { expense_detail: detail.fullLabel } : {}),
+        excess_amount: nextExcess,
         // 上限超過や受講回数未登録なら、引き続き担当の確認待ちにする
         hold_reason: assessed.holdReason,
-        subsidy_category: assessed.rate < 1 ? "achievement_repeat" : "other",
+        subsidy_category: nextCategory,
       })
       .eq("id", tx.id)
     if (updateError) throw updateError
 
     return NextResponse.json({
       ok: true,
-      courseName: course.name,
+      courseName: course?.name ?? null,
+      item,
+      before,
+      after,
       rate: assessed.rate,
       excess: assessed.excess,
       holdReason: assessed.holdReason,

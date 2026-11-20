@@ -8183,6 +8183,12 @@ async function handleImageMessage(
 
     // 5.5 内容（店名+金額+日付）で重複チェック（同一スタッフ内。別画像での再申請をブロック）
     // 分割候補があれば各件を、なければ書類全体を1回照合する（分割兄弟同士はDB未登録なので互いにブロックしない）
+    /*
+     * 領収書の日付。読み取れなかった場合は申請日を入れるが、
+     * 「確認が必要」という印を残す（黙って申請日に置き換えない）。
+     * 年が印字されていない切符などで、支払日が実際と違うことがあるため。
+     */
+    const dateUnconfirmed = !ocrResult.issue_date
     const receiptDate = ocrResult.issue_date || new Date().toISOString().split("T")[0]
     // ICカードの利用履歴は、書類全体では照合しない。
     // 1枚に何件もの移動が並び、全体の店名・金額は移動1件の内容と一致しないため、
@@ -8261,6 +8267,8 @@ async function handleImageMessage(
           ...(testRunId ? { test_run_id: testRunId } : {}),
           // 重複の案内を越えて登録した印。担当が後から確認できるようにする
           ...(skipDedup ? { duplicate_override_at: new Date().toISOString() } : {}),
+          // 支払日が読み取れなかった印。担当の画面で「支払日が未確認」として出す
+          ...(dateUnconfirmed ? { date_unconfirmed: true } : {}),
         })
       ) as Json,
     }

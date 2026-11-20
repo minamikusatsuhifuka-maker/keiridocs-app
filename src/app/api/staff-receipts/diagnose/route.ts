@@ -150,6 +150,12 @@ export async function GET(request: Request) {
         reasons.push("担当の確認待ちです（上限超過・講座待ちなど）。確認すると支給額が確定します。")
         if (fix === "none") fix = "approve_hold"
       }
+      // 支払日が読み取れていないものは、担当が確認して入れ直す必要がある
+      if (raw.date_unconfirmed || !/^\d{4}-\d{2}-\d{2}$/.test((r.date ?? "").slice(0, 10))) {
+        reasons.push(
+          "支払年月日が読み取れていません（申請日を仮に入れています）。領収書を見て、明細の「編集」から正しい日付に直してください。"
+        )
+      }
       if (raw.duplicate_override_at) {
         reasons.push(
           "重複の案内を越えて、本人が「それでも登録する」で申請したものです。二重申請になっていないか確認してください。"
