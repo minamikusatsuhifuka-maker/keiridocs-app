@@ -30,6 +30,7 @@ interface RecalcRow {
   holdAfter: string | null
   alreadyRefunded: boolean
   dateUnconfirmed: boolean
+  excessApproved: boolean
 }
 
 const yen = (v: number) => `¥${v.toLocaleString("ja-JP")}`
@@ -196,6 +197,9 @@ export function RecalcPanel({ onChanged }: { onChanged?: () => void }) {
                             >
                               給与で返金済み
                             </Badge>
+                          )}
+                          {r.excessApproved && (
+                            <Badge variant="outline">超過分は承認済みのまま</Badge>
                           )}
                           {r.dateUnconfirmed && (
                             <Badge

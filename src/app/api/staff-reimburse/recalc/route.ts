@@ -66,6 +66,8 @@ export interface RecalcRow {
   alreadyRefunded: boolean
   /** 支払年月日が確認できていない（年が読み取れなかった等） */
   dateUnconfirmed: boolean
+  /** 超過分を担当がすでに判断済み（再計算でも確認待ちに戻さない） */
+  excessApproved: boolean
 }
 
 export async function POST(request: Request) {
@@ -177,6 +179,16 @@ export async function POST(request: Request) {
       })
       const nextCategory = assessed.rate < 1 ? "achievement_repeat" : "other"
       const nextExcess = assessed.excess > 0 ? assessed.excess : null
+
+      /*
+       * 担当がすでに超過分を判断した明細は、確認待ちに戻さない。
+       *
+       * 戻すと、承認済みの追加支給が未確定に見え、給与返金待ちからも外れる。
+       * 一度した判断を再計算で消さないため、承認の記録がある明細は確定のままにする。
+       */
+      const excessAlreadyDecided = t.approved_excess !== null && t.approved_excess !== undefined
+      const nextHold =
+        assessed.holdReason === "excess" && excessAlreadyDecided ? null : assessed.holdReason
       const after = calcStoredSubsidy({
         amount: t.amount,
         subsidy_category: nextCategory,
@@ -188,7 +200,7 @@ export async function POST(request: Request) {
 
       const changed =
         before !== after ||
-        (t.hold_reason ?? null) !== (assessed.holdReason ?? null) ||
+        (t.hold_reason ?? null) !== (nextHold ?? null) ||
         (t.subsidy_category ?? null) !== nextCategory
 
       if (!changed && dryRun) continue
@@ -202,7 +214,8 @@ export async function POST(request: Request) {
         before,
         after,
         holdBefore: t.hold_reason,
-        holdAfter: assessed.holdReason ?? null,
+        holdAfter: nextHold ?? null,
+        excessApproved: excessAlreadyDecided,
         alreadyRefunded: t.payroll_refund_status === "done",
         dateUnconfirmed,
       })
@@ -214,7 +227,7 @@ export async function POST(request: Request) {
           .update({
             subsidy_category: nextCategory,
             excess_amount: nextExcess,
-            hold_reason: assessed.holdReason,
+            hold_reason: nextHold,
           })
           .eq("id", t.id)
         if (error) throw error

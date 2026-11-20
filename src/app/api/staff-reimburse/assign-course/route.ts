@@ -155,6 +155,10 @@ export async function POST(request: Request) {
 
     const nextCategory = assessed.rate < 1 ? "achievement_repeat" : "other"
     const nextExcess = assessed.excess > 0 ? assessed.excess : null
+    // 担当がすでに超過分を判断した明細は、確認待ちに戻さない
+    const excessAlreadyDecided = tx.approved_excess !== null && tx.approved_excess !== undefined
+    const nextHold =
+      assessed.holdReason === "excess" && excessAlreadyDecided ? null : assessed.holdReason
 
     const before = calcStoredSubsidy({
       amount: tx.amount,
@@ -182,7 +186,7 @@ export async function POST(request: Request) {
         after,
         rate: assessed.rate,
         excess: assessed.excess,
-        holdReason: assessed.holdReason,
+        holdReason: nextHold,
         previousName: tx.course_pending_name,
       })
     }
@@ -201,7 +205,7 @@ export async function POST(request: Request) {
         ...(detail ? { expense_detail: detail.fullLabel } : {}),
         excess_amount: nextExcess,
         // 上限超過や受講回数未登録なら、引き続き担当の確認待ちにする
-        hold_reason: assessed.holdReason,
+        hold_reason: nextHold,
         subsidy_category: nextCategory,
       })
       .eq("id", tx.id)
@@ -215,7 +219,7 @@ export async function POST(request: Request) {
       after,
       rate: assessed.rate,
       excess: assessed.excess,
-      holdReason: assessed.holdReason,
+      holdReason: nextHold,
       previousName: tx.course_pending_name,
     })
   } catch (e) {
