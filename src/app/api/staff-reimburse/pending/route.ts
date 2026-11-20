@@ -320,13 +320,14 @@ async function fetchIncomplete(
     id: string
     staff_member_id: string | null
     store_name: string | null
+    date: string | null
     amount: number | null
     created_at: string
     ai_raw?: unknown
   }>((from, to) =>
     supabase
       .from("staff_receipts")
-      .select("id, staff_member_id, store_name, amount, created_at, ai_raw")
+      .select("id, staff_member_id, store_name, amount, date, created_at, ai_raw")
       // 猶予（60分）内でも、本人が「担当に相談する」を押したものは拾う
       .or(`created_at.lt.${cutoff},ai_raw->>help_requested_at.not.is.null`)
       .order("id", { ascending: true })
@@ -335,6 +336,7 @@ async function fetchIncomplete(
           id: string
           staff_member_id: string | null
           store_name: string | null
+          date: string | null
           amount: number | null
           created_at: string
           ai_raw?: unknown
@@ -359,6 +361,9 @@ async function fetchIncomplete(
       staffName: (r.staff_member_id && staffName.get(r.staff_member_id)) || "不明なスタッフ",
       courseName: "",
       itemLabel: r.store_name?.trim() || "不明",
+      // 担当が代わりに登録するときに、そのまま使えるようにする
+      storeName: r.store_name,
+      paymentDate: r.date,
       amount: r.amount ?? 0,
       excess: 0,
       suggested: 0,

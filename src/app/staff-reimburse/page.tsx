@@ -17,6 +17,10 @@ import { Button } from "@/components/ui/button"
 import { NotifyStaffDialog } from "@/components/mkadmin/notify-staff-dialog"
 import { InquiryList } from "@/components/line-staff/inquiry-list"
 import { ReceiptDiagnose } from "@/components/line-staff/receipt-diagnose"
+import {
+  CompletePendingDialog,
+  type CompleteTarget,
+} from "@/components/line-staff/complete-pending-dialog"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
@@ -127,6 +131,10 @@ interface PendingItem {
   staffName: string
   courseName: string
   itemLabel: string
+  /** 支払先（未完了の申請を担当が代わりに登録するときに使う） */
+  storeName?: string | null
+  /** 領収書の日付（同上） */
+  paymentDate?: string | null
   amount: number
   excess: number
   suggested: number
@@ -283,6 +291,8 @@ export default function StaffReimbursePage() {
   const [showPending, setShowPending] = useState(true)
   // 承認処理中のID
   const [approvingId, setApprovingId] = useState<string | null>(null)
+  // 未完了の申請を担当が代わりに登録するダイアログの対象
+  const [completeTarget, setCompleteTarget] = useState<CompleteTarget | null>(null)
   // 金額を指定して承認する対象（null は入力なしのワンクリック承認）
   const [customAmountFor, setCustomAmountFor] = useState<PendingItem | null>(null)
   const [customAmount, setCustomAmount] = useState("")
@@ -669,6 +679,16 @@ export default function StaffReimbursePage() {
       {/* スタッフからの問い合わせ（LINEを見落としてもここから追えるようにする） */}
       <InquiryList />
 
+      {/* 未完了の申請を、担当が代わりに完了させる */}
+      <CompletePendingDialog
+        target={completeTarget}
+        onClose={() => setCompleteTarget(null)}
+        onDone={() => {
+          fetchPending()
+          fetchData()
+        }}
+      />
+
       {/* 申請が見つからないときに、隠れている申請と理由を出す */}
       <ReceiptDiagnose
         onChanged={() => {
@@ -1048,6 +1068,23 @@ export default function StaffReimbursePage() {
                               <Check className="size-3.5" />
                             )}
                             テストの印を外す
+                          </Button>
+                        )}
+                        {p.kind === "incomplete" && (
+                          <Button
+                            size="sm"
+                            onClick={() =>
+                              setCompleteTarget({
+                                id: p.id,
+                                staffName: p.staffName,
+                                amount: p.amount,
+                                storeName: p.storeName ?? null,
+                                date: p.paymentDate ?? null,
+                              })
+                            }
+                          >
+                            <Check className="size-3.5" />
+                            担当が代わりに登録
                           </Button>
                         )}
                         <Button
