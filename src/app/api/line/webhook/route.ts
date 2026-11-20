@@ -50,6 +50,7 @@ import {
   mayHaveCommuterPass,
   normalizePersonName,
   parseLineProfile,
+  isReceptionist,
   stripStationSuffix,
   suspendReason,
   updateLineProfile,
@@ -789,6 +790,9 @@ async function handlePostback(event: LineEvent): Promise<void> {
       return
     case "dupok": // 重複ではないので、そのまま登録する
       await handleDuplicateOverridePostback(event, params)
+      return
+    case "rpl": // 担当が、問い合わせたスタッフに返信する
+      await handleReplyToStaffPostback(event, params)
       return
     // 領収書なし交通費フロー
     case "trm": // 交通手段の選択（電車/その他）
@@ -3504,6 +3508,105 @@ async function handleFixPostback(
   await sendTier1(replyToken, source.userId, receiptId, "もう一度、区分を選んでください。")
 }
 
+/** 担当の「返信する」が有効な時間（これを過ぎたら普通の発言として扱う） */
+const REPLY_MODE_TIMEOUT_MS = 60 * 60 * 1000
+
+/**
+ * 担当が「返信する」を押したときの処理。
+ *
+ * 次に担当が送るメッセージを、そのスタッフへ転送する印を付ける。
+ * 担当は問い合わせの通知をLINEで受け取るため、そのままトークに返事を書く。
+ * 転送の仕組みが無いと、本人には届かないまま返信済みのつもりになっていた。
+ */
+async function handleReplyToStaffPostback(
+  event: LineEvent,
+  params: URLSearchParams
+): Promise<void> {
+  const { replyToken, source } = event
+  const staffMemberId = params.get("sid")
+  if (!staffMemberId) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 返信先が分かりませんでした。")
+    return
+  }
+  const supabase = createServiceClient()
+  const staffMembers = await fetchStaffMembers(supabase)
+  const sender = staffMembers ? resolveStaffForUser(staffMembers, source.userId) : null
+
+  // 担当以外には使わせない（他のスタッフに成りすまして連絡できないようにする）
+  if (!sender || !(await isReceptionistUser(supabase, sender.id))) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ この操作は立替申請の担当の方のみご利用いただけます。"
+    )
+    return
+  }
+
+  const target = staffMembers?.find((m) => m.id === staffMemberId)
+  if (!target) {
+    await sendLineMessage(replyToken, source.userId, "⚠️ 返信先のスタッフが見つかりませんでした。")
+    return
+  }
+
+  const ok = await setReplyTarget(supabase, sender.id, staffMemberId)
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    ok
+      ? `${target.name}さんへの返信を受け付けます。\n` +
+          "このまま返事をこのトークに送ってください。\n\n" +
+          "送ると、ご本人のLINEに届き、問い合わせは対応済みになります。\n" +
+          "やめる場合は「キャンセル」と送ってください。"
+      : "⚠️ 返信の受付に失敗しました。アプリの「スタッフ立替」からご返信ください。"
+  )
+}
+
+/** 担当かどうか（line_profile.is_receptionist） */
+async function isReceptionistUser(
+  supabase: ServiceClient,
+  staffMemberId: string
+): Promise<boolean> {
+  try {
+    const { data } = await supabase
+      .from("staff_members")
+      .select("line_profile")
+      .eq("id", staffMemberId)
+      .maybeSingle()
+    return isReceptionist((data as { line_profile?: unknown } | null)?.line_profile)
+  } catch {
+    return false
+  }
+}
+
+/** 担当の「次の発言の転送先」を記録する */
+async function setReplyTarget(
+  supabase: ServiceClient,
+  senderId: string,
+  targetStaffId: string | null
+): Promise<boolean> {
+  try {
+    const { data } = await supabase
+      .from("staff_members")
+      .select("line_profile")
+      .eq("id", senderId)
+      .maybeSingle()
+    const profile = parseLineProfile((data as { line_profile?: unknown } | null)?.line_profile)
+    const next = { ...profile }
+    if (targetStaffId) {
+      next.reply_to = { staff_member_id: targetStaffId, at: new Date().toISOString() }
+    } else {
+      delete next.reply_to
+    }
+    const { error } = await supabase
+      .from("staff_members")
+      .update({ line_profile: JSON.parse(JSON.stringify(next)) })
+      .eq("id", senderId)
+    return !error
+  } catch {
+    return false
+  }
+}
+
 /**
  * 「それでも登録する」→ 重複判定を飛ばして、送られた画像をそのまま登録する。
  *
@@ -5249,11 +5352,19 @@ async function handleTransitText(
           `${name}さん\n\n` +
           `${body.slice(0, 1500)}\n\n` +
           "──────────\n" +
-          "返信のしかた\n" +
-          "アプリの「スタッフ立替」を開くと、\n" +
-          "一番上に「スタッフからの問い合わせ」が出ます。\n" +
-          "「返信する」を押して入力すると、\n" +
-          "このスタッフのLINEに届き、対応済みになります。"
+          "下の「返信する」を押してから、\n" +
+          "返事をこのトークに送ってください。\n" +
+          `その内容が${name}さんに届き、対応済みになります。\n\n` +
+          "※このトークにそのまま書いても、ご本人には届きません。",
+        me
+          ? [
+              {
+                label: "返信する",
+                data: `action=rpl&sid=${me.id}`,
+                displayText: `${name}さんに返信します`,
+              },
+            ]
+          : undefined
       )
       await sendLineMessage(
         replyToken,
@@ -5860,6 +5971,117 @@ async function handleBusinessCardQuery(
   }
 }
 
+/**
+ * 担当が「返信する」を押していれば、その発言をスタッフへ転送する。
+ *
+ * @returns 転送した（＝このメッセージの処理を終える）か
+ */
+async function relayAdminReplyIfPending(
+  event: LineEvent,
+  supabase: ServiceClient,
+  inputText: string
+): Promise<boolean> {
+  const { replyToken, source } = event
+  const staffMembers = await fetchStaffMembers(supabase)
+  const sender = staffMembers ? resolveStaffForUser(staffMembers, source.userId) : null
+  if (!sender) return false
+
+  const { data } = await supabase
+    .from("staff_members")
+    .select("line_profile")
+    .eq("id", sender.id)
+    .maybeSingle()
+  const profile = parseLineProfile((data as { line_profile?: unknown } | null)?.line_profile)
+  const pending = profile.reply_to
+  if (!pending?.staff_member_id) return false
+
+  // 古い印で延々と転送しないよう、一定時間で切れる
+  if (Date.now() - Date.parse(pending.at) > REPLY_MODE_TIMEOUT_MS) {
+    await setReplyTarget(supabase, sender.id, null)
+    return false
+  }
+
+  if (/^(キャンセル|やめる|中止)$/.test(inputText)) {
+    await setReplyTarget(supabase, sender.id, null)
+    await sendLineMessage(replyToken, source.userId, "返信をやめました。")
+    return true
+  }
+
+  const target = staffMembers?.find((m) => m.id === pending.staff_member_id)
+  if (!target?.line_user_id) {
+    await setReplyTarget(supabase, sender.id, null)
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ 返信先のスタッフにLINEが届けられませんでした。\nアプリの「スタッフ立替」からご返信ください。"
+    )
+    return true
+  }
+
+  const ok = await pushMessage(
+    target.line_user_id,
+    "【担当からのご連絡】\n\n" + inputText.slice(0, 1500)
+  )
+  await setReplyTarget(supabase, sender.id, null)
+
+  if (!ok) {
+    await sendLineMessage(
+      replyToken,
+      source.userId,
+      "⚠️ 送信できませんでした。\nお手数ですが、アプリの「スタッフ立替」からご返信ください。"
+    )
+    return true
+  }
+
+  // 連絡の記録を残し、問い合わせを対応済みにする（アプリ側と同じ扱いにする）
+  await recordAdminReply(supabase, target.id, inputText, sender.name)
+
+  await sendLineMessage(
+    replyToken,
+    source.userId,
+    `✅ ${target.name}さんに送りました。\n問い合わせは対応済みにしました。`
+  )
+  return true
+}
+
+/**
+ * 担当からの連絡を記録し、その方の未対応の問い合わせを対応済みにする。
+ * アプリの一覧から返信したときと同じ状態にするため。
+ */
+async function recordAdminReply(
+  supabase: ServiceClient,
+  staffMemberId: string,
+  text: string,
+  by: string
+): Promise<void> {
+  try {
+    const { data } = await supabase
+      .from("staff_members")
+      .select("line_profile")
+      .eq("id", staffMemberId)
+      .maybeSingle()
+    const profile = parseLineProfile((data as { line_profile?: unknown } | null)?.line_profile)
+    const now = new Date().toISOString()
+    const next = {
+      ...profile,
+      admin_messages: [
+        ...(profile.admin_messages ?? []),
+        { at: now, by, text: text.slice(0, 1500) },
+      ].slice(-INQUIRY_HISTORY_LIMIT),
+      inquiries: (profile.inquiries ?? []).map((q) =>
+        q.done_at ? q : { ...q, done_at: now, done_by: by }
+      ),
+    }
+    await supabase
+      .from("staff_members")
+      .update({ line_profile: JSON.parse(JSON.stringify(next)) })
+      .eq("id", staffMemberId)
+  } catch (error) {
+    // 送信は済んでいるので処理は止めない
+    console.error("[LINE Bot] 連絡の記録に失敗:", error)
+  }
+}
+
 /** テキストメッセージ処理: リッチメニュー / 申請 / 氏名登録 / 名刺検索 / その他 */
 async function handleTextMessage(event: LineEvent): Promise<void> {
   const { replyToken, source, message } = event
@@ -5867,6 +6089,14 @@ async function handleTextMessage(event: LineEvent): Promise<void> {
   if (!inputText) return
 
   const supabase = createServiceClient()
+
+  /*
+   * 担当が「返信する」を押した直後の発言は、そのスタッフへ転送する。
+   *
+   * ほかの判定より先に見る。担当の返事は自由な文章なので、
+   * 氏名登録や問い合わせとして拾われてしまうと本人に届かない。
+   */
+  if (await relayAdminReplyIfPending(event, supabase, inputText)) return
 
   // 「使い方」「問い合わせ」は読むだけの案内なので、進行中の操作を中断せずに答える
   const infoCommand = findRichMenuCommand(inputText)

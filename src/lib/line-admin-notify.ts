@@ -35,15 +35,37 @@ interface MinimalClient {
   }
 }
 
+/** 通知に添えるボタン（クイックリプライ） */
+export interface NotifyAction {
+  label: string
+  data: string
+  displayText: string
+}
+
 /** LINEへ1件送る（失敗しても例外にしない） */
-async function push(to: string, text: string): Promise<boolean> {
+async function push(to: string, text: string, actions?: NotifyAction[]): Promise<boolean> {
   const token = process.env.LINE_CHANNEL_ACCESS_TOKEN
   if (!token || !to) return false
   try {
+    const message: Record<string, unknown> = { type: "text", text: text.slice(0, 4900) }
+    // 通知の場でそのまま操作できるようにする（別画面を探させない）
+    if (actions && actions.length > 0) {
+      message.quickReply = {
+        items: actions.slice(0, 13).map((a) => ({
+          type: "action",
+          action: {
+            type: "postback",
+            label: a.label.slice(0, 20),
+            data: a.data,
+            displayText: a.displayText,
+          },
+        })),
+      }
+    }
     const res = await fetch("https://api.line.me/v2/bot/message/push", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ to, messages: [{ type: "text", text: text.slice(0, 4900) }] }),
+      body: JSON.stringify({ to, messages: [message] }),
     })
     return res.ok
   } catch {
@@ -75,7 +97,11 @@ export async function fetchReceptionistIds(supabase: MinimalClient): Promise<str
  *
  * @returns 送れた人数
  */
-export async function notifyAdmins(supabase: MinimalClient, text: string): Promise<number> {
+export async function notifyAdmins(
+  supabase: MinimalClient,
+  text: string,
+  actions?: NotifyAction[]
+): Promise<number> {
   const targets = new Set<string>(await fetchReceptionistIds(supabase))
 
   // 担当が未設定のときの安全網（要対応や異常が誰にも届かないのを防ぐ）
@@ -86,7 +112,7 @@ export async function notifyAdmins(supabase: MinimalClient, text: string): Promi
 
   let sent = 0
   for (const id of targets) {
-    if (await push(id, text)) sent++
+    if (await push(id, text, actions)) sent++
   }
   return sent
 }

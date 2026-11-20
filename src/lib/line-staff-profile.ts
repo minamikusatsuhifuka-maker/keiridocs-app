@@ -241,6 +241,14 @@ export interface LineProfile {
    * 院長は ADMIN_LINE_USER_ID で常に受け取るため、ここは担当者用。
    */
   is_receptionist?: boolean
+  /**
+   * 担当が「返信する」を押した相手。次に送るメッセージをこの方へ転送する。
+   *
+   * 担当は問い合わせの通知をLINEで受け取るため、そのままトークに返事を書く。
+   * 転送の仕組みが無いと、本人には届かないまま返信済みのつもりになる。
+   * 書き間違いを延々と転送しないよう、一定時間で切れる。
+   */
+  reply_to?: { staff_member_id: string; at: string; inquiry_at?: string }
   /** 交通費・宿泊費の枠を数え直した記録（講座ごと・最後の1件だけを使う） */
   travel_cap_resets?: TravelCapReset[]
   /** 一時休止。キーが無い＝利用中 */
