@@ -540,7 +540,7 @@ export function applicationConfirmCard(params: {
   if (params.capSummary && params.capSummary.length > 0) {
     body.push(
       panel([
-        text("あと申請できる金額", { size: "xs", weight: "bold", color: FLEX_COLORS.textSub }),
+        text("申請できる金額", { size: "xs", weight: "bold", color: FLEX_COLORS.textSub }),
         ...params.capSummary.map((line, i) =>
           text(line, { size: i === 0 ? "xs" : "sm", weight: i === 0 ? "regular" : "bold", margin: "xs" })
         ),

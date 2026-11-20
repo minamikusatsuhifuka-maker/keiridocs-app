@@ -3618,9 +3618,10 @@ async function travelCapRemainLine(
     if (assessed.cap === null) return ""
     const left = Math.max(0, assessed.cap - assessed.capUsed)
     return (
-      `${courseName ? `${courseName}の` : "この講座の"}交通費・宿泊費は、` +
-      `あと ${formatAmount(left)}円 まで申請できます\n` +
-      `（上限 ${formatAmount(assessed.cap)}円 のうち ${formatAmount(assessed.capUsed)}円 を申請済み）\n`
+      `${courseName ? `${courseName}の` : "この講座の"}交通費と宿泊費は、` +
+      `合わせて${formatAmount(assessed.cap)}円までです。\n` +
+      `申請済み ${formatAmount(assessed.capUsed)}円\n` +
+      (left <= 0 ? "これで上限に達しました\n" : "")
     )
   } catch {
     return ""
