@@ -155,6 +155,8 @@ export async function POST(request: Request) {
       const assessed = await assessSubsidy({
         supabase: service,
         staffMemberId: t.staff_member_id,
+        // 自分自身を過去の実績に数えない（初受講が再受講になり、上限も自分で埋まる）
+        excludeTransactionId: t.id,
         amount: t.amount,
         item: t.expense_item as ExpenseItem,
         courseId: t.course_id,

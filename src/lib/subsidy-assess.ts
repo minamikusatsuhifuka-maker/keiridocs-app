@@ -69,6 +69,15 @@ interface PriorRow {
 export interface AssessInput {
   supabase: ServiceClient
   staffMemberId: string
+  /**
+   * 過去の実績から除く明細のID。
+   *
+   * 保存済みの明細を計算し直すときに必ず指定する。
+   * 指定しないと、その明細自身が「過去の受講」「枠の使用済み」として
+   * 数えられ、初受講が再受講に、上限が自分の金額で埋まった扱いになる。
+   * 申請時は明細がまだ無いため、この問題は起きていなかった。
+   */
+  excludeTransactionId?: string | null
   /** 立替額（領収書の金額） */
   amount: number
   item: ExpenseItem
@@ -163,7 +172,11 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
   //    テスト実行中は、そのテスト実行で作られた申請だけを数える。
   //    本番の申請はテストの累計に入らず、テストの申請も本番の累計に入らない。
   const staffState = await fetchStaffCapState(supabase, staffMemberId, input.courseId ?? null)
-  const counted = await selectCountableRows(supabase, priors, staffState.testRunId)
+  // 計算し直す本人の明細は「過去の実績」ではないので外す
+  const others = input.excludeTransactionId
+    ? priors.filter((p) => p.id !== input.excludeTransactionId)
+    : priors
+  const counted = await selectCountableRows(supabase, others, staffState.testRunId)
 
   // 交通費・宿泊費の枠は「受講ごと」に数える。
   // 区切りは領収書の日付（申請の順番では変わらないようにするため）
