@@ -125,7 +125,18 @@ interface Row {
  */
 interface PendingItem {
   id: string
-  kind: "excess" | "course" | "attach" | "pass" | "term" | "detail" | "dup" | "help" | "incomplete"
+  kind:
+    | "excess"
+    | "course"
+    | "attach"
+    | "undecided"
+    | "history"
+    | "pass"
+    | "term"
+    | "detail"
+    | "dup"
+    | "help"
+    | "incomplete"
   /** 連絡（LINE）に使う staff_members.id */
   staffMemberId: string | null
   staffName: string
@@ -160,6 +171,8 @@ const PENDING_LABELS: Record<PendingItem["kind"], string> = {
   dup: "二重申請の疑い",
   help: "本人から相談",
   incomplete: "未完了",
+  undecided: "支給率が未定",
+  history: "受講回数の確認",
 }
 
 /** 種別ごとの説明（担当が何をすればよいか） */
@@ -174,6 +187,10 @@ const PENDING_HELP: Record<PendingItem["kind"], string> = {
   help: "スタッフが「担当に相談する」を押しました。領収書の金額や日付が読み取れていません。画像を確認し、「立替手動登録」から金額・日付・区分を入れて登録してください。登録が済んだらこの行の「対応済みにして隠す」を押してください。",
   incomplete:
     "領収書は届いていますが、費用区分が選ばれず支給の対象になっていません。本人は申請したつもりの可能性があります。",
+  history:
+    "この講座の既受講回数が登録されていないため、初受講か再受講かを確定できていません。初受講なら「初受講として確定（全額）」、再受講なら回数を入れて確定してください。確定するまで給与に入りません。",
+  undecided:
+    "この講座は支給率が未定です。「講座」で支給率を決めてから確定してください。",
 }
 
 interface Subtotal {
@@ -459,6 +476,43 @@ export default function StaffReimbursePage() {
       }
     },
     [fetchPending]
+  )
+
+  /**
+   * 「既受講回数が未登録」で止まっている明細を確定させる。
+   *
+   * 回数を登録しても保留は自動では外れないため、要対応に残り続けていた。
+   * 残っている間は税理士提出にも給与集計にも載らず、本人は申請しているのに
+   * 支給されない状態になる。登録と確定をここで一度に済ませる。
+   */
+  const confirmHistory = useCallback(
+    async (item: PendingItem, priorCount: number) => {
+      const label =
+        priorCount === 0
+          ? `${item.staffName}さんの ${item.itemLabel} ${yen(item.amount)} を、初受講（全額）として確定します。`
+          : `${item.staffName}さんの ${item.itemLabel} ${yen(item.amount)} を、既受講 ${priorCount}回として確定します。`
+      if (!confirm(`${label}\n\n受講回数も登録し、次回から自動で判定されます。\n\nよろしいですか？`)) {
+        return
+      }
+      setApprovingId(item.id)
+      try {
+        const res = await fetch("/api/staff-reimburse/confirm-hold", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: item.id, priorCount }),
+        })
+        const json = (await res.json().catch(() => ({}))) as { error?: string }
+        if (!res.ok) throw new Error(json.error || "確定できませんでした")
+        toast.success("確定しました")
+        fetchPending()
+        fetchData()
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "確定できませんでした")
+      } finally {
+        setApprovingId(null)
+      }
+    },
+    [fetchPending, fetchData]
   )
 
   /**
@@ -1062,6 +1116,49 @@ export default function StaffReimbursePage() {
                         </Button>
                       )}
                     </div>
+
+                    {/* 既受講回数が未登録のため確定できていない。
+                        回数を登録して保留を外すところまでを、この場で終わらせる */}
+                    {p.kind === "history" && (
+                      <div className="flex flex-col gap-2 sm:w-64 sm:shrink-0">
+                        <Button
+                          size="sm"
+                          disabled={approvingId === p.id}
+                          onClick={() => confirmHistory(p, 0)}
+                        >
+                          {approvingId === p.id ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <Check className="size-3.5" />
+                          )}
+                          初受講として確定（全額）
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={approvingId === p.id}
+                          onClick={() => {
+                            const input = prompt(
+                              `${p.staffName}さんの「${p.courseName || "この講座"}」を、これまでに何回受講されていますか。\n` +
+                                "（初受講なら 0。再受講なら受けた回数）",
+                              "1"
+                            )
+                            if (input === null) return
+                            const count = Number(input)
+                            if (!Number.isFinite(count) || count < 0 || count > 99) {
+                              toast.error("0〜99の数字で入力してください")
+                              return
+                            }
+                            confirmHistory(p, count)
+                          }}
+                        >
+                          回数を入れて確定
+                        </Button>
+                        <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+                          登録した回数は次回から自動で判定されます。
+                        </p>
+                      </div>
+                    )}
 
                     {/* 定期券区間の確認。含まれていなければそのまま確定できる */}
                     {(p.kind === "pass" || p.kind === "detail" || p.kind === "dup") && (
