@@ -44,6 +44,8 @@ import {
   isCommuterPassUnanswered,
   isLongAbsence,
   isSetupComplete,
+  needsSetupRefresh,
+  SETUP_VERSION,
   isSuspended,
   loadStaffLineState,
   matchStaffByFullName,
@@ -5707,6 +5709,9 @@ function carryHomeFlags(data: TransitData): TransitData {
   if (data.setupFlow) keep.setupFlow = true
   if (data.resume) keep.resume = data.resume
   if (data.homeBefore) keep.homeBefore = data.homeBefore
+  if (data.refresh) keep.refresh = true
+  if (data.commuteReviewed) keep.commuteReviewed = true
+  if (data.passReviewed) keep.passReviewed = true
   return keep
 }
 
@@ -6597,12 +6602,17 @@ async function beginApplication(
   }
 
   if (!isSetupComplete(state)) {
+    const refresh = needsSetupRefresh(state)
     await continueSetup(
       event,
       supabase,
       staffId,
-      { setupFlow: true, resume },
-      "最初に1回だけ、登録内容の確認をお願いします（1分で終わります）。\n終わったら、そのまま申請に戻ります。"
+      { setupFlow: true, resume, refresh },
+      refresh
+        ? "登録内容の確認をお願いします（1分で終わります）。\n" +
+            "お名前・最寄り駅・通勤手段・定期券を、いまの内容に更新してください。\n" +
+            "終わったら、そのまま申請に戻ります。"
+        : "最初に1回だけ、登録内容の確認をお願いします（1分で終わります）。\n終わったら、そのまま申請に戻ります。"
     )
     return { proceed: false, greeting: "" }
   }
@@ -6632,7 +6642,14 @@ async function continueSetup(
     return
   }
   const pre: unknown[] = lead ? [{ type: "text", text: lead }] : []
-  const flowData: TransitData = { setupFlow: true, resume: data.resume, stationReviewed: data.stationReviewed }
+  const flowData: TransitData = {
+    setupFlow: true,
+    resume: data.resume,
+    stationReviewed: data.stationReviewed,
+    refresh: data.refresh,
+    commuteReviewed: data.commuteReviewed,
+    passReviewed: data.passReviewed,
+  }
 
   // 1. 氏名の確認
   if (!state.profile.name_confirmed_at) {
@@ -6669,15 +6686,18 @@ async function continueSetup(
     return
   }
 
-  // 3. 通勤手段（未回答なら聞く）
-  if (isCommuteMethodUnanswered(state.profile)) {
+  // 3. 通勤手段（未回答なら聞く。やり直し中は登録済みでも一度うかがう）
+  if (isCommuteMethodUnanswered(state.profile) || (flowData.refresh && !flowData.commuteReviewed)) {
     await askCommuteMethod(event, supabase, staffId, flowData, state, pre)
     return
   }
 
   // 4. 定期券（通勤手段が電車・その他で、かつ未回答なら聞く）
   //    車・自転車・徒歩の方は通勤手段の回答時に「定期券なし」で確定済みなので聞かない
-  if (mayHaveCommuterPass(state.profile.commute_method ?? "other") && isCommuterPassUnanswered(state.profile)) {
+  if (
+    mayHaveCommuterPass(state.profile.commute_method ?? "other") &&
+    (isCommuterPassUnanswered(state.profile) || (flowData.refresh && !flowData.passReviewed))
+  ) {
     await askPass(event, supabase, staffId, flowData, state, pre)
     return
   }
@@ -6685,6 +6705,8 @@ async function continueSetup(
   // 5. 完了 → 本来の申請に戻る
   await updateLineProfile(supabase, staffId, {
     setup_completed_at: new Date().toISOString(),
+    // 済ませた設定のバージョンを残す。上げるまで再確認は求めない
+    setup_version: SETUP_VERSION,
     last_applied_at: new Date().toISOString(),
   })
   await clearTransitSession(supabase, source.userId)
@@ -7375,11 +7397,7 @@ async function askCommuteMethod(
   pre: unknown[] = []
 ): Promise<void> {
   const { replyToken, source } = event
-  await setTransitSession(supabase, source.userId, staffId, "pass_cm", {
-    setupFlow: data.setupFlow,
-    resume: data.resume,
-    stationReviewed: data.stationReviewed,
-  })
+  await setTransitSession(supabase, source.userId, staffId, "pass_cm", carryPassFlags(data))
   const current = state.profile.commute_method
     ? `現在の登録：${commuteMethodLabel(state.profile)}\n\n`
     : ""
@@ -7434,7 +7452,14 @@ async function handleCommuteMethodPostback(event: LineEvent, params: URLSearchPa
 
   const label = COMMUTE_METHOD_TEXT[method]
   if (session.data.setupFlow) {
-    await continueSetup(event, supabase, staffId, session.data, `🚶 通勤手段を「${label}」で登録しました。`)
+    // やり直し中は、同じ質問を繰り返さないように確認済みの印を付ける
+    await continueSetup(
+      event,
+      supabase,
+      staffId,
+      { ...session.data, commuteReviewed: true },
+      `🚶 通勤手段を「${label}」で登録しました。`
+    )
     return
   }
 
@@ -7477,11 +7502,7 @@ async function askPass(
   pre: unknown[] = []
 ): Promise<void> {
   const { replyToken, source } = event
-  await setTransitSession(supabase, source.userId, staffId, "pass_ask", {
-    setupFlow: data.setupFlow,
-    resume: data.resume,
-    stationReviewed: data.stationReviewed,
-  })
+  await setTransitSession(supabase, source.userId, staffId, "pass_ask", carryPassFlags(data))
   const current = state.profile.commuter_pass ? `現在の登録：${commuterPassLabel(state.profile)}\n\n` : ""
   await sendLineMessages(replyToken, source.userId, [
     ...pre,
@@ -7510,7 +7531,14 @@ async function getPassSession(event: LineEvent, supabase: ServiceClient): Promis
 
 /** 定期券フローの共通の引き継ぎ（初回設定の途中かどうか等） */
 function carryPassFlags(data: TransitData): TransitData {
-  return { setupFlow: data.setupFlow, resume: data.resume, stationReviewed: data.stationReviewed }
+  return {
+    setupFlow: data.setupFlow,
+    resume: data.resume,
+    stationReviewed: data.stationReviewed,
+    refresh: data.refresh,
+    commuteReviewed: data.commuteReviewed,
+    passReviewed: data.passReviewed,
+  }
 }
 
 /** 定期券あり／なし */
@@ -7530,7 +7558,13 @@ async function handlePassAnswerPostback(event: LineEvent, params: URLSearchParam
       return
     }
     if (session.data.setupFlow) {
-      await continueSetup(event, supabase, staffId, session.data, "🎫 定期券「なし」で登録しました。")
+      await continueSetup(
+        event,
+        supabase,
+        staffId,
+        { ...session.data, passReviewed: true },
+        "🎫 定期券「なし」で登録しました。"
+      )
       return
     }
     await clearTransitSession(supabase, source.userId)
@@ -7699,7 +7733,13 @@ async function handlePassConfirmPostback(event: LineEvent): Promise<void> {
   }
   const label = `${stripStationSuffix(passFrom.station)} ⇄ ${stripStationSuffix(passTo.station)}`
   if (session.data.setupFlow) {
-    await continueSetup(event, supabase, session.staffMemberId, session.data, `✅ 定期券を「${label}」で登録しました。`)
+    await continueSetup(
+      event,
+      supabase,
+      session.staffMemberId,
+      { ...session.data, passReviewed: true },
+      `✅ 定期券を「${label}」で登録しました。`
+    )
     return
   }
   await clearTransitSession(supabase, source.userId)

@@ -121,6 +121,15 @@ export interface TransitData {
   setupFlow?: boolean
   /** 初回設定のうち最寄り駅の確認が済んだか */
   stationReviewed?: boolean
+  /**
+   * 設定のやり直し中か（以前に設定を済ませた方への再確認）。
+   * 登録済みでも通勤手段と定期券をもう一度うかがうために使う。
+   */
+  refresh?: boolean
+  /** やり直し中に通勤手段をうかがい終えたか */
+  commuteReviewed?: boolean
+  /** やり直し中に定期券をうかがい終えたか */
+  passReviewed?: boolean
   /** 設定完了後に戻る申請（中断させない） */
   resume?: ResumeAction
 

@@ -249,6 +249,11 @@ export interface LineProfile {
    * 書き間違いを延々と転送しないよう、一定時間で切れる。
    */
   reply_to?: { staff_member_id: string; at: string; inquiry_at?: string }
+  /**
+   * 済ませた設定のバージョン（SETUP_VERSION と比べる）。
+   * 無い場合は 1 として扱う（この仕組みを入れる前に設定を済ませた方）。
+   */
+  setup_version?: number
   /** 交通費・宿泊費の枠を数え直した記録（講座ごと・最後の1件だけを使う） */
   travel_cap_resets?: TravelCapReset[]
   /** 一時休止。キーが無い＝利用中 */
@@ -407,10 +412,34 @@ export function activeCommuterPass(profile: LineProfile): Required<Pick<Commuter
   return p as Required<Pick<CommuterPass, "from" | "to">> & CommuterPass
 }
 
-/** 初回設定（氏名確認・最寄り駅・定期券）が終わっているか */
+/**
+ * 設定のバージョン。
+ *
+ * ここを上げると、全員がもう一度、氏名・最寄り駅・通勤手段・定期券の
+ * 確認をしてからでないと申請できなくなる。
+ * 以前に登録したまま内容が古くなっている方を確実に拾うための仕組み。
+ *
+ * 上げるのは、聞く内容や前提が変わったときだけにする。
+ * 上げるたびに全員に手間がかかるため。
+ */
+export const SETUP_VERSION = 2
+
+/** 初回設定（氏名確認・最寄り駅・通勤手段・定期券）が終わっているか */
 export function isSetupComplete(state: StaffLineState): boolean {
   if (!state.available) return true // 列が無い環境では差し込まない（従来動作）
-  return !!state.profile.setup_completed_at
+  if (!state.profile.setup_completed_at) return false
+  // 設定の項目が変わったら、済ませた方にももう一度お願いする
+  return (state.profile.setup_version ?? 1) >= SETUP_VERSION
+}
+
+/**
+ * もう一度の確認が必要か（済ませたことはあるが、設定のバージョンが古い）。
+ * 初めての方と案内文を分けるために使う。
+ */
+export function needsSetupRefresh(state: StaffLineState): boolean {
+  if (!state.available) return false
+  if (!state.profile.setup_completed_at) return false
+  return (state.profile.setup_version ?? 1) < SETUP_VERSION
 }
 
 /** 定期券の表示（例「あり（南草津 ⇄ 京都）」「なし」「未回答」） */
