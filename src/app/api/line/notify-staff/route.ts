@@ -104,15 +104,33 @@ export async function POST(request: Request) {
         (m.line_profile && typeof m.line_profile === "object"
           ? (m.line_profile as Record<string, unknown>)
           : {}) ?? {}
+      const now = new Date().toISOString()
+      const by = user.email ?? "担当"
       const history = Array.isArray(profile.admin_messages) ? profile.admin_messages : []
       const next = [
         ...history,
-        { at: new Date().toISOString(), by: user.email ?? "担当", text: text.slice(0, 200) },
+        { at: now, by, text: text.slice(0, 200) },
       ].slice(-HISTORY_LIMIT)
+
+      /*
+       * この方への未対応の問い合わせを対応済みにする。
+       *
+       * 「連絡」ボタンから返信しても問い合わせ側は未対応のまま残っていた。
+       * 返信は届いているのに一覧に残るため、担当は何をすればよいか分からず、
+       * 対応済みにする操作を別に探すことになっていた。
+       */
+      const inquiries = Array.isArray(profile.inquiries)
+        ? (profile.inquiries as { at?: string; done_at?: string }[]).map((q) =>
+            q && q.at && !q.done_at ? { ...q, done_at: now, done_by: by } : q
+          )
+        : profile.inquiries
+
       await service
         .from("staff_members")
         .update({
-          line_profile: JSON.parse(JSON.stringify({ ...profile, admin_messages: next })),
+          line_profile: JSON.parse(
+            JSON.stringify({ ...profile, admin_messages: next, inquiries }),
+          ),
         })
         .eq("id", m.id)
     } catch (e) {
