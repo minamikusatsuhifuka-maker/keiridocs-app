@@ -452,10 +452,11 @@ export function capSummaryLines(
   const after = used + nowCounted
   const left = Math.max(0, assessed.cap - after)
   return [
-    `${courseName ? `${courseName}の` : "この講座の"}交通費＋宿泊費`,
-    `上限 ${yen(assessed.cap)}`,
-    `これまで ${yen(used)} ＋ 今回 ${yen(nowCounted)} ＝ ${yen(after)}`,
-    left > 0 ? `残り ${yen(left)}` : "残り 0円（上限に達しました）",
+    `${courseName ? `${courseName}の` : "この講座の"}交通費と宿泊費は、合わせて${yen(assessed.cap)}までです。`,
+    `申請済み ${yen(used)} ＋ 今回 ${yen(nowCounted)} ＝ ${yen(after)}`,
+    left > 0
+      ? `この講座で、あと ${yen(left)} まで申請できます`
+      : "この講座の交通費・宿泊費は、これで上限に達しました",
   ]
 }
 
@@ -503,8 +504,8 @@ export function calcBreakdownLines(
         lines.push("数える範囲：担当が数え直した時点より後")
       }
       // 累計は0円でも出す（いまどれだけ使っているかを毎回確かめられるようにする）
-      lines.push(`これまでの累計：${yen(assessed.capUsed)}`)
-      lines.push(`残りの枠：${yen(Math.max(0, assessed.cap - assessed.capUsed))}`)
+      lines.push(`申請済みの合計：${yen(assessed.capUsed)}`)
+      lines.push(`あと申請できる金額：${yen(Math.max(0, assessed.cap - assessed.capUsed))}`)
     } else if (assessed.capUsed > 0) {
       lines.push(`すでに使った分：${yen(assessed.capUsed)}`)
       lines.push(`残りの枠：${yen(Math.max(0, assessed.cap - assessed.capUsed))}`)
