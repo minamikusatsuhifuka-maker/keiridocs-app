@@ -5,6 +5,7 @@ import type { Database } from "@/types/database"
 import {
   hasPendingNameChange,
   parseLineProfile,
+  SETUP_VERSION,
   travelCapResetAt,
   type TestRun,
   type TravelCapReset,
@@ -315,6 +316,8 @@ export async function PATCH(request: NextRequest) {
       suspendReason?: string | null
       /** 担当か（スタッフからの問い合わせをこの人のLINEへ転送する） */
       receptionist?: boolean
+      /** 登録内容の再設定を求める（true）／免除する（false） */
+      require_setup?: boolean
     }
     if (!body.id) {
       return NextResponse.json({ error: "IDは必須です" }, { status: 400 })
@@ -343,6 +346,43 @@ export async function PATCH(request: NextRequest) {
         .single()
       if (error) {
         console.error("担当の更新エラー:", error.message)
+        return NextResponse.json({ error: "更新に失敗しました" }, { status: 500 })
+      }
+      return NextResponse.json({ data })
+    }
+
+    /*
+     * 登録内容の再設定を、個別にお願いする／免除する。
+     *
+     * true  … 次の申請のときに、お名前・最寄り駅・通勤手段・定期券の確認に入る
+     * false … 確認を求めない（済んだ扱いにする）。何度も出て困る方のための逃げ道
+     */
+    if (typeof body.require_setup === "boolean") {
+      const { data: member, error: readError } = await service
+        .from("staff_members")
+        .select("line_profile")
+        .eq("id", body.id)
+        .single()
+      if (readError || !member) {
+        return NextResponse.json({ error: "スタッフが見つかりません" }, { status: 404 })
+      }
+      const profile = parseLineProfile(member.line_profile)
+      if (body.require_setup) {
+        // 済ませたバージョンを古くする。次の申請で確認に入る
+        profile.setup_version = 0
+      } else {
+        profile.setup_version = SETUP_VERSION
+        // 一度も設定していない方を免除する場合に備えて、完了の印も入れる
+        if (!profile.setup_completed_at) profile.setup_completed_at = new Date().toISOString()
+      }
+      const { data, error } = await service
+        .from("staff_members")
+        .update({ line_profile: JSON.parse(JSON.stringify(profile)) })
+        .eq("id", body.id)
+        .select("*")
+        .single()
+      if (error) {
+        console.error("再設定の更新エラー:", error.message)
         return NextResponse.json({ error: "更新に失敗しました" }, { status: 500 })
       }
       return NextResponse.json({ data })

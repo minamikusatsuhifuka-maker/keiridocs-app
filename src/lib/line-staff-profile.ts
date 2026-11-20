@@ -433,6 +433,16 @@ export function isSetupComplete(state: StaffLineState): boolean {
 }
 
 /**
+ * これから登録内容の確認に入る方か（担当の画面の表示に使う）。
+ * 未設定の方も、設定のバージョンが古い方も対象になる。
+ */
+export function setupPending(raw: unknown): boolean {
+  const profile = parseLineProfile(raw)
+  if (!profile.setup_completed_at) return true
+  return (profile.setup_version ?? 1) < SETUP_VERSION
+}
+
+/**
  * もう一度の確認が必要か（済ませたことはあるが、設定のバージョンが古い）。
  * 初めての方と案内文を分けるために使う。
  */

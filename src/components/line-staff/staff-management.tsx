@@ -44,6 +44,7 @@ import {
   parseLineProfile,
   payrollName,
   suspendReason,
+  setupPending,
 } from "@/lib/line-staff-profile"
 
 interface StaffMember {
@@ -285,6 +286,35 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
       toast.success(
         next ? `${member.name}さんを担当にしました` : `${member.name}さんを担当から外しました`
       )
+      fetchStaff()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "更新に失敗しました")
+    } finally {
+      setTogglingReceptionistId(null)
+    }
+  }
+
+  /**
+   * 登録内容の再設定を、個別にお願いする／免除する。
+   *
+   * お願いすると、その方が次に申請するときだけ確認画面に入る。
+   * 済ませた方には二度と出ない。免除は、何度も出て困る方のための逃げ道。
+   */
+  async function handleRequireSetup(member: StaffMember, next: boolean) {
+    const label = next
+      ? `${member.name}さんに、次の申請のときに登録内容の確認をお願いします。\n\nお名前・最寄り駅・通勤手段・定期券を確認していただきます（1分ほど）。`
+      : `${member.name}さんには、登録内容の確認を求めないようにします。\n\n今後この案内は出ません。`
+    if (!confirm(`${label}\n\nよろしいですか？`)) return
+    setTogglingReceptionistId(member.id)
+    try {
+      const res = await fetch("/api/line-staff", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: member.id, require_setup: next }),
+      })
+      const json = (await res.json().catch(() => ({}))) as { error?: string }
+      if (!res.ok) throw new Error(json.error || "更新に失敗しました")
+      toast.success(next ? "次の申請で確認をお願いします" : "確認を求めないようにしました")
       fetchStaff()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "更新に失敗しました")
@@ -912,6 +942,26 @@ export function StaffManagement({ showHeader = true }: { showHeader?: boolean })
                           >
                             <MessageCircle className="h-4 w-4" />
                             連絡
+                          </Button>
+                        )}
+                        {/* 登録内容の確認を個別にお願いする／止める */}
+                        {setupPending(member.line_profile) ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={togglingReceptionistId === member.id}
+                            onClick={() => handleRequireSetup(member, false)}
+                          >
+                            確認を求めない
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={togglingReceptionistId === member.id}
+                            onClick={() => handleRequireSetup(member, true)}
+                          >
+                            再設定をお願いする
                           </Button>
                         )}
                         <Button variant="outline" size="sm" onClick={() => openEditDialog(member)}>
