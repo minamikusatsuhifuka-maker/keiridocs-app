@@ -215,11 +215,26 @@ export async function assessSubsidy(input: AssessInput): Promise<AssessResult> {
 
   const priorTuitionCount = registered.count + inApp
 
+  /*
+   * 交通費・宿泊費の支給率を決めるための「過去の受講回数」。
+   *
+   * 今回の受講の受講料は、過去の受講に数えてはいけない。
+   * 初受講でも受講料を先に申請していると inApp が1になり、
+   * そのあとの交通費・宿泊費が再受講（半額）と判定されていた。
+   *
+   * 枠の区切り（travelWindow）が受講料の領収書で開かれている場合、
+   * その1件が「今回の受講」の受講料なので差し引く。
+   */
+  const tuitionOfThisAttendance =
+    isTravelItem(item) && travelWindow.origin === "tuition" ? 1 : 0
+  const priorTuitionForTravel = Math.max(0, priorTuitionCount - tuitionOfThisAttendance)
+
   // 交通費・宿泊費も半額の回は半額にするため、受講料の実績から半額かどうかを引き継ぐ
   const isRepeat =
     input.courseRule === "atc"
-      ? priorTuitionCount > 0 ||
-        counted.some((p) => p.course_id === input.courseId && p.expense_item === "tuition")
+      ? isTravelItem(item)
+        ? priorTuitionForTravel > 0
+        : priorTuitionCount > 0
       : // 旧式（別の講座の実績があれば2回目以降）
         input.courseKind === "apex" &&
         counted.some((p) => p.course_id && p.course_id !== input.courseId)

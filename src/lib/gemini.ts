@@ -1077,11 +1077,26 @@ function normalizePayEasy(value: unknown): PayEasyEntry[] {
 }
 
 /** YYYY-MM-DD だけを受け取る（それ以外の書き方は null にして推測しない） */
+/**
+ * 日付を YYYY-MM-DD に整える。読み取れない・ありえない日付は null を返す。
+ *
+ * 年が印字されていない切符や利用明細では、AIが「0000-10-23」のように
+ * 年を 0000 で返すことがある。そのまま保存すると20日締めの判定や
+ * 会計士さんへの提出で日付として扱えなくなるため、ここで弾く。
+ * null にすると、呼び出し側で申請日が使われる。
+ */
 function normalizeDateString(value: unknown): string | null {
   if (typeof value !== "string") return null
   const m = value.trim().match(/^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})/)
   if (!m) return null
   const [, y, mo, d] = m
+  const year = Number(y)
+  const month = Number(mo)
+  const day = Number(d)
+  // ありえない日付は読み取り失敗として扱う
+  if (year < 2000 || year > 2100) return null
+  if (month < 1 || month > 12) return null
+  if (day < 1 || day > 31) return null
   return `${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`
 }
 
@@ -1129,7 +1144,7 @@ function parseOcrResponse(responseText: string): OcrResult {
           payments.push({
             vendor_name: vendor,
             amount,
-            issue_date: typeof o.issue_date === "string" ? o.issue_date : null,
+            issue_date: normalizeDateString(o.issue_date),
             due_date: typeof o.due_date === "string" ? o.due_date : null,
             description: typeof o.description === "string" ? o.description : null,
             tax_category: typeof o.tax_category === "string" ? o.tax_category : null,
@@ -1142,7 +1157,7 @@ function parseOcrResponse(responseText: string): OcrResult {
     return {
       vendor_name: typeof parsed.vendor_name === "string" ? parsed.vendor_name : "",
       amount: normalizeAmount(parsed.amount),
-      issue_date: typeof parsed.issue_date === "string" ? parsed.issue_date : null,
+      issue_date: normalizeDateString(parsed.issue_date),
       due_date: typeof parsed.due_date === "string" ? parsed.due_date : null,
       description: typeof parsed.description === "string" ? parsed.description : null,
       type: typeof parsed.type === "string" ? parsed.type : null,
