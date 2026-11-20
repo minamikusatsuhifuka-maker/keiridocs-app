@@ -40,6 +40,8 @@ export interface DiagnoseItem {
   amount: number | null
   /** 明細（petty_cash_transactions）があるか＝支給の対象になっているか */
   settled: boolean
+  /** 本人が取り消したか（取り消し済みは担当も登録できない） */
+  cancelled: boolean
   expenseDetail: string | null
   holdReason: string | null
   /** 支給の対象になっているか（最終判定） */
@@ -170,6 +172,7 @@ export async function GET(request: Request) {
         storeName: r.store_name,
         amount: r.amount,
         settled: !!tx,
+        cancelled: !!raw.cancelled_at,
         expenseDetail: tx?.expense_detail ?? null,
         holdReason: tx?.hold_reason ?? null,
         counted,

@@ -5,7 +5,11 @@ import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Loader2, Search, Wrench } from "lucide-react"
+import { Check, Loader2, Search, Wrench } from "lucide-react"
+import {
+  CompletePendingDialog,
+  type CompleteTarget,
+} from "@/components/line-staff/complete-pending-dialog"
 
 /**
  * 「申請したのに見つからない」を調べる画面。
@@ -24,6 +28,7 @@ interface DiagnoseItem {
   storeName: string | null
   amount: number | null
   settled: boolean
+  cancelled: boolean
   expenseDetail: string | null
   holdReason: string | null
   counted: boolean
@@ -47,6 +52,8 @@ export function ReceiptDiagnose({ onChanged }: { onChanged?: () => void }) {
   const [busy, setBusy] = useState<string | null>(null)
   const [days, setDays] = useState(14)
   const [onlyProblem, setOnlyProblem] = useState(true)
+  // 担当が代わりに登録するダイアログの対象
+  const [completeTarget, setCompleteTarget] = useState<CompleteTarget | null>(null)
 
   const load = useCallback(
     async (d: number) => {
@@ -185,6 +192,25 @@ export function ReceiptDiagnose({ onChanged }: { onChanged?: () => void }) {
               ))}
             </ul>
 
+            {/* 明細が無い＝まだ支給の対象になっていない。担当がここで完了させられる */}
+            {!it.settled && !it.cancelled && (
+              <Button
+                size="sm"
+                className="mt-3 mr-2"
+                onClick={() =>
+                  setCompleteTarget({
+                    id: it.receiptId,
+                    staffName: it.staffName,
+                    amount: it.amount ?? 0,
+                    storeName: it.storeName,
+                    date: it.date,
+                  })
+                }
+              >
+                <Check className="size-3.5" />
+                担当が代わりに登録
+              </Button>
+            )}
             {it.fix === "clear_test_mark" && (
               <Button
                 size="sm"
@@ -212,6 +238,14 @@ export function ReceiptDiagnose({ onChanged }: { onChanged?: () => void }) {
             )}
           </div>
         ))}
+        <CompletePendingDialog
+          target={completeTarget}
+          onClose={() => setCompleteTarget(null)}
+          onDone={() => {
+            load(days)
+            onChanged?.()
+          }}
+        />
       </CardContent>
     </Card>
   )
