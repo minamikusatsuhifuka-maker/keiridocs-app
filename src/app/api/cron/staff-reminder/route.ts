@@ -63,14 +63,39 @@ async function checkAuth(request: NextRequest): Promise<boolean> {
 }
 
 /** LINEへの送信（失敗しても処理を止めない） */
-async function push(userId: string, text: string): Promise<boolean> {
+/**
+ * LINEへ送る。
+ *
+ * @param actions 付けるボタン（クイックリプライ）。
+ *   文章で「トークのボタンから続けてください」と書いても、過去のやり取りに
+ *   埋もれて見つけられない。その申請を直接続けられるボタンを一緒に送る。
+ */
+async function push(
+  userId: string,
+  text: string,
+  actions?: { label: string; data: string; displayText: string }[]
+): Promise<boolean> {
   const token = process.env.LINE_CHANNEL_ACCESS_TOKEN
   if (!token || !userId) return false
   try {
+    const message: Record<string, unknown> = { type: "text", text: text.slice(0, 4900) }
+    if (actions && actions.length > 0) {
+      message.quickReply = {
+        items: actions.slice(0, 13).map((a) => ({
+          type: "action",
+          action: {
+            type: "postback",
+            label: a.label.slice(0, 20),
+            data: a.data,
+            displayText: a.displayText,
+          },
+        })),
+      }
+    }
     const res = await fetch("https://api.line.me/v2/bot/message/push", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ to: userId, messages: [{ type: "text", text: text.slice(0, 4900) }] }),
+      body: JSON.stringify({ to: userId, messages: [message] }),
     })
     return res.ok
   } catch {
@@ -177,11 +202,18 @@ export async function GET(request: NextRequest) {
       const ok = await push(
         member.line_user_id,
         "【申請が途中のままです】\n" +
-          `${store}（${amount}）の区分が選ばれていないため、\n` +
+          `${store}（${amount}）は、最後まで進んでいないため\n` +
           "まだ支給の対象になっていません。\n\n" +
-          "このトークの「区分を選んでください」のボタンから続きを選んでください。\n" +
-          "ボタンが見当たらない場合は、メニューの「申請履歴」でご確認いただけます。\n\n" +
-          `※${CLOSING_DAY}日までに確定した分が、その月のお給与に反映されます。`
+          "下の「この申請を続ける」を押すと、続きから進められます。\n" +
+          "写真を送り直す必要はありません。\n\n" +
+          `※${CLOSING_DAY}日までに確定した分が、その月のお給与に反映されます。`,
+        [
+          {
+            label: "この申請を続ける",
+            data: `action=rsm&rid=${r.id}`,
+            displayText: "この申請を続けます",
+          },
+        ]
       )
       if (ok) {
         notified++
