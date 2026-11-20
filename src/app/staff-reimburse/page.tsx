@@ -363,6 +363,21 @@ export default function StaffReimbursePage() {
     return { label: `次の締めまであと ${days} 日`, urgent: false }
   })()
 
+  // 講座マスタ（「講座の確認」を既存の講座へ割り当てるために使う）
+  const [courses, setCourses] = useState<{ id: string; name: string }[]>([])
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const res = await fetch("/api/courses")
+        if (!res.ok) return
+        const json = (await res.json()) as { courses?: { id: string; name: string }[] }
+        setCourses(json.courses ?? [])
+      } catch {
+        // 取れなくても他の操作はできる
+      }
+    })()
+  }, [])
+
   // 要対応を取得する（期間フィルタとは独立。常に全件を見せて取りこぼしを防ぐ）
   const fetchPending = useCallback(async () => {
     try {
@@ -476,6 +491,53 @@ export default function StaffReimbursePage() {
       }
     },
     [fetchPending]
+  )
+
+  /**
+   * 「講座の確認」を、登録済みの講座に割り当てて計算し直す。
+   *
+   * 同じ講座を名前違いで作り直すと、交通費＋宿泊費の30,000円の枠が
+   * 講座ごとに分かれて二重になる。必ず既存の講座に紐づける。
+   */
+  const assignCourse = useCallback(
+    async (item: PendingItem, courseId: string) => {
+      const course = courses.find((c) => c.id === courseId)
+      if (!course) return
+      if (
+        !confirm(
+          `${item.staffName}さんの「${item.courseName || "この申請"}」を、\n` +
+            `講座「${course.name}」に割り当てます。\n\n` +
+            "この講座の方式で支給額を計算し直します（初受講か再受講かも判定します）。\n" +
+            "立替額は変わりません。\n\nよろしいですか？"
+        )
+      )
+        return
+      setApprovingId(item.id)
+      try {
+        const res = await fetch("/api/staff-reimburse/assign-course", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: item.id, courseId }),
+        })
+        const json = (await res.json().catch(() => ({}))) as {
+          error?: string
+          holdReason?: string | null
+        }
+        if (!res.ok) throw new Error(json.error || "割り当てできませんでした")
+        toast.success(
+          json.holdReason
+            ? "割り当てました（別の確認が残っています）"
+            : "割り当てて確定しました"
+        )
+        fetchPending()
+        fetchData()
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "割り当てできませんでした")
+      } finally {
+        setApprovingId(null)
+      }
+    },
+    [courses, fetchPending, fetchData]
   )
 
   /**
@@ -1116,6 +1178,35 @@ export default function StaffReimbursePage() {
                         </Button>
                       )}
                     </div>
+
+                    {/* 講座名が講座マスタと一致していない。
+                        名前違いで作り直すと上限の枠が分かれるため、必ず既存の講座へ紐づける */}
+                    {p.kind === "course" && (
+                      <div className="flex flex-col gap-2 sm:w-64 sm:shrink-0">
+                        <Label className="text-xs">この申請の講座を選ぶ</Label>
+                        <Select
+                          onValueChange={(v) => assignCourse(p, v)}
+                          disabled={approvingId === p.id}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="登録済みの講座から選ぶ" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {courses.map((c) => (
+                              <SelectItem key={c.id} value={c.id}>
+                                {c.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+                          申請された名前：{p.courseName || "（なし）"}
+                          <br />
+                          同じ講座なら作り直さず、ここで割り当ててください。
+                          別の講座として登録すると、交通費・宿泊費の30,000円の枠が分かれます。
+                        </p>
+                      </div>
+                    )}
 
                     {/* 既受講回数が未登録のため確定できていない。
                         回数を登録して保留を外すところまでを、この場で終わらせる */}
