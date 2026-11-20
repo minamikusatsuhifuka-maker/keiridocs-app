@@ -70,6 +70,8 @@ import {
   COURSE_NOT_LISTED,
   OTHER_ITEMS,
   PHASE2_GROUPS,
+  groupOfCourseKind,
+  type Phase2Group,
   coursePrompt,
   courseNamePrompt,
   examAttachPrompt,
@@ -92,12 +94,20 @@ import {
 import { assessSubsidy } from "@/lib/subsidy-assess"
 import {
   applicationConfirmCard,
+  buttons,
+  cardBubble,
+  flexMessage,
+  FLEX_COLORS,
+  primaryButton,
+  secondaryButton,
+  text,
   flexSizeBytes,
   FLEX_SIZE_LIMIT_BYTES,
   historyCard,
   messageAction,
   nameConfirmCard,
   nameReviewCard,
+  postback,
   postback as flexPostback,
   quickReply as flexQuickReply,
   receiptReceivedCard,
@@ -654,7 +664,8 @@ async function handleEvent(event: LineEvent): Promise<void> {
  * postbackデータを振り分ける。
  *
  * 申請フロー（フェーズ2。講座ごとの上限と支給率を適用する）:
- *  - action=p2g&rid=...&g=course|other   … 何の費用か → 講座または内訳の選択へ
+ *  - action=p2g&rid=...&g=ach|training|exam|expense … 何の費用か → 次の選択へ
+ *  - action=p2b&rid=...                  … ひとつ前（費用の種類）に戻る
  *  - action=p2c&rid=...&c=<courseId>     … 講座の選択（__none__ は名称を手入力）
  *  - action=p2i&rid=...&c=...&i=<item>   … 内訳の選択 → 確認画面（OK/修正）
  *  - action=p2ok&rid=...&c=...&i=<item>  … 確定 → 給与支給で精算登録
@@ -762,6 +773,9 @@ async function handlePostback(event: LineEvent): Promise<void> {
     // フェーズ2の申請フロー（講座・内訳・確認）
     case "p2g": // 第1階層（講座・研修／それ以外）
       await handlePhase2GroupPostback(event, params)
+      return
+    case "p2b": // ひとつ前に戻る
+      await handlePhase2BackPostback(event, params)
       return
     case "p2c": // 講座の選択
       await handlePhase2CoursePostback(event, params)
@@ -940,16 +954,30 @@ async function sendTier1(
   receiptId: string,
   header: string
 ): Promise<void> {
-  await sendLineQuickReply(
+  /*
+   * 大きな縦並びのボタンで出す。
+   * クイックリプライは画面下部に小さく横並びになり、端のボタンが
+   * 見落とされる。押す場所に迷うという声があったため形式を変えた。
+   */
+  await sendFlexCard(
     replyToken,
     userId,
-    groupPrompt(header),
-    PHASE2_GROUPS.map((g) => ({
-      type: "postback" as const,
-      label: g.label,
-      data: `action=p2g&rid=${receiptId}&g=${g.key}`,
-      displayText: g.label,
-    }))
+    flexMessage(
+      "費用の種類を選んでください",
+      cardBubble(
+        "何の費用ですか？",
+        [
+          text(header, { size: "sm" }),
+          buttons(
+            PHASE2_GROUPS.flatMap((g) => [
+              primaryButton(postback(g.label, `action=p2g&rid=${receiptId}&g=${g.key}`)),
+              text(g.help, { size: "xxs", color: FLEX_COLORS.secondaryText }),
+            ])
+          ),
+        ]
+      )
+    ),
+    groupPrompt(header)
   )
 }
 
@@ -2642,32 +2670,50 @@ function guessedCourseName(aiRaw: unknown, storeName: string | null): string | n
 async function handlePhase2GroupPostback(event: LineEvent, params: URLSearchParams): Promise<void> {
   const { replyToken, source } = event
   const receiptId = params.get("rid")
-  const group = params.get("g")
-  if (!receiptId || (group !== "course" && group !== "other")) {
+  const group = params.get("g") as Phase2Group | null
+  const known: Phase2Group[] = ["ach", "training", "exam", "expense"]
+  if (!receiptId || !group || !known.includes(group)) {
     await sendLineMessage(replyToken, source.userId, "⚠️ 処理できませんでした。もう一度お試しください。")
     return
   }
 
   const supabase = createServiceClient()
 
-  // それ以外: 内訳をそのまま選んでもらう
-  if (group === "other") {
-    await sendLineQuickReply(
-      replyToken,
-      source.userId,
-      "何の費用ですか？\n\n" + OTHER_ITEMS.map((o) => `・${o.label} … ${o.help}`).join("\n"),
-      OTHER_ITEMS.map((o) => ({
-        type: "postback" as const,
-        label: o.label,
-        data: `action=p2i&rid=${receiptId}&i=${o.item}`,
-        displayText: o.label,
-      }))
+  // 検定・試験: 内訳は決まっているので、そのまま次へ進む（迷う選択を挟まない）
+  if (group === "exam") {
+    await handlePhase2ItemPostback(
+      event,
+      new URLSearchParams(`rid=${receiptId}&i=exam`)
     )
     return
   }
 
-  // 講座・研修: 講座マスタから選んでもらう
-  const courses = await fetchCourseChoices(supabase)
+  // その他の経費: 内訳を大きなボタンで選んでもらう
+  if (group === "expense") {
+    await sendFlexCard(
+      replyToken,
+      source.userId,
+      flexMessage(
+        "何の費用か選んでください",
+        cardBubble("その他の経費", [
+          buttons([
+            ...OTHER_ITEMS.flatMap((o) => [
+              primaryButton(postback(o.label, `action=p2i&rid=${receiptId}&i=${o.item}`)),
+              text(o.help, { size: "xxs", color: FLEX_COLORS.secondaryText }),
+            ]),
+            // 選び間違えたときに最初から選び直せるようにする
+            secondaryButton(postback("ひとつ前に戻る", `action=p2b&rid=${receiptId}`)),
+          ]),
+        ])
+      ),
+      "何の費用ですか？\n\n" + OTHER_ITEMS.map((o) => `・${o.label} … ${o.help}`).join("\n")
+    )
+    return
+  }
+
+  // 講座・研修: 講座マスタから選んでもらう（選んだ入口の講座だけに絞る）
+  const allCourses = await fetchCourseChoices(supabase)
+  const courses = allCourses.filter((c) => groupOfCourseKind(c.kind) === group)
   if (courses.length === 0) {
     // 講座マスタが空のままでも申請を止めない（担当が後で割り当てる）
     await askCourseName(event, receiptId)
@@ -2678,21 +2724,44 @@ async function handlePhase2GroupPostback(event: LineEvent, params: URLSearchPara
   const guessed = fetched ? guessedCourseName(fetched.receipt.ai_raw, fetched.receipt.store_name) : null
   const sorted = sortCoursesByGuess(courses, guessed)
 
-  // クイックリプライは13個まで。最後の1つは「一覧に無い」に使う
-  const items: PostbackAction[] = sorted.slice(0, 12).map((c) => ({
-    type: "postback",
-    label: c.name,
-    data: `action=p2c&rid=${receiptId}&c=${c.id}`,
-    displayText: c.name,
-  }))
-  items.push({
-    type: "postback",
-    label: "一覧に無い講座",
-    data: `action=p2c&rid=${receiptId}&c=${COURSE_NOT_LISTED}`,
-    displayText: "一覧に無い講座",
-  })
+  // 大きな縦並びボタンで出す（10件まで。多いとカードが大きくなりすぎる）
+  await sendFlexCard(
+    replyToken,
+    source.userId,
+    flexMessage(
+      "講座を選んでください",
+      cardBubble("どの講座ですか？", [
+        text(coursePrompt(guessed), { size: "xs" }),
+        buttons([
+          ...sorted
+            .slice(0, 10)
+            .map((c) => primaryButton(postback(c.name, `action=p2c&rid=${receiptId}&c=${c.id}`))),
+          secondaryButton(
+            postback("一覧に無い講座", `action=p2c&rid=${receiptId}&c=${COURSE_NOT_LISTED}`)
+          ),
+          secondaryButton(postback("ひとつ前に戻る", `action=p2b&rid=${receiptId}`)),
+        ]),
+      ])
+    ),
+    coursePrompt(guessed)
+  )
+}
 
-  await sendLineQuickReply(replyToken, source.userId, coursePrompt(guessed), items)
+/** 「ひとつ前に戻る」→ 費用の種類の選択からやり直す */
+async function handlePhase2BackPostback(
+  event: LineEvent,
+  params: URLSearchParams
+): Promise<void> {
+  const receiptId = params.get("rid")
+  if (!receiptId) {
+    await sendLineMessage(
+      event.replyToken,
+      event.source.userId,
+      "⚠️ 処理できませんでした。もう一度お試しください。"
+    )
+    return
+  }
+  await sendTier1(event.replyToken, event.source.userId, receiptId, "選び直してください。")
 }
 
 /** 講座の選択 → 内訳の選択へ */
@@ -2719,16 +2788,25 @@ async function handlePhase2CoursePostback(event: LineEvent, params: URLSearchPar
   }
 
   const items = availableItems(course.kind)
-  await sendLineQuickReply(
+  await sendFlexCard(
     replyToken,
     source.userId,
-    itemPrompt(course.name, course.kind),
-    items.map((i) => ({
-      type: "postback" as const,
-      label: EXPENSE_ITEM_LABELS[i],
-      data: `action=p2i&rid=${receiptId}&c=${courseId}&i=${i}`,
-      displayText: EXPENSE_ITEM_LABELS[i],
-    }))
+    flexMessage(
+      "内訳を選んでください",
+      cardBubble(`${course.name}`.slice(0, 40), [
+        text(itemPrompt(course.name, course.kind), { size: "xs" }),
+        buttons([
+          ...items.map((i) =>
+            primaryButton(
+              postback(EXPENSE_ITEM_LABELS[i], `action=p2i&rid=${receiptId}&c=${courseId}&i=${i}`)
+            )
+          ),
+          // 講座を選び間違えたときに戻れるようにする
+          secondaryButton(postback("講座を選び直す", `action=p2b&rid=${receiptId}`)),
+        ]),
+      ])
+    ),
+    itemPrompt(course.name, course.kind)
   )
 }
 

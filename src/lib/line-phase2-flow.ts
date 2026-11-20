@@ -32,13 +32,44 @@ export interface CourseChoice {
   rule: CourseRule
 }
 
-/** 第1階層の選択肢 */
+/**
+ * 第1階層の選択肢。
+ *
+ * 以前は「講座・研修」「それ以外」の2つで、検定・試験が「それ以外」に
+ * 埋もれ、アチーブメントの講座と他社の研修も同じ入口だった。
+ * 申請するときの頭の中の分け方に合わせて4つに分ける。
+ */
 export const PHASE2_GROUPS = [
-  { key: "course", label: "講座・研修" },
-  { key: "other", label: "それ以外" },
+  {
+    key: "ach",
+    label: "アチーブメントの講座",
+    help: "ATC、頂点への道、ダイナミックコースなど",
+  },
+  {
+    key: "training",
+    label: "その他の研修・セミナー",
+    help: "アチーブメント以外の研修、JPSAなど",
+  },
+  {
+    key: "exam",
+    label: "検定・試験",
+    help: "受験料。合格通知・修了通知の写真で全額",
+  },
+  {
+    key: "expense",
+    label: "その他の経費",
+    help: "書籍代、診療費、通常業務の交通費、買い物",
+  },
 ] as const
 
 export type Phase2Group = (typeof PHASE2_GROUPS)[number]["key"]
+
+/** その講座がどの第1階層に入るか */
+export function groupOfCourseKind(kind: CourseKind): Phase2Group {
+  if (kind === "exam") return "exam"
+  if (kind === "non_ach" || kind === "jpsa") return "training"
+  return "ach"
+}
 
 /** 「講座が一覧に無い」を選んだときの印。講座IDの代わりに使う */
 export const COURSE_NOT_LISTED = "__none__"
@@ -52,7 +83,6 @@ export const COURSE_NOT_LISTED = "__none__"
 export const OTHER_ITEMS: { item: ExpenseItem; label: string; help: string }[] = [
   { item: "books", label: "書籍代", help: "1か月あたり5,000円まで（20日締め）" },
   { item: "medical", label: "診療費", help: "1か月あたり5,000円まで（20日締め）・書籍代とは別枠" },
-  { item: "exam", label: "検定・試験", help: "合格通知・修了通知の写真があれば受験料を全額支給" },
   { item: "commute", label: "交通費（通常業務）", help: "研修以外の交通費" },
   { item: "other", label: "その他（買い物など）", help: "内容を1行入力していただきます" },
 ]
@@ -62,8 +92,7 @@ export function groupPrompt(header: string): string {
   return (
     `${header}\n` +
     "何の費用ですか？\n\n" +
-    "・講座・研修 … アチーブメントの講座、検定以外の研修やセミナー\n" +
-    "・それ以外 … 書籍代、診療費、検定・試験、買い物など"
+    PHASE2_GROUPS.map((g) => `・${g.label} … ${g.help}`).join("\n")
   )
 }
 
