@@ -352,7 +352,25 @@ export default function StaffReimbursePage() {
       const res = await fetch("/api/staff-reimburse/pending")
       if (!res.ok) return
       const json = (await res.json()) as { items?: PendingItem[] }
-      setPending(json.items ?? [])
+      // 同じ種別をまとめ、古いものを先に出す。
+      // 種別が混ざって並ぶと、同じ判断を何度も切り替えることになり進めにくい
+      const order: PendingItem["kind"][] = [
+        "excess",
+        "course",
+        "term",
+        "pass",
+        "detail",
+        "dup",
+        "attach",
+        "help",
+        "incomplete",
+      ]
+      const items = [...(json.items ?? [])].sort((a, b) => {
+        const d = order.indexOf(a.kind) - order.indexOf(b.kind)
+        if (d !== 0) return d
+        return b.daysWaiting - a.daysWaiting
+      })
+      setPending(items)
     } catch {
       // 取得できなくても本体の一覧は使えるようにする（警告は出さない）
     }
@@ -897,8 +915,9 @@ export default function StaffReimbursePage() {
           </CardHeader>
           <CardContent>
             <div className="flex flex-wrap gap-2">
+              {/* 既定で開く。押さないと行が見えないのは分かりにくい */}
               <Button variant="outline" size="sm" onClick={() => setShowPending((v) => !v)}>
-                {showPending ? "閉じる" : "一覧を見る"}
+                {showPending ? "一覧を閉じる" : `一覧を開く（${pending.length}件）`}
               </Button>
               {/* 未完了は確定操作が無いため、処理し終えたものをまとめて外せるようにする */}
               {pending.filter((p) => p.kind === "incomplete").length > 1 && (
@@ -915,13 +934,41 @@ export default function StaffReimbursePage() {
             </div>
             {showPending && (
               <div className="mt-3 flex flex-col gap-3">
-                {pending.map((p) => (
+                {/* 何がどれだけ残っているかを先に見せる（13件並ぶと全体が掴めない） */}
+                <div className="rounded-lg border bg-muted/40 p-3">
+                  <p className="text-sm font-medium">残っているもの</p>
+                  <ul className="mt-1.5 space-y-1">
+                    {(
+                      Object.entries(
+                        pending.reduce<Record<string, number>>((acc, p) => {
+                          acc[p.kind] = (acc[p.kind] ?? 0) + 1
+                          return acc
+                        }, {})
+                      ) as [PendingItem["kind"], number][]
+                    ).map(([kind, count]) => (
+                      <li key={kind} className="text-xs leading-relaxed">
+                        <strong>
+                          {PENDING_LABELS[kind]} {count}件
+                        </strong>
+                        ／{PENDING_HELP[kind]}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    下の一覧を<strong>上から順に</strong>処理してください。
+                    各行の右側（スマホでは行の下）にボタンがあります。
+                  </p>
+                </div>
+                {pending.map((p, pIndex) => (
                   <div
                     key={`${p.kind}-${p.id}`}
                     className="flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-start sm:justify-between"
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-medium text-muted-foreground">
+                          {pIndex + 1}/{pending.length}
+                        </span>
                         <Badge
                           variant="outline"
                           className={
