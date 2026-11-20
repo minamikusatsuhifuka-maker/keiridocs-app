@@ -433,6 +433,32 @@ export function calcStoredSubsidy(row: {
  *
  * 上限も控除もない場合は空配列を返す（出す必要がない）。
  */
+/**
+ * 交通費・宿泊費の枠の残りを、短い4行にまとめる。
+ *
+ * 計算の内訳は行数が多く、肝心の「あといくら使えるのか」が埋もれていた。
+ * 確認画面の上の方に、この4行だけを独立して出す。
+ *
+ * 上限のない内訳（通常業務の交通費など）では空を返す。
+ */
+export function capSummaryLines(
+  assessed: { cap: number | null; capUsed: number; subsidy: number },
+  item: ExpenseItem,
+  courseName?: string | null
+): string[] {
+  if (assessed.cap === null || !isTravelItem(item)) return []
+  const used = assessed.capUsed
+  const nowCounted = Math.max(0, Math.min(assessed.subsidy, assessed.cap - used))
+  const after = used + nowCounted
+  const left = Math.max(0, assessed.cap - after)
+  return [
+    `${courseName ? `${courseName}の` : "この講座の"}交通費＋宿泊費`,
+    `上限 ${yen(assessed.cap)}`,
+    `これまで ${yen(used)} ＋ 今回 ${yen(nowCounted)} ＝ ${yen(after)}`,
+    left > 0 ? `残り ${yen(left)}` : "残り 0円（上限に達しました）",
+  ]
+}
+
 export function calcBreakdownLines(
   assessed: {
     subsidy: number

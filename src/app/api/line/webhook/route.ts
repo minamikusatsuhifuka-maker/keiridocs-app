@@ -89,6 +89,7 @@ import {
   availableItems,
   calcStoredSubsidy,
   calcBreakdownLines,
+  capSummaryLines,
   type ExpenseItem,
 } from "@/lib/subsidy-rules"
 import { assessSubsidy } from "@/lib/subsidy-assess"
@@ -2068,6 +2069,7 @@ async function sendIcBatchConfirm(
     subsidyRateLabel: rateLabel(assessed.rate, item),
     targetMonth: month ? `${labelYearMonth(month)}分` : "不明",
     calcNote: calcBreakdownLines(assessed, total, item, course?.name ?? readPendingCourseName(raw)),
+    capSummary: capSummaryLines(assessed, item, course?.name ?? readPendingCourseName(raw)),
     overLimit:
       assessed.excess > 0
         ? { category: EXPENSE_ITEM_LABELS[item], exceeded: assessed.excess }
@@ -3026,6 +3028,7 @@ async function sendPhase2Confirm(
       subsidyRateLabel: rateLabel(assessed.rate, item),
       targetMonth,
       calcNote: calcBreakdownLines(assessed, amount, item, course?.name ?? pendingCourseName),
+      capSummary: capSummaryLines(assessed, item, course?.name ?? pendingCourseName),
       overLimit: assessed.excess > 0 ? { category: EXPENSE_ITEM_LABELS[item], exceeded: assessed.excess } : undefined,
       okData,
       fixData,
@@ -3142,8 +3145,23 @@ async function handlePhase2ConfirmPostback(event: LineEvent, params: URLSearchPa
 
     // 保留の理由は確定後の明細から読む（確認画面と同じ判定結果になる）
     const holdReason = await readHoldReason(supabase, receiptId)
+    /*
+     * 交通費・宿泊費は、申請し終えた時点の枠の残りも伝える。
+     * 「あといくら使えるのか」を知るために履歴を開き直す手間をなくす。
+     */
+    const capLine =
+      (item === "transport" || item === "lodging") && course && fetched
+        ? await travelCapRemainLine(
+            supabase,
+            String(fetched.receipt.staff_member_id),
+            course?.id ?? null,
+            course?.name ?? pendingCourseName ?? null
+          )
+        : ""
+
     const subject =
       `${EXPENSE_ITEM_LABELS[item]} ¥${formatAmount(settledAmount)}（支給 ¥${formatAmount(settledSubsidy)}）を\n` +
+      capLine +
       (holdReason
         ? `${holdNotice(holdReason)}\n` +
           "確認が長引いた場合は翌月のお給与になることがあります。\n" +
@@ -3570,6 +3588,43 @@ function registeredMessage(monthLabel: string, subject = ""): unknown {
       "間違いがあれば、メニューの「問い合わせ」から担当にご連絡ください。",
     [messageAction("続けて申請する", "申請"), messageAction("申請履歴を見る", "申請履歴")]
   )
+}
+
+/**
+ * 申請後に「枠の残り」を1行で返す。
+ *
+ * 確定した明細から数え直すので、いま申請した分も含んだ残りになる。
+ * 取れない場合は空文字を返し、完了メッセージは止めない。
+ */
+async function travelCapRemainLine(
+  supabase: ServiceClient,
+  staffMemberId: string,
+  courseId: string | null,
+  courseName: string | null
+): Promise<string> {
+  if (!courseId) return ""
+  try {
+    const assessed = await assessSubsidy({
+      supabase,
+      staffMemberId,
+      // 残りを数えるためだけの試算。金額0なら枠は減らない
+      amount: 0,
+      item: "transport",
+      courseId,
+      courseKind: null,
+      courseRule: null,
+      pendingCourseName: null,
+    })
+    if (assessed.cap === null) return ""
+    const left = Math.max(0, assessed.cap - assessed.capUsed)
+    return (
+      `${courseName ? `${courseName}の` : "この講座の"}交通費＋宿泊費：` +
+      `${formatAmount(assessed.capUsed)}円 / ${formatAmount(assessed.cap)}円` +
+      `（残り ${formatAmount(left)}円）\n`
+    )
+  } catch {
+    return ""
+  }
 }
 
 /** 「修正」→ 第1階層からやり直し（写真再送不要） */

@@ -522,6 +522,11 @@ export function applicationConfirmCard(params: {
    * 上限も控除もない申請では空になるため、その場合は出さない。
    */
   calcNote?: string[]
+  /**
+   * 交通費・宿泊費の枠の残り（capSummaryLines の戻り値）。
+   * 計算の内訳に埋もれないよう、カードの上の方に独立して出す。
+   */
+  capSummary?: string[]
   overLimit?: { category: string; exceeded: number }
   okData: string
   fixData: string
@@ -531,6 +536,17 @@ export function applicationConfirmCard(params: {
   rows.push(infoRow("区分", params.category))
   if (params.purpose) rows.push(infoRow("内容", params.purpose))
   const body: FlexComponent[] = [panel(rows, "none")]
+  // 「あといくら使えるのか」を最初に見せる
+  if (params.capSummary && params.capSummary.length > 0) {
+    body.push(
+      panel([
+        text("交通費・宿泊費の枠", { size: "xs", weight: "bold", color: FLEX_COLORS.textSub }),
+        ...params.capSummary.map((line, i) =>
+          text(line, { size: i === 0 ? "xs" : "sm", weight: i === 0 ? "regular" : "bold", margin: "xs" })
+        ),
+      ])
+    )
+  }
   if (params.breakdown && params.breakdown.length > 0) {
     const bd: FlexComponent[] = [text("内訳", { size: "xs", weight: "bold", color: FLEX_COLORS.textSub })]
     for (const b of params.breakdown) bd.push(infoRow(b.label, yen(b.amount), { sub: b.sub }))
